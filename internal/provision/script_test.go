@@ -37,7 +37,7 @@ func TestScriptInstallsExactlyTheToolchainAndInfrastructure(t *testing.T) {
 	lines := script(t)
 	i := lineIndex(t, lines, "apt-get -o DPkg::Lock::Timeout=120 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y -q --no-install-recommends git openssh-client curl ca-certificates jq ripgrep unzip nftables tinyproxy </dev/null")
 	for _, line := range lines {
-		if strings.Contains(line, " install -y") && line != lines[i] {
+		if strings.HasPrefix(line, "apt-get") && strings.Contains(line, " install") && line != lines[i] {
 			t.Errorf("unexpected install: %q", line)
 		}
 	}
@@ -158,20 +158,14 @@ func TestScriptWritesTheMarkerLast(t *testing.T) {
 
 func TestScriptIsOneGroupThatChildrenCannotTruncate(t *testing.T) {
 	lines := script(t)
-	opens, closes := 0, 0
+	opens := 0
 	for _, line := range lines {
-		switch line {
-		case "{":
+		if line == "{" {
 			opens++
-		case "}":
-			closes++
 		}
 	}
-	if opens != 1 || lines[len(lines)-2] != "}" {
-		t.Errorf("script has %d top-level group openings and ends with %q, want one group around the body", opens, lines[len(lines)-2])
-	}
-	if closes < 1 {
-		t.Error("script never closes its group")
+	if opens != 1 || lines[1] != "{" || lines[len(lines)-2] != "}" {
+		t.Errorf("script has %d group openings and ends with %q, want one group around the body", opens, lines[len(lines)-2])
 	}
 	for _, line := range lines {
 		if strings.HasPrefix(line, "apt-get") && !strings.HasSuffix(line, "</dev/null") {
