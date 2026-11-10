@@ -1,6 +1,6 @@
 # Architecture — orbit
 
-The code so far is the composition root in `cmd/orbit`; the modules under `internal/` do not exist yet. This file records the target structure, so that new code follows it. Rows marked **proposal** are not yet confirmed by the owner; they mirror the proposal rows in `.ai/specs/product-brief.md`. Keep this file current as the system changes. Agents read it (through `AGENTS.md`) before structural changes.
+The code so far is the composition root in `cmd/orbit`, the OrbStack adapter in `internal/orbstack` (create, exists, delete), and the sandbox module in `internal/sandbox` with the part of the `init` slice that creates the machine; the other modules under `internal/` do not exist yet. This file records the target structure, so that new code follows it. Rows marked **proposal** are not yet confirmed by the owner; they mirror the proposal rows in `.ai/specs/product-brief.md`. Keep this file current as the system changes. Agents read it (through `AGENTS.md`) before structural changes.
 
 ## Purpose and scope
 
@@ -50,9 +50,11 @@ cmd/orbit/main.go          composition root: build adapters, wire slices, run
 internal/
   sandbox/                 module
     sandbox.go             public API of the module: types and errors that other modules may use
-    init/                  slice: contract.go, handler.go, command.go, handler_test.go
+    initialize/            slice of orbit init: contract.go, handler.go, command.go, handler_test.go
+                           (Go refuses to import a package that is named init)
     shell/  stop/  start/  destroy/  list/
     internal/              private to the module (enforced by the Go compiler)
+      realpath/            canonical path of a directory; every slice resolves the project directory with it
   policy/                  module: policy.go (pure matching rules); allow/, deny/, list/ are later scope (D19)
   agent/                   module: agent definitions, one package per agent (claude/)
   credential/              module: which credentials a sandbox may get (R08)
@@ -114,14 +116,14 @@ Rules:
 4. `kernel` imports nothing from this repository.
 5. A security decision is a pure function in a module, not logic in a handler or a command: the sandbox spec, mount validation, credential selection, firewall rules, and policy matching. Handlers load, call the function, and act on the result.
 
-The compiler enforces rule 3. A lint rule (import restrictions in `golangci-lint`) will enforce rules 1, 2, and 4 once the packages that they name exist.
+The compiler enforces rule 3. An import restriction in `golangci-lint` (depguard, in `.golangci.yml`) enforces the adapter part of rule 1. Restrictions for the rest of rule 1 and for rules 2 and 4 will follow once the packages that they name exist.
 
 ### Provisioning requirements
 
 These come from the spike of 2026-11-10 on OrbStack 2.2.5 (`.ai/analysis/2026-11-10-orbstack-isolated-machine-spike.md`). Each one is a test in the escape suite.
 
 - Create the machine with `--isolated --isolate-network` and mount the workspace as `SRC:SRC`. A mount without a destination lands under `/mnt/mac`. The image is Ubuntu 26.04, the one the spike used.
-- The machine name is the Orbit prefix, a slug of the directory name, and a short hash of the resolved absolute path of the project directory: `orbit-<slug>-<hash>`. Orbit finds the sandbox of a directory by computing this name.
+- The machine name is the Orbit prefix, a slug of the directory name (at most 30 characters), and the first 16 hex characters of the SHA-256 of the canonical path of the project directory: `orbit-<slug>-<hash>`. Orbit finds the sandbox of a directory by computing this name.
 - Remove the default user that OrbStack creates, or its sudo rule. It has passwordless sudo.
 - The firewall rule matches every uid from 1000 up, not only the agent uid. Rootless container traffic leaves as the agent uid or as one of its sub-uids. IPv4, IPv6, DNS, UDP, and ICMP are covered.
 - The proxy is tinyproxy (D22). A firewall rule for the uid of the proxy refuses private, link-local, and loopback destinations, except its DNS resolver, so that an allow rule cannot open the host engine or the Mac.

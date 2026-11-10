@@ -1,0 +1,520 @@
+package initialize
+
+import (
+	"context"
+	"errors"
+	"io/fs"
+	"os"
+	"os/user"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+
+	"github.com/cultofthecode/orbit/internal/orbstack/orbstacktest"
+	"github.com/cultofthecode/orbit/internal/sandbox"
+)
+
+// dataVolume is the path of the data volume of macOS. A firmlink joins its
+// directories to the root.
+const dataVolume = "/System/Volumes/Data"
+
+// newHome makes a home directory with a project, .ssh, and .claude in it,
+// makes it the home directory of the environment of the test, and returns
+// its canonical path.
+func newHome(t *testing.T) string {
+	t.Helper()
+	home := newDir(t)
+	makeDirs(t, home, "work/api", ".ssh", ".claude/projects")
+	t.Setenv("HOME", home)
+	return home
+}
+
+// newDir returns the canonical path of a new temporary directory.
+func newDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// makeDirs makes the directories dirs in parent.
+func makeDirs(t *testing.T, parent string, dirs ...string) {
+	t.Helper()
+	for _, dir := range dirs {
+		if err := os.MkdirAll(filepath.Join(parent, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// symlink makes a symlink to target in a new directory and returns its path.
+func symlink(t *testing.T, target string) string {
+	t.Helper()
+	link := filepath.Join(newDir(t), "link")
+	symlinkAt(t, target, link)
+	return link
+}
+
+// symlinkAt makes the symlink link to target.
+func symlinkAt(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// account returns the entry of the account database for the user of the
+// test, with home as the home directory.
+func account(home string) *user.User {
+	return &user.User{Uid: strconv.Itoa(os.Getuid()), HomeDir: home}
+}
+
+// newHandler returns a handler on fake that finds entry in the account
+// database.
+func newHandler(fake *orbstacktest.Fake, entry *user.User) Handler {
+	return Handler{
+		Machines:    fake,
+		CurrentUser: func() (*user.User, error) { return entry, nil },
+	}
+}
+
+// requireSpelling stops the test when the file system does not accept path
+// as a spelling of an existing file. macOS must accept it, so there the test
+// fails; on another system it is skipped.
+func requireSpelling(t *testing.T, path string) {
+	t.Helper()
+	_, err := os.Stat(path)
+	if err == nil {
+		return
+	}
+	if runtime.GOOS == "darwin" {
+		t.Fatalf("macOS does not accept the spelling %q: %v", path, err)
+	}
+	t.Skipf("the file system does not accept this spelling: %v", err)
+}
+
+// refusal is one directory that the handler must refuse.
+type refusal struct {
+	name string
+	dir  string
+	want error
+}
+
+// checkRefusals runs the handler for each refusal and checks that it fails
+// with the wanted error before it asks OrbStack anything.
+func checkRefusals(t *testing.T, entry *user.User, refusals []refusal) {
+	t.Helper()
+	for _, test := range refusals {
+		t.Run(test.name, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+
+			_, err := newHandler(fake, entry).Handle(context.Background(), Input{Dir: test.dir})
+
+			if !errors.Is(err, test.want) {
+				t.Errorf("Handle(%q) = %v, want %v", test.dir, err, test.want)
+			}
+			if len(fake.Calls) != 0 {
+				t.Errorf("calls = %v, want none", fake.Calls)
+			}
+		})
+	}
+}
+
+// checkCreates checks that the handler creates the machine of the canonical
+// directory project when it gets the path dir.
+func checkCreates(t *testing.T, entry *user.User, dir, project string) {
+	t.Helper()
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	name := sandbox.MachineName(project)
+
+	got, err := newHandler(fake, entry).Handle(context.Background(), Input{Dir: dir})
+
+	if err != nil {
+		t.Fatalf("Handle(%q) = %v", dir, err)
+	}
+	if want := (Output{Name: name, Dir: project, Created: true}); got != want {
+		t.Errorf("Handle(%q) = %+v, want %+v", dir, got, want)
+	}
+	wantCalls := []orbstacktest.Call{
+		{Op: orbstacktest.OpExists, Name: name},
+		{Op: orbstacktest.OpCreate, Name: name, Dir: project},
+	}
+	if !slices.Equal(fake.Calls, wantCalls) {
+		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+	}
+}
+
+func TestHandleCreatesTheMachine(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	tests := []struct {
+		name string
+		dir  string
+	}{
+		{name: "canonical path", dir: project},
+		{name: "symlink to the project", dir: symlink(t, project)},
+		{name: "path that is not clean", dir: home + "/work/../work//api/"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			checkCreates(t, account(home), test.dir, project)
+		})
+	}
+}
+
+func TestHandleKeepsAnExistingMachine(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = project
+
+	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+	if err != nil {
+		t.Fatalf("Handle = %v", err)
+	}
+	if want := (Output{Name: name, Dir: project, Created: false}); got != want {
+		t.Errorf("Handle = %+v, want %+v", got, want)
+	}
+	wantCalls := []orbstacktest.Call{{Op: orbstacktest.OpExists, Name: name}}
+	if !slices.Equal(fake.Calls, wantCalls) {
+		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+	}
+}
+
+func TestHandleRefusesInvalidDirectories(t *testing.T) {
+	home := newHome(t)
+	file := filepath.Join(home, "work", "notes.txt")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checkRefusals(t, account(home), []refusal{
+		{name: "home", dir: home, want: sandbox.ErrHomeDir},
+		{name: "home with a trailing slash", dir: home + "/", want: sandbox.ErrHomeDir},
+		{name: "dot dot to home", dir: home + "/work/..", want: sandbox.ErrHomeDir},
+		{name: "symlink to home", dir: symlink(t, home), want: sandbox.ErrHomeDir},
+		{name: "root", dir: "/", want: sandbox.ErrRootDir},
+		{name: "dot dot to root", dir: home + strings.Repeat("/..", 40), want: sandbox.ErrRootDir},
+		{name: "parent of home", dir: filepath.Dir(home), want: sandbox.ErrHomeAncestor},
+		{name: ".ssh", dir: filepath.Join(home, ".ssh"), want: sandbox.ErrProtectedDir},
+		{name: "child of .claude", dir: filepath.Join(home, ".claude", "projects"), want: sandbox.ErrProtectedDir},
+		{name: "symlink to .ssh", dir: symlink(t, filepath.Join(home, ".ssh")), want: sandbox.ErrProtectedDir},
+		{name: "missing directory", dir: filepath.Join(home, "work", "missing"), want: fs.ErrNotExist},
+		{name: "broken symlink", dir: symlink(t, filepath.Join(home, "work", "missing")), want: fs.ErrNotExist},
+		{name: "empty path", dir: "", want: fs.ErrNotExist},
+		{name: "file", dir: file, want: ErrNotDirectory},
+		{name: "symlink to a file", dir: symlink(t, file), want: ErrNotDirectory},
+	})
+}
+
+// TestHandleResolvesOtherSpellings covers the spellings that macOS accepts
+// for a directory besides its canonical path.
+func TestHandleResolvesOtherSpellings(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	spellings := []struct {
+		name  string
+		spell func(path string) string
+	}{
+		{name: "upper case", spell: strings.ToUpper},
+		{name: "data volume", spell: func(path string) string { return dataVolume + path }},
+		{name: "data volume in upper case", spell: func(path string) string { return dataVolume + strings.ToUpper(path) }},
+	}
+	for _, spelling := range spellings {
+		t.Run(spelling.name, func(t *testing.T) {
+			requireSpelling(t, spelling.spell(project))
+			checkRefusals(t, account(home), []refusal{
+				{name: "home", dir: spelling.spell(home), want: sandbox.ErrHomeDir},
+				{name: "parent of home", dir: spelling.spell(filepath.Dir(home)), want: sandbox.ErrHomeAncestor},
+				{name: ".ssh", dir: spelling.spell(filepath.Join(home, ".ssh")), want: sandbox.ErrProtectedDir},
+				{name: "child of .claude", dir: spelling.spell(filepath.Join(home, ".claude", "projects")), want: sandbox.ErrProtectedDir},
+			})
+			checkCreates(t, account(home), spelling.spell(project), project)
+		})
+	}
+}
+
+// TestHandleRefusesDirectoriesThatHoldHomeOnTheDataVolume covers the
+// directories of macOS that are no ancestors of the canonical path of the
+// home directory and still contain it: the home directory is also a
+// directory of the data volume. The account of the test has the uid of root,
+// which owns these directories, so that only the rule on paths can refuse
+// them.
+func TestHandleRefusesDirectoriesThatHoldHomeOnTheDataVolume(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("only macOS has a data volume")
+	}
+	home := newHome(t)
+	root := &user.User{Uid: "0", HomeDir: home}
+	checkRefusals(t, root, []refusal{
+		{name: "data volume", dir: dataVolume, want: sandbox.ErrHomeAncestor},
+		{name: "parent of the data volume", dir: "/System/Volumes", want: sandbox.ErrHomeAncestor},
+		{name: "grandparent of the data volume", dir: "/System", want: sandbox.ErrHomeAncestor},
+		{name: "symlink to the data volume", dir: symlink(t, dataVolume), want: sandbox.ErrHomeAncestor},
+		{name: "parent of home on the data volume", dir: dataVolume + filepath.Dir(home), want: sandbox.ErrHomeAncestor},
+	})
+}
+
+// TestHandleRefusesLinkedProtectedDirectories covers a home directory in
+// which .ssh is a symlink to a directory outside the home directory and
+// .claude is a symlink to a directory inside it.
+func TestHandleRefusesLinkedProtectedDirectories(t *testing.T) {
+	home := newDir(t)
+	vault := newDir(t)
+	makeDirs(t, home, "work/api", "dotfiles/claude/projects", "dotfiles/vim")
+	makeDirs(t, vault, "keys/ssh/old", "notes")
+	symlinkAt(t, filepath.Join(vault, "keys", "ssh"), filepath.Join(home, ".ssh"))
+	symlinkAt(t, filepath.Join(home, "dotfiles", "claude"), filepath.Join(home, ".claude"))
+	t.Setenv("HOME", home)
+
+	checkRefusals(t, account(home), []refusal{
+		{name: ".ssh", dir: filepath.Join(home, ".ssh"), want: sandbox.ErrProtectedDir},
+		{name: "child of .ssh", dir: filepath.Join(home, ".ssh", "old"), want: sandbox.ErrProtectedDir},
+		{name: "target of .ssh", dir: filepath.Join(vault, "keys", "ssh"), want: sandbox.ErrProtectedDir},
+		{name: "child of the target of .ssh", dir: filepath.Join(vault, "keys", "ssh", "old"), want: sandbox.ErrProtectedDir},
+		{name: "directory that holds the target of .ssh", dir: filepath.Join(vault, "keys"), want: sandbox.ErrProtectedAncestor},
+		{name: "ancestor of the target of .ssh", dir: vault, want: sandbox.ErrProtectedAncestor},
+		{name: ".claude", dir: filepath.Join(home, ".claude"), want: sandbox.ErrProtectedDir},
+		{name: "child of .claude", dir: filepath.Join(home, ".claude", "projects"), want: sandbox.ErrProtectedDir},
+		{name: "target of .claude", dir: filepath.Join(home, "dotfiles", "claude"), want: sandbox.ErrProtectedDir},
+		{name: "child of the target of .claude", dir: filepath.Join(home, "dotfiles", "claude", "projects"), want: sandbox.ErrProtectedDir},
+		{name: "directory that holds the target of .claude", dir: filepath.Join(home, "dotfiles"), want: sandbox.ErrProtectedAncestor},
+		{name: "symlink to the directory that holds the target", dir: symlink(t, filepath.Join(home, "dotfiles")), want: sandbox.ErrProtectedAncestor},
+	})
+	t.Run("sibling of the target of .claude", func(t *testing.T) {
+		checkCreates(t, account(home), filepath.Join(home, "dotfiles", "vim"), filepath.Join(home, "dotfiles", "vim"))
+	})
+	t.Run("sibling of the directory that holds the target of .ssh", func(t *testing.T) {
+		checkCreates(t, account(home), filepath.Join(vault, "notes"), filepath.Join(vault, "notes"))
+	})
+	t.Run("project", func(t *testing.T) {
+		checkCreates(t, account(home), filepath.Join(home, "work", "api"), filepath.Join(home, "work", "api"))
+	})
+}
+
+// TestHandleWithProtectedPathsThatAreNoDirectories covers a protected path
+// that leads nowhere, which protects nothing, and one that is a file, which
+// the handler cannot resolve and so refuses to go on.
+func TestHandleWithProtectedPathsThatAreNoDirectories(t *testing.T) {
+	t.Run("broken symlink", func(t *testing.T) {
+		home := newDir(t)
+		makeDirs(t, home, "work/api")
+		symlinkAt(t, filepath.Join(home, "missing"), filepath.Join(home, ".ssh"))
+		t.Setenv("HOME", home)
+		checkCreates(t, account(home), filepath.Join(home, "work", "api"), filepath.Join(home, "work", "api"))
+		checkRefusals(t, account(home), []refusal{
+			{name: ".ssh", dir: filepath.Join(home, ".ssh"), want: fs.ErrNotExist},
+		})
+	})
+	t.Run("file", func(t *testing.T) {
+		home := newDir(t)
+		makeDirs(t, home, "work/api")
+		if err := os.WriteFile(filepath.Join(home, ".claude"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("HOME", home)
+		checkRefusals(t, account(home), []refusal{
+			{name: "project", dir: filepath.Join(home, "work", "api"), want: syscall.ENOTDIR},
+		})
+	})
+}
+
+// TestHandleTrustsNoSingleHome covers an environment and an account database
+// that name different home directories: both are home directories.
+func TestHandleTrustsNoSingleHome(t *testing.T) {
+	home := newHome(t)
+	other := newDir(t)
+	makeDirs(t, other, ".ssh", "work/api")
+	project := filepath.Join(home, "work", "api")
+	refusals := []refusal{
+		{name: "home", dir: home, want: sandbox.ErrHomeDir},
+		{name: ".ssh of home", dir: filepath.Join(home, ".ssh"), want: sandbox.ErrProtectedDir},
+		{name: "child of .claude of home", dir: filepath.Join(home, ".claude", "projects"), want: sandbox.ErrProtectedDir},
+		{name: "parent of home", dir: filepath.Dir(home), want: sandbox.ErrHomeAncestor},
+		{name: "root", dir: "/", want: sandbox.ErrRootDir},
+	}
+	otherRefusals := []refusal{
+		{name: "other home", dir: other, want: sandbox.ErrHomeDir},
+		{name: ".ssh of the other home", dir: filepath.Join(other, ".ssh"), want: sandbox.ErrProtectedDir},
+		{name: "parent of the other home", dir: filepath.Dir(other), want: sandbox.ErrHomeAncestor},
+	}
+	tests := []struct {
+		name        string
+		environment string
+		account     string
+		refusals    []refusal
+	}{
+		{name: "environment names another directory", environment: other, account: home, refusals: slices.Concat(refusals, otherRefusals)},
+		{name: "environment names the root", environment: "/", account: home, refusals: refusals},
+		{name: "environment names the project", environment: project, account: home, refusals: append(slices.Clone(refusals), refusal{name: "project", dir: project, want: sandbox.ErrHomeDir})},
+		{name: "account database names another directory", environment: home, account: other, refusals: slices.Concat(refusals, otherRefusals)},
+		{name: "account database names the root", environment: home, account: "/", refusals: refusals},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", test.environment)
+			checkRefusals(t, account(test.account), test.refusals)
+		})
+	}
+	t.Run("project is still accepted", func(t *testing.T) {
+		t.Setenv("HOME", other)
+		checkCreates(t, account(home), project, project)
+	})
+}
+
+func TestHandleRefusesWithoutBothHomes(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	file := filepath.Join(home, ".ssh", "config")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lookupFailed := errors.New("no entry in the account database")
+	found := func(entry *user.User) func() (*user.User, error) {
+		return func() (*user.User, error) { return entry, nil }
+	}
+	tests := []struct {
+		name        string
+		environment string
+		currentUser func() (*user.User, error)
+		want        error
+	}{
+		{name: "environment home is not set", environment: "", currentUser: found(account(home))},
+		{name: "environment home does not exist", environment: filepath.Join(home, "missing"), currentUser: found(account(home)), want: fs.ErrNotExist},
+		{name: "environment home is a relative path that does not exist", environment: "missing", currentUser: found(account(home)), want: fs.ErrNotExist},
+		{name: "environment home is a file", environment: file, currentUser: found(account(home)), want: syscall.ENOTDIR},
+		{name: "account lookup fails", environment: home, currentUser: func() (*user.User, error) { return nil, lookupFailed }, want: lookupFailed},
+		{name: "account home is empty", environment: home, currentUser: found(account("")), want: fs.ErrNotExist},
+		{name: "account home does not exist", environment: home, currentUser: found(account(filepath.Join(home, "missing"))), want: fs.ErrNotExist},
+		{name: "account home is a file", environment: home, currentUser: found(account(file)), want: syscall.ENOTDIR},
+		{name: "account uid is empty", environment: home, currentUser: found(&user.User{HomeDir: home}), want: strconv.ErrSyntax},
+		{name: "account uid is no number", environment: home, currentUser: found(&user.User{Uid: "S-1-5-21", HomeDir: home}), want: strconv.ErrSyntax},
+		{name: "account uid is negative", environment: home, currentUser: found(&user.User{Uid: "-1", HomeDir: home}), want: strconv.ErrSyntax},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", test.environment)
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			handler := Handler{Machines: fake, CurrentUser: test.currentUser}
+
+			_, err := handler.Handle(context.Background(), Input{Dir: project})
+
+			if err == nil || (test.want != nil && !errors.Is(err, test.want)) {
+				t.Errorf("Handle = %v, want an error that wraps %v", err, test.want)
+			}
+			if len(fake.Calls) != 0 {
+				t.Errorf("calls = %v, want none", fake.Calls)
+			}
+		})
+	}
+}
+
+func TestHandleRefusesDirectoriesOfOtherUsers(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	t.Run("project of another uid", func(t *testing.T) {
+		other := &user.User{Uid: strconv.Itoa(os.Getuid() + 1), HomeDir: home}
+		checkRefusals(t, other, []refusal{{name: "project", dir: project, want: sandbox.ErrNotOwner}})
+	})
+	t.Run("system directories", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root owns the system directories")
+		}
+		checkRefusals(t, account(home), []refusal{{name: "usr", dir: "/usr", want: sandbox.ErrNotOwner}})
+	})
+	t.Run("lookup directories of macOS", func(t *testing.T) {
+		if runtime.GOOS != "darwin" {
+			t.Skip("only macOS has these directories")
+		}
+		checkRefusals(t, account(home), []refusal{
+			{name: "volume lookup", dir: "/.vol", want: sandbox.ErrNotOwner},
+			{name: "no-follow lookup", dir: "/.nofollow", want: sandbox.ErrNotOwner},
+			{name: "resolve lookup", dir: "/.resolve", want: sandbox.ErrNotOwner},
+			{name: "system", dir: "/System/Library", want: sandbox.ErrNotOwner},
+		})
+	})
+	t.Run("home through the no-follow lookup of macOS", func(t *testing.T) {
+		if runtime.GOOS != "darwin" {
+			t.Skip("only macOS has this lookup")
+		}
+		checkRefusals(t, account(home), []refusal{
+			{name: "home", dir: "/.nofollow" + home, want: sandbox.ErrHomeDir},
+			{name: ".ssh", dir: "/.nofollow" + filepath.Join(home, ".ssh"), want: sandbox.ErrProtectedDir},
+		})
+	})
+}
+
+// TestHandleReportsDirectoriesThatCannotBeMounted covers a directory that
+// passes the mount rules and that OrbStack cannot mount at its own path.
+func TestHandleReportsDirectoriesThatCannotBeMounted(t *testing.T) {
+	home := newHome(t)
+	for _, name := range []string{"a:b", ".ssh:", "a,b"} {
+		t.Run(name, func(t *testing.T) {
+			project := filepath.Join(home, "work", name)
+			makeDirs(t, home, filepath.Join("work", name))
+			fake := orbstacktest.New(sandbox.NamePrefix)
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+			if !errors.Is(err, orbstacktest.ErrMountPath) {
+				t.Errorf("Handle(%q) = %v, want %v", project, err, orbstacktest.ErrMountPath)
+			}
+			if got != (Output{}) || len(fake.Machines) != 0 {
+				t.Errorf("Handle(%q) = %+v with the machines %v, want no output and no machine", project, got, fake.Machines)
+			}
+		})
+	}
+}
+
+func TestHandleReportsOrbStackFailures(t *testing.T) {
+	boom := errors.New("orb: boom")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	tests := []struct {
+		name      string
+		existsErr error
+		createErr error
+		wantCalls []orbstacktest.Call
+	}{
+		{
+			name:      "exists fails",
+			existsErr: boom,
+			wantCalls: []orbstacktest.Call{{Op: orbstacktest.OpExists, Name: name}},
+		},
+		{
+			name:      "create fails",
+			createErr: boom,
+			wantCalls: []orbstacktest.Call{
+				{Op: orbstacktest.OpExists, Name: name},
+				{Op: orbstacktest.OpCreate, Name: name, Dir: project},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.ExistsErr = test.existsErr
+			fake.CreateErr = test.createErr
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+			if !errors.Is(err, boom) {
+				t.Errorf("Handle = %v, want %v", err, boom)
+			}
+			if got != (Output{}) {
+				t.Errorf("Handle = %+v, want no output", got)
+			}
+			if !slices.Equal(fake.Calls, test.wantCalls) {
+				t.Errorf("calls = %v, want %v", fake.Calls, test.wantCalls)
+			}
+		})
+	}
+}

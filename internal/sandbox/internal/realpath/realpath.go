@@ -1,0 +1,22 @@
+// Package realpath resolves the path of a directory to its canonical path.
+// Every slice of the sandbox module resolves the project directory with it,
+// so that the mount rules compare canonical paths and every slice computes
+// the same machine name for a directory.
+package realpath
+
+// Resolve returns the canonical path of the existing directory path:
+// absolute, with symlinks resolved, in the one spelling that the system
+// reports for the directory. It needs only search permission on the
+// directory. A path that is not a directory fails with syscall.ENOTDIR.
+func Resolve(path string) (string, error) {
+	return resolve(path)
+}
+
+// ResolveNoFirmlink returns the path of the existing directory path on its
+// own volume. On macOS a firmlink joins the directories of the data volume
+// to the root, so the home directory /Users/dev is also the directory
+// /System/Volumes/Data/Users/dev; Resolve returns the first path and
+// ResolveNoFirmlink the second. On other systems the two are equal.
+func ResolveNoFirmlink(path string) (string, error) {
+	return resolveNoFirmlink(path)
+}
