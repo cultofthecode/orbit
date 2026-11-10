@@ -48,5 +48,5 @@ The steps are those of the spec's Implementation Plan, in the same order.
 ### Phase 3: Proof and records
 
 - [x] 3.1 Add the integration test of provisioning — 59a971e (fixes found on the way: 2c6ed75, 99ef857)
-- [ ] 3.2 Update the documentation
-- [ ] 3.3 Archive the Delta
+- [x] 3.2 Update the documentation — d14e5a7
+- [x] 3.3 Archive the Delta — 20328ce
