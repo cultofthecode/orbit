@@ -22,12 +22,21 @@ type Machines interface {
 	// Create creates the isolated machine name with dir as its only mount,
 	// at the same absolute path as on the host.
 	Create(ctx context.Context, name, dir string) error
+	// RunAsRoot runs script with bash as root in the machine name and
+	// fails when the script fails.
+	RunAsRoot(ctx context.Context, name string, script []byte) error
+	// Delete deletes the machine name with everything stored in it.
+	Delete(ctx context.Context, name string) error
 }
 
-// Handler creates the machine of a project directory. Both fields are
-// required.
+// Handler creates and provisions the machine of a project directory. All
+// fields are required.
 type Handler struct {
 	Machines Machines
+	// ProvisionScript returns the root script that provisions a machine
+	// whose default user has the uid defaultUID. cmd/orbit passes
+	// provision.Script; the slice does not import another module.
+	ProvisionScript func(defaultUID uint32) ([]byte, error)
 	// CurrentUser returns the user who runs Orbit, from the account
 	// database of the system. cmd/orbit passes user.Current. The handler
 	// trusts its uid and its home directory more than the environment.
@@ -35,19 +44,57 @@ type Handler struct {
 }
 
 // Handle creates the machine of the project directory in.Dir, unless it
-// already exists. It refuses a directory that the mount rules of the sandbox
-// module do not accept, before it asks OrbStack anything.
+// already exists, and then provisions it, also when it already existed. It
+// refuses a directory that the mount rules of the sandbox module do not
+// accept, before it asks OrbStack anything. When provisioning fails on a
+// machine that this call created, it deletes that machine; it never deletes
+// a machine that existed before the call.
 func (h Handler) Handle(ctx context.Context, in Input) (Output, error) {
-	dir, err := h.mountableDir(in.Dir)
+	facts, err := h.mountableDir(in.Dir)
 	if err != nil {
 		return Output{}, err
 	}
-	name := sandbox.MachineName(dir)
-	created, err := h.ensureMachine(ctx, name, dir)
+	name := sandbox.MachineName(facts.Path)
+	created, err := h.ensureMachine(ctx, name, facts.Path)
 	if err != nil {
 		return Output{}, err
 	}
-	return Output{Name: name, Dir: dir, Created: created}, nil
+	if err := h.provision(ctx, name, facts.UserUID, created); err != nil {
+		return Output{}, err
+	}
+	return Output{Name: name, Dir: facts.Path, Created: created}, nil
+}
+
+// provision runs the root script in the machine name. The default user of
+// the machine has the uid of the user who runs Orbit. When the script fails
+// and created is true, it deletes the machine.
+func (h Handler) provision(ctx context.Context, name string, uid uint32, created bool) error {
+	err := h.runScript(ctx, name, uid)
+	if err == nil || !created {
+		return err
+	}
+	return h.discard(ctx, name, err)
+}
+
+// runScript builds the root script and runs it in the machine name.
+func (h Handler) runScript(ctx context.Context, name string, uid uint32) error {
+	script, err := h.ProvisionScript(uid)
+	if err != nil {
+		return fmt.Errorf("provision sandbox %s: %w", name, err)
+	}
+	if err := h.Machines.RunAsRoot(ctx, name, script); err != nil {
+		return fmt.Errorf("provision sandbox %s: %w", name, err)
+	}
+	return nil
+}
+
+// discard deletes the unprovisioned machine name after the failure cause,
+// also when ctx is cancelled, and reports both.
+func (h Handler) discard(ctx context.Context, name string, cause error) error {
+	if err := h.Machines.Delete(context.WithoutCancel(ctx), name); err != nil {
+		return errors.Join(cause, fmt.Errorf("delete the unprovisioned sandbox %s: %w", name, err))
+	}
+	return fmt.Errorf("%w (the new sandbox %s was deleted)", cause, name)
 }
 
 // ensureMachine creates the machine name with the mount dir when it does not
@@ -66,17 +113,17 @@ func (h Handler) ensureMachine(ctx context.Context, name, dir string) (bool, err
 	return true, nil
 }
 
-// mountableDir returns the canonical path of the project directory path,
-// when the mount rules accept it.
-func (h Handler) mountableDir(path string) (string, error) {
+// mountableDir returns the facts of the project directory path, with its
+// canonical path, when the mount rules accept it.
+func (h Handler) mountableDir(path string) (sandbox.ProjectDir, error) {
 	facts, err := h.loadFacts(path)
 	if err != nil {
-		return "", err
+		return sandbox.ProjectDir{}, err
 	}
 	if err := sandbox.ValidateProjectDir(facts); err != nil {
-		return "", err
+		return sandbox.ProjectDir{}, err
 	}
-	return facts.Path, nil
+	return facts, nil
 }
 
 // loadFacts reads from the system what the mount rules decide on. It fails

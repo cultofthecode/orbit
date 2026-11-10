@@ -1,7 +1,7 @@
 // Package initialize is the slice of "orbit init": it creates the sandbox of
-// a project directory. So far it creates the machine only; the machine is not
-// a safe sandbox before provisioning has set up the agent user, the firewall,
-// and the proxy.
+// a project directory and provisions it as root with the agent user, the
+// firewall, the proxy, and the fixed toolchain. The command is not
+// registered until the agent is installed as well (story E01-S01).
 package initialize
 
 import "errors"
