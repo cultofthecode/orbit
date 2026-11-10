@@ -6,12 +6,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
-// ErrForeignMachine reports a machine name without the prefix of the fake,
-// as the adapter does.
-var ErrForeignMachine = errors.New("machine name does not start with the required prefix")
+// The fake refuses what the adapter refuses, with errors of its own.
+var (
+	// ErrForeignMachine reports a machine name without the prefix of the
+	// fake.
+	ErrForeignMachine = errors.New("machine name does not start with the required prefix")
+	// ErrMountPath reports a directory that cannot be mounted at its own
+	// path: it is not absolute, or it holds a colon or a comma.
+	ErrMountPath = errors.New("mount path is not absolute or contains a colon or a comma")
+)
 
 // Operations that a Fake records.
 const (
@@ -57,11 +64,15 @@ func (f *Fake) Exists(_ context.Context, name string) (bool, error) {
 }
 
 // Create adds the machine name with dir as its mount. It refuses a name
-// without the prefix of the fake.
+// without the prefix of the fake, and a directory that the adapter cannot
+// mount at its own path.
 func (f *Fake) Create(_ context.Context, name, dir string) error {
 	f.Calls = append(f.Calls, Call{Op: OpCreate, Name: name, Dir: dir})
 	if f.prefix == "" || !strings.HasPrefix(name, f.prefix) || name == f.prefix {
 		return fmt.Errorf("%w %q: %q", ErrForeignMachine, f.prefix, name)
+	}
+	if !filepath.IsAbs(dir) || strings.ContainsAny(dir, ":,") {
+		return fmt.Errorf("%w: %q", ErrMountPath, dir)
 	}
 	if f.CreateErr != nil {
 		return f.CreateErr

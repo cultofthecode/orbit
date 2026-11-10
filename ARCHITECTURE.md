@@ -54,6 +54,7 @@ internal/
                            (Go refuses to import a package that is named init)
     shell/  stop/  start/  destroy/  list/
     internal/              private to the module (enforced by the Go compiler)
+      realpath/            canonical path of a directory; every slice resolves the project directory with it
   policy/                  module: policy.go (pure matching rules); allow/, deny/, list/ are later scope (D19)
   agent/                   module: agent definitions, one package per agent (claude/)
   credential/              module: which credentials a sandbox may get (R08)
@@ -122,7 +123,7 @@ The compiler enforces rule 3. An import restriction in `golangci-lint` (depguard
 These come from the spike of 2026-11-10 on OrbStack 2.2.5 (`.ai/analysis/2026-11-10-orbstack-isolated-machine-spike.md`). Each one is a test in the escape suite.
 
 - Create the machine with `--isolated --isolate-network` and mount the workspace as `SRC:SRC`. A mount without a destination lands under `/mnt/mac`. The image is Ubuntu 26.04, the one the spike used.
-- The machine name is the Orbit prefix, a slug of the directory name, and a short hash of the resolved absolute path of the project directory: `orbit-<slug>-<hash>`. Orbit finds the sandbox of a directory by computing this name.
+- The machine name is the Orbit prefix, a slug of the directory name (at most 30 characters), and the first 16 hex characters of the SHA-256 of the canonical path of the project directory: `orbit-<slug>-<hash>`. Orbit finds the sandbox of a directory by computing this name.
 - Remove the default user that OrbStack creates, or its sudo rule. It has passwordless sudo.
 - The firewall rule matches every uid from 1000 up, not only the agent uid. Rootless container traffic leaves as the agent uid or as one of its sub-uids. IPv4, IPv6, DNS, UDP, and ICMP are covered.
 - The proxy is tinyproxy (D22). A firewall rule for the uid of the proxy refuses private, link-local, and loopback destinations, except its DNS resolver, so that an allow rule cannot open the host engine or the Mac.

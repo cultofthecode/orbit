@@ -13,11 +13,12 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox"
 )
 
-// execute runs the command of the slice on its own with args and returns
-// what it wrote to its output stream and to its error stream.
-func execute(fake *orbstacktest.Fake, args ...string) (stdout, stderr string, err error) {
+// execute runs the command of the slice on its own with args, for a user
+// with the home directory home, and returns what it wrote to its output
+// stream and to its error stream.
+func execute(fake *orbstacktest.Fake, home string, args ...string) (stdout, stderr string, err error) {
 	var out, errOut bytes.Buffer
-	command := NewCommand(Handler{Machines: fake})
+	command := NewCommand(newHandler(fake, account(home)))
 	command.SetArgs(args)
 	command.SetOut(&out)
 	command.SetErr(&errOut)
@@ -59,7 +60,7 @@ func TestCommandPrintsTheResult(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			fake.Calls = nil
 
-			stdout, stderr, err := execute(fake)
+			stdout, stderr, err := execute(fake, home)
 
 			if err != nil {
 				t.Fatalf("command = %v", err)
@@ -93,7 +94,7 @@ func TestCommandRefusesArguments(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			fake := orbstacktest.New(sandbox.NamePrefix)
 
-			stdout, _, err := execute(fake, test.args...)
+			stdout, _, err := execute(fake, home, test.args...)
 
 			if err == nil || err.Error() != test.want {
 				t.Errorf("command %q = %v, want %q", test.args, err, test.want)
@@ -127,7 +128,7 @@ func TestCommandReturnsTheErrorOfTheHandler(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Chdir(test.dir)
 
-			stdout, _, err := execute(test.fake)
+			stdout, _, err := execute(test.fake, home)
 
 			if !errors.Is(err, test.want) {
 				t.Errorf("command in %s = %v, want %v", test.dir, err, test.want)

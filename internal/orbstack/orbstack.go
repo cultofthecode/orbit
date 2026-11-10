@@ -23,13 +23,17 @@ const image = "ubuntu:26.04"
 // mountSeparator divides the source and the destination of a mount.
 const mountSeparator = ":"
 
+// mountListSeparator divides the mounts of a machine in the configuration of
+// OrbStack.
+const mountListSeparator = ","
+
 var (
 	// ErrForeignMachine reports a machine name without the prefix of the
 	// client. The client creates and deletes only machines with its prefix.
 	ErrForeignMachine = errors.New("machine name does not start with the required prefix")
 	// ErrMountPath reports a directory that cannot be mounted at its own
-	// path: it is not absolute, or it holds the separator of a mount.
-	ErrMountPath = errors.New("mount path is not absolute or contains a colon")
+	// path: it is not absolute, or it holds a separator of mounts.
+	ErrMountPath = errors.New("mount path is not absolute or contains a colon or a comma")
 )
 
 // Client drives the orb CLI.
@@ -90,9 +94,10 @@ func (c *Client) checkOwned(name string) error {
 }
 
 // checkMountable refuses a directory that the SOURCE:DEST form of a mount
-// cannot express at its own path.
+// cannot express at its own path: orb splits a mount at the first colon, and
+// OrbStack stores the mounts of a machine as a list with commas.
 func checkMountable(dir string) error {
-	if !filepath.IsAbs(dir) || strings.Contains(dir, mountSeparator) {
+	if !filepath.IsAbs(dir) || strings.ContainsAny(dir, mountSeparator+mountListSeparator) {
 		return fmt.Errorf("%w: %q", ErrMountPath, dir)
 	}
 	return nil
@@ -138,7 +143,16 @@ func run(ctx context.Context, args []string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s %s: %w: %s", cli, args[0], err, strings.TrimSpace(stderr.String()))
+		return "", commandError(args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+// commandError wraps the error of the failed orb subcommand and appends what
+// orb printed to its standard error, when it printed anything.
+func commandError(subcommand string, err error, stderr string) error {
+	if stderr == "" {
+		return fmt.Errorf("%s %s: %w", cli, subcommand, err)
+	}
+	return fmt.Errorf("%s %s: %w: %s", cli, subcommand, err, stderr)
 }

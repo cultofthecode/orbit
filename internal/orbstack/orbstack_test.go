@@ -144,6 +144,9 @@ func TestCheckMountable(t *testing.T) {
 		{name: "colon in the last name", dir: "/Users/dev/.ssh:x", want: ErrMountPath},
 		{name: "colon in a parent", dir: "/Users/dev/a:/b", want: ErrMountPath},
 		{name: "source and destination", dir: "/Users/dev/work:/Users/dev", want: ErrMountPath},
+		{name: "comma in the last name", dir: "/Users/dev/a,b", want: ErrMountPath},
+		{name: "comma in a parent", dir: "/Users/dev/a,/b", want: ErrMountPath},
+		{name: "second mount after a comma", dir: "/Users/dev/work,/Users/dev:/Users/dev", want: ErrMountPath},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -170,6 +173,9 @@ func TestGuardsRunNoCommand(t *testing.T) {
 	}
 	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/.ssh:x"); !errors.Is(err, ErrMountPath) {
 		t.Errorf("Create with a colon in the directory = %v, want %v", err, ErrMountPath)
+	}
+	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/a,b"); !errors.Is(err, ErrMountPath) {
+		t.Errorf("Create with a comma in the directory = %v, want %v", err, ErrMountPath)
 	}
 }
 
@@ -200,7 +206,43 @@ func TestMissingCLIIsWrapped(t *testing.T) {
 
 	_, err := New(testPrefix).Exists(context.Background(), "orbit-api-1d9b22c9")
 	if !errors.Is(err, exec.ErrNotFound) {
-		t.Errorf("Exists without orb = %v, want %v", err, exec.ErrNotFound)
+		t.Fatalf("Exists without orb = %v, want %v", err, exec.ErrNotFound)
+	}
+	if want := `list machines: orb list: exec: "orb": executable file not found in $PATH`; err.Error() != want {
+		t.Errorf("Exists without orb = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestErrorTextOfAFailedCommand(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "orb prints an error",
+			script: "echo ' [-32098] machine not found ' >&2\nexit 3\n",
+			want:   "delete machine orbit-api-1d9b22c9: orb delete: exit status 3: [-32098] machine not found",
+		},
+		{
+			name:   "orb prints nothing",
+			script: "exit 3\n",
+			want:   "delete machine orbit-api-1d9b22c9: orb delete: exit status 3",
+		},
+		{
+			name:   "orb prints only white space",
+			script: "echo '  ' >&2\nexit 3\n",
+			want:   "delete machine orbit-api-1d9b22c9: orb delete: exit status 3",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			useFakeCLI(t, test.script)
+			err := New(testPrefix).Delete(context.Background(), "orbit-api-1d9b22c9")
+			if err == nil || err.Error() != test.want {
+				t.Errorf("Delete = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

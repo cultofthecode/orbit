@@ -61,6 +61,19 @@ func TestFakeRefusesForeignNames(t *testing.T) {
 	}
 }
 
+func TestFakeRefusesMountPathsLikeTheAdapter(t *testing.T) {
+	for _, dir := range []string{"", "work/api", "/work/a:b", "/work/.ssh:", "/work/a,b", "/work/a:/b"} {
+		fake := New("orbit-")
+		err := fake.Create(context.Background(), "orbit-api-1d9b22c9", dir)
+		if !errors.Is(err, ErrMountPath) {
+			t.Errorf("Create with the directory %q = %v, want %v", dir, err, ErrMountPath)
+		}
+		if len(fake.Machines) != 0 {
+			t.Errorf("Machines = %v, want none", fake.Machines)
+		}
+	}
+}
+
 func TestFakeFailsWhenTold(t *testing.T) {
 	boom := errors.New("boom")
 	fake := New("orbit-")

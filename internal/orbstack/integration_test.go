@@ -47,6 +47,9 @@ func TestCreateMountsOnlyTheDirectoryAtItsOwnPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "from-host.txt"), []byte("written on the host"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if exists, err := client.Exists(ctx, name); err != nil || exists {
+		t.Fatalf("Exists(%q) before Create = %v, %v, want false", name, exists, err)
+	}
 	t.Cleanup(func() {
 		if err := client.Delete(context.WithoutCancel(ctx), name); err != nil {
 			t.Errorf("Delete(%q) = %v", name, err)
@@ -55,10 +58,6 @@ func TestCreateMountsOnlyTheDirectoryAtItsOwnPath(t *testing.T) {
 			t.Errorf("Exists(%q) after Delete = %v, %v, want false", name, exists, err)
 		}
 	})
-
-	if exists, err := client.Exists(ctx, name); err != nil || exists {
-		t.Fatalf("Exists(%q) before Create = %v, %v, want false", name, exists, err)
-	}
 	if err := client.Create(ctx, name, dir); err != nil {
 		t.Fatalf("Create(%q, %q) = %v", name, dir, err)
 	}
