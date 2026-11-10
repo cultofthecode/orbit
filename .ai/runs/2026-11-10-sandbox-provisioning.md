@@ -33,11 +33,11 @@ The steps are those of the spec's Implementation Plan, in the same order.
 
 ### Phase 1: Pure configuration
 
-- [ ] 1.1 Add internal/policy with the default allowlist and host validation
-- [ ] 1.2 Add internal/proxy with the tinyproxy configuration
-- [ ] 1.3 Add provision.Firewall
-- [ ] 1.4 Add provision.Units
-- [ ] 1.5 Add provision.Script
+- [x] 1.1 Add internal/policy with the default allowlist and host validation — c62976b
+- [x] 1.2 Add internal/proxy with the tinyproxy configuration — 80247ed
+- [x] 1.3 Add provision.Firewall — e922da6
+- [x] 1.4 Add provision.Units — ec35936
+- [x] 1.5 Add provision.Script — c8a9f4b
 
 ### Phase 2: Adapter and slice
 
