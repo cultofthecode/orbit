@@ -65,7 +65,7 @@ internal/
 
 | Component | Location (planned) | Responsibility | Depends on |
 |---|---|---|---|
-| Composition root | `cmd/orbit` | Builds the adapters, registers every slice command, maps errors to exit codes. Contains no behavior. | every module |
+| Composition root | `cmd/orbit` | Builds the adapters, adds the cobra command of every slice to the root command, prints errors, and sets the exit code. Contains no behavior. | every module |
 | Sandbox | `internal/sandbox` | Lifecycle of the sandbox of a project directory: init, shell, stop, start, destroy, list (D19). Owns the sandbox spec and the mount rules. | `orbstack`, `provision`, `agent`, `policy`, `credential`, `kernel` |
 | Policy | `internal/policy` | Network policy rules: the default rules, and matching a destination. Commands that list and change rules are later scope (D19). | `kernel` |
 | Agent | `internal/agent` | What each agent needs: image, start command, start command, required domains, and state paths. See Agent definitions. Claude Code first. | `kernel` |
@@ -79,7 +79,7 @@ internal/
 
 - `contract.go` — the `Input` and `Output` structs and the sentinel errors of the operation. Write it first.
 - `handler.go` — `Handler` with its dependencies as fields, and `Handle(ctx, Input) (Output, error)`. A handler declares the narrow interface it needs from OrbStack or a store; the adapter satisfies it. Do not create an interface for a helper that has one implementation and no test value.
-- `command.go` — the CLI command: parse flags into `Input`, call the handler, render `Output`. No decisions here.
+- `command.go` — the CLI command: a constructor that takes the handler and returns a `*cobra.Command` (D23). The command binds flags to `Input`, calls the handler, and renders `Output` to the output stream of the command. No decisions here, no package-level state, and no `init()`.
 - `handler_test.go` — table tests for the happy path, the invalid input, and the OrbStack failure.
 
 ### Agent definitions
@@ -147,7 +147,7 @@ Orbit has no database.
 
 - **Authentication and authorization:** Orbit has no accounts. The agent authenticates to its provider with the official client, unmodified (R04). Orbit never mounts or reads host `~/.claude`, never reads the Keychain entry of the agent, and never stores a credential of the agent (D08). The host SSH agent is forwarded into a sandbox by default, as a socket, unless the user passes `--no-ssh`; no key file enters. Any other Git credential enters only by opt-in (R08, D10); a GitHub App identity for the agent is later scope.
 - **Configuration and secrets:** Orbit finds OrbStack through the `orb` command. No secret is written to the repository, to logs, to machine configuration, or to image layers.
-- **Error handling and logging:** handlers return errors wrapped with `%w` and matched with `errors.Is`. Only `cmd/orbit` prints errors and sets the exit code. Output goes to stdout; diagnostics go to stderr. No `panic` for expected failures.
+- **Error handling and logging:** handlers return errors wrapped with `%w` and matched with `errors.Is`. Only `cmd/orbit` prints errors and sets the exit code: 0 on success and 1 for any error. The root command silences the error and usage output of cobra for that reason. Output goes to stdout; diagnostics go to stderr. No `panic` for expected failures.
 - **Testing strategy:**
   - Unit tests for the pure security functions, with table tests that include hostile input (symlinks out of the workspace, `..` paths, wildcard domains).
   - Handler tests against `orbstacktest`, with no OrbStack running.
@@ -172,4 +172,5 @@ The product brief is the decision record; the ids below point to it.
 | 2026-11-10 | One sandbox per project directory; project-scoped commands (D18, D19) | Owner's choice: `n` worktrees run inside one sandbox. | `orbit init`, `shell`, `stop`, `start`, and `destroy` find the sandbox from the current directory. Agents in one sandbox are not isolated from each other. No `orbit run`: the user starts the client in `orbit shell`. |
 | 2026-11-10 | Host SSH agent forwarded by default (R08) | Owner's choice; `--no-ssh` turns it off. | The agent can use every key in the forwarded agent on every SSH host it can reach. Port 22 needs an allow path for Git hosts (Q15). Untested in an isolated machine (A06). |
 | 2026-11-10 | tinyproxy and nftables enforce egress; fixed default allowlist (D21, D22) | Both spikes proved the pair. The first version has no `orbit policy`. | `internal/proxy` and `internal/provision` generate configuration; they are pure functions with hostile-input tests. A new default destination needs the owner's yes. |
+| 2026-11-10 | cobra for the CLI (D23) | Six commands need dispatch, help, and completion; cobra leaves error output and the exit code to the composition root with two settings. | The first third-party dependency (cobra and pflag are compiled in). Each slice exports a command constructor. `orbit completion` exists by default. |
 | 2026-11-10 | OrbStack is the state store | No second source of truth to drift. | Every machine that Orbit creates carries the Orbit name prefix. |

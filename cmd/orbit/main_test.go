@@ -5,21 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
-
-const testUsage = `Orbit runs coding agents in sandboxes on OrbStack.
-
-Usage:
-  orbit <command> [arguments]
-
-Commands:
-  echo  Print the arguments
-  fail  Return an error
-  help  Show this help
-`
 
 // failingWriter is a stream that refuses every write.
 type failingWriter struct{}
@@ -28,20 +18,50 @@ func (failingWriter) Write([]byte) (int, error) {
 	return 0, errors.New("stream closed")
 }
 
-func testTable() []command {
-	return []command{
-		{name: "echo", summary: "Print the arguments", run: echo},
-		{name: "fail", summary: "Return an error", run: fail},
+func testRoot() *cobra.Command {
+	return newRoot(echoCommand(), failCommand())
+}
+
+func echoCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "echo",
+		Short: "Print the arguments",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), strings.Join(args, " "))
+			return err
+		},
 	}
 }
 
-func echo(_ context.Context, args []string, stdout, _ io.Writer) error {
-	_, err := fmt.Fprintln(stdout, strings.Join(args, " "))
-	return err
+func failCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "fail",
+		Short: "Return an error",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return errors.New("boom")
+		},
+	}
 }
 
-func fail(context.Context, []string, io.Writer, io.Writer) error {
-	return errors.New("boom")
+func TestRunPrintsHelp(t *testing.T) {
+	for _, args := range [][]string{nil, {"help"}, {"-h"}, {"--help"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), testRoot(), args, &stdout, &stderr)
+			if code != exitOK {
+				t.Errorf("exit code = %d, want %d", code, exitOK)
+			}
+			for _, want := range []string{"Orbit runs coding agents", "orbit [command]", "echo", "fail"} {
+				if !strings.Contains(stdout.String(), want) {
+					t.Errorf("stdout = %q, want it to contain %q", stdout.String(), want)
+				}
+			}
+			if stderr.Len() != 0 {
+				t.Errorf("stderr = %q, want it empty", stderr.String())
+			}
+		})
+	}
 }
 
 func TestRun(t *testing.T) {
@@ -52,19 +72,17 @@ func TestRun(t *testing.T) {
 		wantStdout string
 		wantStderr string
 	}{
-		{name: "no arguments", args: nil, wantCode: 0, wantStdout: testUsage},
-		{name: "help", args: []string{"help"}, wantCode: 0, wantStdout: testUsage},
-		{name: "-h", args: []string{"-h"}, wantCode: 0, wantStdout: testUsage},
-		{name: "--help", args: []string{"--help"}, wantCode: 0, wantStdout: testUsage},
-		{name: "unknown command", args: []string{"bogus"}, wantCode: 2, wantStderr: "orbit: unknown command \"bogus\"\n\n" + testUsage},
-		{name: "empty command name", args: []string{""}, wantCode: 2, wantStderr: "orbit: unknown command \"\"\n\n" + testUsage},
-		{name: "command gets the remaining arguments", args: []string{"echo", "a", "-h"}, wantCode: 0, wantStdout: "a -h\n"},
-		{name: "command returns an error", args: []string{"fail"}, wantCode: 1, wantStderr: "orbit: boom\n"},
+		{name: "command gets its arguments", args: []string{"echo", "a", "b"}, wantCode: exitOK, wantStdout: "a b\n"},
+		{name: "command returns an error", args: []string{"fail"}, wantCode: exitFailure, wantStderr: "orbit: boom\n"},
+		{name: "unknown command", args: []string{"bogus"}, wantCode: exitFailure, wantStderr: "orbit: unknown command \"bogus\" for \"orbit\"\n"},
+		{name: "misspelled command gets a suggestion", args: []string{"ech"}, wantCode: exitFailure, wantStderr: "orbit: unknown command \"ech\" for \"orbit\"\n\nDid you mean this?\n\techo\n\n"},
+		{name: "unknown flag", args: []string{"echo", "--nope"}, wantCode: exitFailure, wantStderr: "orbit: unknown flag: --nope\n"},
+		{name: "unexpected argument", args: []string{"fail", "extra"}, wantCode: exitFailure, wantStderr: "orbit: unknown command \"extra\" for \"orbit fail\"\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), testTable(), tt.args, &stdout, &stderr)
+			code := run(context.Background(), testRoot(), tt.args, &stdout, &stderr)
 			if code != tt.wantCode {
 				t.Errorf("exit code = %d, want %d", code, tt.wantCode)
 			}
@@ -78,35 +96,24 @@ func TestRun(t *testing.T) {
 	}
 }
 
-func TestRunWithoutCommandsListsHelp(t *testing.T) {
+func TestRunWithoutCommandsPrintsHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), nil, nil, &stdout, &stderr)
-	if code != 0 {
-		t.Errorf("exit code = %d, want 0", code)
+	code := run(context.Background(), newRoot(), nil, &stdout, &stderr)
+	if code != exitOK {
+		t.Errorf("exit code = %d, want %d", code, exitOK)
 	}
-	if !strings.HasSuffix(stdout.String(), "Commands:\n  help  Show this help\n") {
-		t.Errorf("stdout = %q, want the help row as the only command", stdout.String())
+	if !strings.Contains(stdout.String(), "Orbit runs coding agents") {
+		t.Errorf("stdout = %q, want the description of orbit", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("stderr = %q, want it empty", stderr.String())
 	}
 }
 
-func TestRunReportsUsageThatCannotBeWritten(t *testing.T) {
-	var stderr bytes.Buffer
-	code := run(context.Background(), testTable(), []string{"help"}, failingWriter{}, &stderr)
-	if code != 1 {
-		t.Errorf("exit code = %d, want 1", code)
-	}
-	if want := "orbit: print usage: stream closed\n"; stderr.String() != want {
-		t.Errorf("stderr = %q, want %q", stderr.String(), want)
-	}
-}
-
 func TestRunSurvivesStderrThatCannotBeWritten(t *testing.T) {
 	var stdout bytes.Buffer
-	code := run(context.Background(), testTable(), []string{"bogus"}, &stdout, failingWriter{})
-	if code != 2 {
-		t.Errorf("exit code = %d, want 2", code)
+	code := run(context.Background(), testRoot(), []string{"bogus"}, &stdout, failingWriter{})
+	if code != exitFailure {
+		t.Errorf("exit code = %d, want %d", code, exitFailure)
 	}
 }
