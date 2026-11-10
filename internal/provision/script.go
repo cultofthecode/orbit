@@ -25,7 +25,8 @@ const AgentUser = "agent"
 // firewallPath is where the distribution's nftables unit reads its rules.
 const firewallPath = "/etc/nftables.conf"
 
-// resolvConfPath is the resolver configuration of the machine.
+// resolvConfPath is the resolver configuration of the machine. On Ubuntu it
+// is a symlink into the runtime directory of systemd-resolved.
 const resolvConfPath = "/etc/resolv.conf"
 
 // environmentPath holds the environment of every login, read by pam_env.
@@ -33,6 +34,10 @@ const environmentPath = "/etc/environment"
 
 // heredocDelimiter ends the content of every file in the root script.
 const heredocDelimiter = "ORBIT_EOF"
+
+// resolvedUnits are systemd-resolved and the sockets that would start it or
+// answer queries for it.
+var resolvedUnits = []string{"systemd-resolved.service", "systemd-resolved-varlink.socket", "systemd-resolved-monitor.socket"}
 
 // orbStackDNS is the DNS server of OrbStack in a machine.
 var orbStackDNS = netip.MustParseAddr("0.250.250.200")
@@ -143,6 +148,7 @@ func prelude() []string {
 		"cd /",
 		"export DEBIAN_FRONTEND=noninteractive",
 		"fail() { echo \"orbit provisioning: $*\" >&2; exit 1; }",
+		`put() { cat > "$1.orbit-new"; chown root:root "$1.orbit-new"; chmod "$2" "$1.orbit-new"; mv -f "$1.orbit-new" "$1"; }`,
 		"rm -f " + MarkerPath,
 	}
 }
@@ -156,33 +162,38 @@ func installPackages() []string {
 	}
 }
 
-// staticDNS masks systemd-resolved, which would answer any query of the
-// agent over D-Bus or varlink, and points the resolver of the machine at
-// OrbStack DNS.
+// staticDNS masks systemd-resolved and its sockets, which would answer any
+// query of the agent over D-Bus or varlink, and points the resolver of the
+// machine at OrbStack DNS. The new resolv.conf replaces the symlink of the
+// distribution.
 func staticDNS() []string {
-	return []string{
-		"systemctl disable --now systemd-resolved.service 2>/dev/null || true",
-		"systemctl mask systemd-resolved.service >/dev/null",
-		"rm -f " + resolvConfPath,
-		"install -o root -g root -m 0644 /dev/stdin " + resolvConfPath + " <<'" + heredocDelimiter + "'",
-		"nameserver " + orbStackDNS.String(),
-		heredocDelimiter,
+	units := strings.Join(resolvedUnits, " ")
+	script := []string{
+		"systemctl disable --now " + units + " 2>/dev/null || true",
+		"systemctl mask " + units + " >/dev/null 2>&1",
 	}
+	return append(script, putFile(File{Path: resolvConfPath, Mode: 0o644, Content: "nameserver " + orbStackDNS.String() + "\n"})...)
 }
 
-// writeFiles writes every file from a quoted heredoc, so that the shell
-// expands nothing in its content.
+// writeFiles writes every file.
 func writeFiles(files []File) []string {
 	var script []string
 	for _, file := range files {
-		script = append(script,
-			"mkdir -p "+parentDir(file.Path),
-			fmt.Sprintf("install -o root -g root -m %04o /dev/stdin %s <<'%s'", file.Mode, file.Path, heredocDelimiter),
-			strings.TrimSuffix(file.Content, "\n"),
-			heredocDelimiter,
-		)
+		script = append(script, "mkdir -p "+parentDir(file.Path))
+		script = append(script, putFile(file)...)
 	}
 	return script
+}
+
+// putFile writes file from a quoted heredoc, so that the shell expands
+// nothing in its content, through put: a temporary file that is renamed over
+// the path. install cannot copy standard input over an existing file.
+func putFile(file File) []string {
+	return []string{
+		fmt.Sprintf("put %s %04o <<'%s'", file.Path, file.Mode, heredocDelimiter),
+		strings.TrimSuffix(file.Content, "\n"),
+		heredocDelimiter,
+	}
 }
 
 // startBoundary enables the units and starts them. It loads the rules with
@@ -217,7 +228,10 @@ func selfCheck(defaultUID uint32) []string {
 		"for unit in " + strings.Join(boundaryUnits(), " ") + "; do",
 		`  systemctl is-active --quiet "$unit" || fail "$unit is not active"`,
 		"done",
-		`[ "$(systemctl is-enabled systemd-resolved.service 2>/dev/null || true)" = masked ] || fail "systemd-resolved is not masked"`,
+		"for unit in " + strings.Join(resolvedUnits, " ") + "; do",
+		`  [ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" = masked ] || fail "$unit is not masked"`,
+		`  if systemctl is-active --quiet "$unit"; then fail "$unit is active"; fi`,
+		"done",
 		"getent passwd | while IFS=: read -r name _ uid _ _ home _; do",
 		`  [ "$name" = root ] && continue`,
 		`  if sudo -n -l -U "$name" 2>/dev/null | grep -q 'may run'; then fail "$name has a sudo rule"; fi`,
@@ -236,12 +250,8 @@ func selfCheck(defaultUID uint32) []string {
 
 // writeMarker writes MarkerPath as the last action of the script.
 func writeMarker() []string {
-	return []string{
-		"mkdir -p " + parentDir(MarkerPath),
-		"install -o root -g root -m 0644 /dev/stdin " + MarkerPath + " <<'" + heredocDelimiter + "'",
-		fmt.Sprint(Version),
-		heredocDelimiter,
-	}
+	script := []string{"mkdir -p " + parentDir(MarkerPath)}
+	return append(script, putFile(File{Path: MarkerPath, Mode: 0o644, Content: fmt.Sprintln(Version)})...)
 }
 
 // parentDir returns the directory of an absolute path.

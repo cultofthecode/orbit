@@ -67,7 +67,7 @@ func TestHardenScript(t *testing.T) {
 	}
 	for _, want := range []string{
 		"set -eu",
-		"rm -f /etc/sudoers.d/orbstack",
+		"find /etc/sudoers.d -mindepth 1 ! -name README -delete",
 		"for group in sudo admin adm; do",
 		"passwd -l root >/dev/null",
 		`[ "$uid" -eq 501 ]`,

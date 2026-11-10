@@ -41,8 +41,8 @@ func TestScriptInstallsExactlyTheToolchainAndInfrastructure(t *testing.T) {
 
 func TestScriptMasksSystemdResolved(t *testing.T) {
 	lines := script(t)
-	lineIndex(t, lines, "systemctl mask systemd-resolved.service >/dev/null")
-	start := lineIndex(t, lines, "install -o root -g root -m 0644 /dev/stdin /etc/resolv.conf <<'ORBIT_EOF'")
+	lineIndex(t, lines, "systemctl mask systemd-resolved.service systemd-resolved-varlink.socket systemd-resolved-monitor.socket >/dev/null 2>&1")
+	start := lineIndex(t, lines, "put /etc/resolv.conf 0644 <<'ORBIT_EOF'")
 	if lines[start+1] != "nameserver 0.250.250.200" || lines[start+2] != "ORBIT_EOF" {
 		t.Errorf("resolv.conf = %q, want only OrbStack DNS", lines[start+1:start+3])
 	}
@@ -103,7 +103,7 @@ func TestScriptGrantsNoSudo(t *testing.T) {
 	}
 	for _, forbidden := range []string{"NOPASSWD", "/etc/sudoers", "visudo", "usermod -aG", "gpasswd -a"} {
 		for _, line := range strings.Split(string(got), "\n") {
-			if strings.Contains(line, forbidden) && !strings.Contains(line, "rm -f /etc/sudoers.d/orbstack") {
+			if strings.Contains(line, forbidden) && !strings.Contains(line, "find /etc/sudoers.d -mindepth 1 ! -name README -delete") {
 				t.Errorf("script has %q: %q", forbidden, line)
 			}
 		}
@@ -114,12 +114,22 @@ func TestScriptSelfChecks(t *testing.T) {
 	lines := script(t)
 	for _, want := range []string{
 		`nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`,
-		`[ "$(systemctl is-enabled systemd-resolved.service 2>/dev/null || true)" = masked ] || fail "systemd-resolved is not masked"`,
+		"for unit in systemd-resolved.service systemd-resolved-varlink.socket systemd-resolved-monitor.socket; do",
 		`  if [ "$uid" -lt 1000 ] && [ "$uid" -ne 501 ]; then`,
 		`if runuser -u agent -- sudo -n true 2>/dev/null; then fail "agent can use sudo"; fi`,
 		"for group in sudo admin adm docker lxd disk shadow; do",
 	} {
 		lineIndex(t, lines, want)
+	}
+}
+
+func TestScriptPutsFilesThroughARename(t *testing.T) {
+	lines := script(t)
+	lineIndex(t, lines, `put() { cat > "$1.orbit-new"; chown root:root "$1.orbit-new"; chmod "$2" "$1.orbit-new"; mv -f "$1.orbit-new" "$1"; }`)
+	for _, line := range lines {
+		if strings.Contains(line, "/dev/stdin") {
+			t.Errorf("script copies standard input with install: %q", line)
+		}
 	}
 }
 
@@ -131,7 +141,7 @@ func TestScriptWritesTheMarkerLast(t *testing.T) {
 	}
 	want := []string{
 		"mkdir -p /etc/orbit",
-		"install -o root -g root -m 0644 /dev/stdin /etc/orbit/provisioned <<'ORBIT_EOF'",
+		"put /etc/orbit/provisioned 0644 <<'ORBIT_EOF'",
 		"1",
 		"ORBIT_EOF",
 	}
@@ -147,7 +157,7 @@ func TestScriptWritesEveryFileFromAQuotedHeredoc(t *testing.T) {
 		t.Fatalf("scriptFiles: %v", err)
 	}
 	for _, file := range files {
-		lineIndex(t, lines, "install -o root -g root -m "+modeString(file)+" /dev/stdin "+file.Path+" <<'ORBIT_EOF'")
+		lineIndex(t, lines, "put "+file.Path+" "+modeString(file)+" <<'ORBIT_EOF'")
 	}
 	for _, line := range lines {
 		if strings.Contains(line, "<<") && !strings.HasSuffix(line, "<<'ORBIT_EOF'") {

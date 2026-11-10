@@ -135,7 +135,8 @@ func userSessionsDropIn() string {
 	)
 }
 
-// hardenScript removes the sudo rule of OrbStack, removes every account
+// hardenScript removes every sudoers drop-in (OrbStack's rule for its
+// default user and the image's rule for "ubuntu"), removes every account
 // except root from the administrative groups, and locks the passwords of
 // root, of the default user, and of every account from the uid floor up
 // except nobody.
@@ -143,7 +144,7 @@ func hardenScript(defaultUID uint32) string {
 	return lines(
 		"#!/bin/sh",
 		"set -eu",
-		"rm -f /etc/sudoers.d/orbstack",
+		"find /etc/sudoers.d -mindepth 1 ! -name README -delete",
 		"for group in sudo admin adm; do",
 		`  getent group "$group" >/dev/null || continue`,
 		`  for member in $(getent group "$group" | cut -d: -f4 | tr ',' ' '); do`,
