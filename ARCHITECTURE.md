@@ -28,7 +28,7 @@ flowchart LR
   orb --> m
   ws["Workspace directory (host)"] -. "only mount, same absolute path" .-> m
   fw -->|"allowed destinations only"| internet["Model provider, registries"]
-  m -. "blocked: --isolate-network (verify, Q09)" .-x hostengine
+  fw -. "blocked by the firewall, not by OrbStack" .-x hostengine
 ```
 
 Docker Sandboxes have five isolation layers. This table maps each one to an OrbStack isolated machine.
@@ -36,9 +36,9 @@ Docker Sandboxes have five isolation layers. This table maps each one to an OrbS
 | Layer in Docker Sandboxes | Orbit mechanism | Status | Known gap against `sbx` |
 |---|---|---|---|
 | Hypervisor: one microVM per sandbox | One isolated machine per sandbox: `orb create --isolated`. No macOS file system, no `mac` commands, no device passthrough. | active (D12) | All machines and containers share the kernel of the OrbStack VM. OrbStack does not recommend isolated machines against code that actively tries to exploit the kernel. The owner accepted this limit (A01). |
-| Network: host proxy, deny by default | `--isolate-network` cuts the machine off from the macOS host and from other machines. Inside the machine, root owns a firewall that sends all outbound traffic of the agent user and of its containers to a root-owned egress proxy, which enforces the network policy (D14). | active, unproven (A05) | The enforcement point is inside the sandbox, not on the host as in `sbx`. It holds only while the agent cannot become root in its machine. HTTPS is filtered by host name, without TLS interception. DNS must be covered. |
+| Network: host proxy, deny by default | Inside the machine, root owns a firewall that sends all outbound traffic of every non-root uid, and so of the agent and its containers, to a root-owned egress proxy, which enforces the network policy (D14). The spike found that `--isolate-network` blocks only `host.orb.internal`; containers on the host engine and the Mac stay reachable for root in the machine, so the firewall is the only barrier for the agent. | active; held in the spike (A05) | The enforcement point is inside the sandbox, not on the host as in `sbx`. It holds only while the agent cannot become root in its machine. HTTPS is filtered by host name, without TLS interception. |
 | Docker Engine: private engine per sandbox | The agent uses rootless Docker inside its machine. The host engine socket is never shared (R01). | active (D12, D14) | Rootless Docker has limits (no privileged containers, ports below 1024). The agent has no sudo; `sbx` gives sudo. |
-| Workspace: direct, clone, mountless | Direct mount first: `--mount` for only the paths the user passes, at the same absolute path (R06). One Git worktree per agent, clone, and mountless later. | active | A direct mount is read-write. Files that run on the host later (Git hooks, build scripts, `.claude/` settings) need review after a session. |
+| Workspace: direct, clone, mountless | Direct mount first: `--mount SRC:SRC` for only the paths the user passes, at the same absolute path (R06). One Git worktree per agent, clone, and mountless later. | active | A direct mount is read-write. Files that run on the host later (Git hooks, build scripts, `.claude/` settings) need review after a session. |
 | Credentials: host-side injection | Agent login: the user signs in with `/login` inside the sandbox. Orbit never stores or intermediates the credential (D08, R04). A token path is later scope (Q12). Host `~/.claude` is never mounted: on macOS it holds no login, and it holds the history of every project. Git: opt-in per credential, as a forwarded SSH agent (`--forward-ssh-agent`) or a short-lived token (R06, D10). | partly active | The agent can read its own login; `sbx` keeps it outside the sandbox. Orbit cannot do that: the provider terms forbid developers to intermediate the credential. A forwarded SSH agent lets the agent use every key in it; a token scoped to one repository, or a GitHub App, is narrower. |
 
 ## Components
@@ -70,7 +70,7 @@ internal/
 | Policy | `internal/policy` | Network policy rules: store, list, change, and match a destination. | `kernel` |
 | Agent | `internal/agent` | What each agent needs: image, start command, start command, required domains, and state paths. See Agent definitions. Claude Code first. | `kernel` |
 | Credential | `internal/credential` | Which host credentials a sandbox may get, and in which form. Nothing by default. | `kernel` |
-| Provision | `internal/provision` | The root-owned setup of a machine: the agent user without sudo, the firewall, the proxy service, rootless Docker. Owns the firewall rules as a pure function. | `policy`, `kernel` |
+| Provision | `internal/provision` | The root-owned setup of a machine: the agent user without sudo, the firewall, the proxy service, rootless Docker, the fixed toolchain. Owns the firewall rules as a pure function. | `policy`, `kernel` |
 | Proxy | `internal/proxy` | The egress proxy that root runs in the machine. Enforces the policy. | `policy`, `kernel` |
 | OrbStack adapter | `internal/orbstack` | The only package with OrbStack-specific code: create, start, run a command in, stop, remove, and list isolated machines (R07). | — |
 | Kernel | `internal/kernel` | Shared error and result types. Stays small. | nothing in this repository |
@@ -118,6 +118,21 @@ Rules:
 
 The compiler enforces rule 3. A lint rule (import restrictions in `golangci-lint`) will enforce rules 1, 2, and 4 once code exists.
 
+### Provisioning requirements
+
+These come from the spike of 2026-11-10 on OrbStack 2.2.5 (`.ai/analysis/2026-11-10-orbstack-isolated-machine-spike.md`). Each one is a test in the escape suite.
+
+- Create the machine with `--isolated --isolate-network` and mount the workspace as `SRC:SRC`. A mount without a destination lands under `/mnt/mac`.
+- Remove the default user that OrbStack creates, or its sudo rule. It has passwordless sudo.
+- The firewall rule matches every uid from 1000 up, not only the agent uid. Rootless container traffic leaves as the agent uid or as one of its sub-uids. IPv4, IPv6, DNS, UDP, and ICMP are covered.
+- The proxy refuses private, link-local, and loopback destinations, so that an allow rule cannot open the host engine or the Mac.
+- The agent has no DNS. Its tools use the proxy: `HTTPS_PROXY`, the proxy settings in `~/.docker/config.json`, and a proxy drop-in for the rootless Docker daemon.
+- The firewall, the proxy, and the address that containers use to reach the proxy start as persistent units before any agent process. Without that, a restart leaves containers with no proxy (they fail closed).
+- Allow rules are host names seen in `CONNECT`. This is not data-loss prevention: an allowed host can receive uploads, and a different TLS name behind an allowed host is not detected.
+- Provisioning installs a fixed toolchain as root (D17). The agent cannot install system packages: no `apt-get`, no system-wide `pip`. It uses user-space installs or a container. No `--privileged` containers.
+
+Measured footprint of one sandbox: 1.3 GB of disk when provisioned, 2.3 GB with Claude Code and a few images; about 400 MB of memory when idle; 12 s to create, under 2 s to start, stop, or delete. Images are stored per sandbox and are not shared with the host engine.
+
 ## Data
 
 Orbit has no database.
@@ -149,7 +164,7 @@ The product brief is the decision record; the ids below point to it.
 | 2026-11-10 | OrbStack isolated machine as the first backend (D12) | Owner's choice. The agent gets its own Docker Engine without the host socket. | Supersedes the hardened-container and proxy-container proposals (D06, D07). OrbStack cannot run a microVM per sandbox: one shared kernel, no nested KVM on Apple Silicon. Egress enforcement is open (Q08). |
 | 2026-11-10 | OrbStack only (D13, R07, N06) | Docker's own setups already have `sbx`. | No backend abstraction. OrbStack-specific code sits in `internal/orbstack`; handlers use narrow interfaces only for tests. |
 | 2026-11-10 | Root-owned firewall and proxy; agent without sudo, with rootless Docker (D14) | Deny-by-default egress must survive an agent that tries to remove it. | Tools the agent needs are installed by provisioning or in user space. Unproven until the A05 spike. |
-| 2026-11-10 | No access to host-engine services (D15, N07) | Not needed. | Machines are created with `--isolate-network`. The default reachability is verified and documented here (Q09). |
+| 2026-11-10 | No access to host-engine services (D15, N07) | Not needed. | OrbStack does not block this by itself (Q09). The in-machine firewall and a proxy that refuses private addresses do. |
 | 2026-11-10 | Sign-in with `/login` inside the sandbox; no credential handling in Orbit (D08, R04) | The Claude Code legal page allows a user to sign in to the unmodified binary with their own subscription, and forbids developers to collect, store, or intermediate those credentials. `sbx` uses the same sign-in. | One `/login` per sandbox. A token path waits for Q12. A public release needs the check in Q11. |
 | 2026-11-10 | Agents are declarative definitions (D16) | The owner wants new agents to be easy to add. Claude Code first, Codex next. | Slices never branch on an agent name. A new agent is one package plus one registration line. |
 | 2026-11-10 | Isolation before reuse of the host engine (D09, proposal) | The earlier `orb-sbx` design offered a trusted mode with the host engine socket and SSH agent forwarding. The owner then allowed opt-in, minimized Git credentials (R06, D10). | No host engine socket, ever (D12). The mechanism for D10 needs a spec. Git worktrees per agent, a YAML project file, and structured JSON logs from that design stay as later scope. |
