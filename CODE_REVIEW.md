@@ -13,12 +13,17 @@ In order:
 
 ## Repo-specific checks
 
-TODO: derive these from the codebase when it exists. Examples of the kind of rule that belongs here:
+The repository has no code yet. These rules come from `ARCHITECTURE.md` and `.ai/specs/product-brief.md`. Cite real files when they exist.
 
-- which validation library every request handler uses
-- how the code reports errors (error types, result objects, HTTP status mapping)
-- how the code organizes data access (repositories, query builder, ORM conventions)
-- naming and file layout conventions for modules and tests
+- **Sandbox boundary.** A change to mounts, machine isolation settings, provisioning (agent user, firewall, proxy), network policy, or credential handling is `risk-high` and carries the evidence that `SDLC.md` requires. A sandbox that gets the host engine socket, a machine without `--isolated` and `--isolate-network`, an agent user with sudo or the rootful Docker socket, the home directory, or a host credential without the user's opt-in is a blocker (R01, R06). A new default allow rule needs a stated reason.
+- **Protected contract.** A diff that contradicts an active Business rule, Non-goal, or Decision in the product brief is a blocker unless the same PR carries a superseding row that the owner approved.
+- **Slices.** One operation is one package with `contract.go`, `handler.go`, `command.go`, and `handler_test.go`. Commands hold no decisions. A slice does not import another slice. A module uses another module only through its root package. Only `cmd/orbit` imports an adapter.
+- **Security decisions are pure functions** with table tests that include hostile input: symlinks and `..` paths out of the workspace, wildcard and look-alike domains.
+- **Agents.** An agent is one `Definition` package under `internal/agent/`. A comparison of an agent name outside that package is a major finding. Code that stores, rewrites, or forwards an agent credential, modifies a client, or restricts its sign-in methods is a blocker (R04).
+- **Backend access.** OrbStack-specific code lives only in `internal/orbstack` (R07). Every machine that Orbit creates carries the Orbit name prefix.
+- **Errors** are wrapped with `%w` and matched with `errors.Is`. Only `cmd/orbit` prints errors and sets exit codes. No `panic` for expected failures.
+- **Secrets** never appear in logs, machine configuration, image layers, or test fixtures.
+- **Style.** `gofmt`. Doc comments on packages and exported identifiers; no comments inside function bodies. No abstraction for single-use code. A new Go module dependency needs a stated reason.
 
 ## Validation gate
 
