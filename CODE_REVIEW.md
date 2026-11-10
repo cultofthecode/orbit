@@ -1,6 +1,6 @@
 # Code review rules — orbit
 
-`om-code-review` (and so `om-auto-review-pr`) applies this file automatically, in addition to its built-in checklist. The repository has no code yet, so the repo-specific section is a placeholder. Add rules as conventions appear, and cite the files that set them.
+`om-code-review` (and so `om-auto-review-pr`) applies this file automatically, in addition to its built-in checklist. The code so far is the CLI skeleton in `cmd/orbit`, so the repo-specific section is still short. Add rules as conventions appear, and cite the files that set them.
 
 ## Review priorities
 
@@ -13,7 +13,7 @@ In order:
 
 ## Repo-specific checks
 
-The repository has no code yet. These rules come from `ARCHITECTURE.md` and `.ai/specs/product-brief.md`. Cite real files when they exist.
+These rules come from `ARCHITECTURE.md` and `.ai/specs/product-brief.md`. Cite real files when they exist.
 
 - **Sandbox boundary.** A change to mounts, machine isolation settings, provisioning (agent user, firewall, proxy), network policy, or credential handling is `risk-high` and carries the evidence that `SDLC.md` requires. A sandbox that gets the host engine socket, a machine without `--isolated` and `--isolate-network`, an agent user with sudo or the rootful Docker socket, the home directory, or a host credential without the user's opt-in is a blocker (R01, R06). A new default allow rule needs a stated reason.
 - **Protected contract.** A diff that contradicts an active Business rule, Non-goal, or Decision in the product brief is a blocker unless the same PR carries a superseding row that the owner approved.
@@ -27,7 +27,7 @@ The repository has no code yet. These rules come from `ARCHITECTURE.md` and `.ai
 
 ## Validation gate
 
-The gate is `validation.commands` in `.ai/agentic.config.json`, and it is empty now. Until it has commands, reviewers must state in the review that no automated gate ran.
+The gate is `validation.commands` in `.ai/agentic.config.json`. Reviewers run it and state the result in the review.
 
 ## Severity guidance
 
