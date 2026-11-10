@@ -595,10 +595,10 @@ gh pr review {prNumber} --request-changes --body "<body>"
 GitHub rejects self-approval (reviewing your own PR); surface that instead of working around it.
 
 #### merge-pr
-`{prNumber}`; squash is the default merge strategy. `--auto` merges when checks pass; `--delete-branch` only when asked.
+`{prNumber}`; a merge commit is the only merge strategy in this repository (owner decision, `SDLC.md` → Merge): squash and rebase merges are disabled on GitHub. A skill that asks for a squash merge uses `--merge` here. `--auto` merges when checks pass; `--delete-branch` only when asked.
 ```bash
-gh pr merge {prNumber} --squash
-gh pr merge {prNumber} --squash --match-head-commit "<headRefOid>" --admin   # head-SHA guard + bypass-protection
+gh pr merge {prNumber} --merge
+gh pr merge {prNumber} --merge --match-head-commit "<headRefOid>" --admin   # head-SHA guard + bypass-protection
 ```
 `--match-head-commit` refuses the merge when a newer commit landed after the caller's gate. `--admin` bypasses branch-protection requirements and needs admin rights on the repository. Without those rights GitHub refuses the merge; surface the refusal and never retry another way.
 
