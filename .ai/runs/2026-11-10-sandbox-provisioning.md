@@ -29,6 +29,8 @@ The steps are those of the spec's Implementation Plan, in the same order.
 
 ## Progress
 
+PR: #32
+
 > Convention: `- [ ]` pending, `- [x]` done. Append ` — <commit sha>` when a step lands. Do not rename step titles.
 
 ### Phase 1: Pure configuration
