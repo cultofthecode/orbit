@@ -41,9 +41,9 @@ The steps are those of the spec's Implementation Plan, in the same order.
 
 ### Phase 2: Adapter and slice
 
-- [ ] 2.1 Add the adapter operation RunAsRoot and extend the fake
-- [ ] 2.2 Characterize init
-- [ ] 2.3 Provision in init
+- [x] 2.1 Add the adapter operation RunAsRoot and extend the fake — 9c14556
+- [x] 2.2 Characterize init — 27df8f4 (already pinned on base by checkCreates and TestHandleKeepsAnExistingMachine)
+- [x] 2.3 Provision in init — 2eff394
 
 ### Phase 3: Proof and records
 
