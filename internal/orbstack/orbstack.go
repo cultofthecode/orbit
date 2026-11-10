@@ -1,6 +1,7 @@
-// Package orbstack is the adapter to OrbStack. It creates, finds, and deletes
-// isolated machines through the orb CLI, and it is the only package with
-// OrbStack-specific code. It depends on no other package of this repository.
+// Package orbstack is the adapter to OrbStack. Through the orb CLI it
+// creates, finds, and deletes isolated machines and runs scripts in them as
+// root. It is the only package with OrbStack-specific code, and it depends on
+// no other package of this repository.
 package orbstack
 
 import (
@@ -16,6 +17,9 @@ import (
 
 // cli is the command of OrbStack.
 const cli = "orb"
+
+// rootUser is the user that RunAsRoot runs a script as.
+const rootUser = "root"
 
 // image is the distribution of every machine that the adapter creates.
 const image = "ubuntu:26.04"
@@ -57,7 +61,7 @@ func (c *Client) Create(ctx context.Context, name, dir string) error {
 	if err := checkMountable(dir); err != nil {
 		return err
 	}
-	if _, err := run(ctx, createArgs(name, dir)); err != nil {
+	if _, err := run(ctx, createArgs(name, dir), nil); err != nil {
 		return fmt.Errorf("create machine %s: %w", name, err)
 	}
 	return nil
@@ -65,7 +69,7 @@ func (c *Client) Create(ctx context.Context, name, dir string) error {
 
 // Exists reports whether a machine with the given name exists.
 func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
-	names, err := run(ctx, listArgs())
+	names, err := run(ctx, listArgs(), nil)
 	if err != nil {
 		return false, fmt.Errorf("list machines: %w", err)
 	}
@@ -78,8 +82,21 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 	if err := c.checkOwned(name); err != nil {
 		return err
 	}
-	if _, err := run(ctx, deleteArgs(name)); err != nil {
+	if _, err := run(ctx, deleteArgs(name), nil); err != nil {
 		return fmt.Errorf("delete machine %s: %w", name, err)
+	}
+	return nil
+}
+
+// RunAsRoot runs script with bash as root in the machine name, with the
+// script on standard input, and fails when the script exits non-zero. It
+// runs no command when name lacks the prefix of the client.
+func (c *Client) RunAsRoot(ctx context.Context, name string, script []byte) error {
+	if err := c.checkOwned(name); err != nil {
+		return err
+	}
+	if _, err := run(ctx, runAsRootArgs(name), script); err != nil {
+		return fmt.Errorf("run a script as root in machine %s: %w", name, err)
 	}
 	return nil
 }
@@ -129,17 +146,24 @@ func deleteArgs(name string) []string {
 	return []string{"delete", "--force", name}
 }
 
+// runAsRootArgs returns the arguments of orb that run bash as root in the
+// machine name, reading the script from standard input.
+func runAsRootArgs(name string) []string {
+	return []string{"-m", name, "-u", rootUser, "bash", "-s"}
+}
+
 // listsMachine reports whether name is one of the machine names that orb
 // printed, one on each line.
 func listsMachine(names, name string) bool {
 	return slices.Contains(strings.Fields(names), name)
 }
 
-// run runs orb with args and returns its standard output. The error of a
-// failed command carries the standard error of orb.
-func run(ctx context.Context, args []string) (string, error) {
+// run runs orb with args and stdin and returns its standard output. The
+// error of a failed command carries the standard error of orb.
+func run(ctx context.Context, args []string, stdin []byte) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, cli, args...)
+	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

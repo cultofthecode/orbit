@@ -22,15 +22,18 @@ var (
 
 // Operations that a Fake records.
 const (
-	OpExists = "exists"
-	OpCreate = "create"
+	OpExists    = "exists"
+	OpCreate    = "create"
+	OpDelete    = "delete"
+	OpRunAsRoot = "run-as-root"
 )
 
 // Call is one call that a Fake received.
 type Call struct {
-	Op   string
-	Name string
-	Dir  string
+	Op     string
+	Name   string
+	Dir    string
+	Script string
 }
 
 // Fake keeps machines in memory and records every call.
@@ -41,6 +44,10 @@ type Fake struct {
 	ExistsErr error
 	// CreateErr, when set, is the result of every Create call.
 	CreateErr error
+	// DeleteErr, when set, is the result of every Delete call.
+	DeleteErr error
+	// RunAsRootErr, when set, is the result of every RunAsRoot call.
+	RunAsRootErr error
 	// Calls holds the received calls, in order.
 	Calls []Call
 
@@ -68,8 +75,8 @@ func (f *Fake) Exists(_ context.Context, name string) (bool, error) {
 // mount at its own path.
 func (f *Fake) Create(_ context.Context, name, dir string) error {
 	f.Calls = append(f.Calls, Call{Op: OpCreate, Name: name, Dir: dir})
-	if f.prefix == "" || !strings.HasPrefix(name, f.prefix) || name == f.prefix {
-		return fmt.Errorf("%w %q: %q", ErrForeignMachine, f.prefix, name)
+	if err := f.checkOwned(name); err != nil {
+		return err
 	}
 	if !filepath.IsAbs(dir) || strings.ContainsAny(dir, ":,") {
 		return fmt.Errorf("%w: %q", ErrMountPath, dir)
@@ -78,5 +85,38 @@ func (f *Fake) Create(_ context.Context, name, dir string) error {
 		return f.CreateErr
 	}
 	f.Machines[name] = dir
+	return nil
+}
+
+// Delete removes the machine name. It refuses a name without the prefix of
+// the fake.
+func (f *Fake) Delete(_ context.Context, name string) error {
+	f.Calls = append(f.Calls, Call{Op: OpDelete, Name: name})
+	if err := f.checkOwned(name); err != nil {
+		return err
+	}
+	if f.DeleteErr != nil {
+		return f.DeleteErr
+	}
+	delete(f.Machines, name)
+	return nil
+}
+
+// RunAsRoot records script for the machine name. It refuses a name without
+// the prefix of the fake.
+func (f *Fake) RunAsRoot(_ context.Context, name string, script []byte) error {
+	f.Calls = append(f.Calls, Call{Op: OpRunAsRoot, Name: name, Script: string(script)})
+	if err := f.checkOwned(name); err != nil {
+		return err
+	}
+	return f.RunAsRootErr
+}
+
+// checkOwned refuses a name that does not consist of the prefix of the fake
+// and at least one more character.
+func (f *Fake) checkOwned(name string) error {
+	if f.prefix == "" || !strings.HasPrefix(name, f.prefix) || name == f.prefix {
+		return fmt.Errorf("%w %q: %q", ErrForeignMachine, f.prefix, name)
+	}
 	return nil
 }

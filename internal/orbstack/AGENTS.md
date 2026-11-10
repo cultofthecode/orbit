@@ -4,7 +4,7 @@ The adapter to OrbStack, through the `orb` CLI. It is the only package with OrbS
 
 ## Layout
 
-- `orbstack.go` — `Client`: `Create`, `Exists`, `Delete`. Each argument list of `orb` comes from a small pure function with a unit test.
+- `orbstack.go` — `Client`: `Create`, `Exists`, `Delete`, `RunAsRoot`. Each argument list of `orb` comes from a small pure function with a unit test.
 - `orbstacktest/` — the in-memory fake for handler tests. It imports nothing from the adapter.
 - `integration_test.go` — tests against a real OrbStack, behind the `integration` build tag.
 
@@ -12,7 +12,8 @@ The adapter to OrbStack, through the `orb` CLI. It is the only package with OrbS
 
 - `createArgs` always passes `--isolated`, `--isolate-network`, and one mount in the form `DIR:DIR`. A caller cannot change them. A mount without a destination lands under `/mnt/mac`.
 - `Create` refuses a directory that is not absolute or that holds a colon or a comma (`ErrMountPath`). `orb` splits a mount at the first colon, so such a path mounts another directory than the one that was validated; OrbStack stores the mounts of a machine as a list with commas.
-- `Create` and `Delete` refuse a name without the prefix of the client (`ErrForeignMachine`) before they run a command. A client with an empty prefix refuses every name. `cmd/orbit` passes `sandbox.NamePrefix`.
+- `Create`, `Delete`, and `RunAsRoot` refuse a name without the prefix of the client (`ErrForeignMachine`) before they run a command.
+- `RunAsRoot` runs `orb -m NAME -u root bash -s` with the script on standard input. The user is fixed; no argument of the caller reaches the command line. A client with an empty prefix refuses every name. `cmd/orbit` passes `sandbox.NamePrefix`.
 - The adapter imports no other package of this repository. Only `cmd/orbit` imports the adapter; `golangci-lint` (depguard) fails on any other import. Slices use `orbstacktest` in tests.
 - The adapter does not pass `--forward-ssh-agent`. Add an operation only when a slice needs it, and add it to the fake in the same change.
 - An error of a failed command wraps the error of `os/exec` and carries the standard error of `orb`, when `orb` printed anything.
