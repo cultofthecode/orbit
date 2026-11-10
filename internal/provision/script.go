@@ -138,7 +138,9 @@ func environment() string {
 	)
 }
 
-// prelude stops at the first failure and removes the marker, so that a
+// prelude stops at the first failure, drops the proxy settings that a
+// login of root gets from /etc/environment (root installs packages
+// directly, not through the allowlist), and removes the marker, so that a
 // failed run never leaves a machine that looks provisioned.
 func prelude() []string {
 	return []string{
@@ -147,6 +149,7 @@ func prelude() []string {
 		"umask 022",
 		"cd /",
 		"export DEBIAN_FRONTEND=noninteractive",
+		"unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy",
 		"fail() { echo \"orbit provisioning: $*\" >&2; exit 1; }",
 		`put() { cat > "$1.orbit-new"; chown root:root "$1.orbit-new"; chmod "$2" "$1.orbit-new"; mv -f "$1.orbit-new" "$1"; }`,
 		"rm -f " + MarkerPath,

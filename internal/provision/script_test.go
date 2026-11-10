@@ -22,10 +22,14 @@ func TestScriptStopsAtTheFirstFailureAndRemovesTheMarkerFirst(t *testing.T) {
 	if lines[0] != "#!/bin/bash" || lines[1] != "set -euo pipefail" {
 		t.Errorf("script starts with %q, want the shebang and set -euo pipefail", lines[:2])
 	}
+	unset := lineIndex(t, lines, "unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy")
 	removal := lineIndex(t, lines, "rm -f /etc/orbit/provisioned")
 	install := lineIndex(t, lines, "apt-get update -q")
 	if removal > install {
 		t.Error("the marker is removed after the first change")
+	}
+	if unset > install {
+		t.Error("apt-get runs with the proxy settings of /etc/environment")
 	}
 }
 
