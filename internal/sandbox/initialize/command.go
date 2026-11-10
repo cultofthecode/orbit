@@ -1,32 +1,37 @@
 package initialize
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"os"
+
+	"github.com/spf13/cobra"
 )
 
-// Command is the CLI command "orbit init".
-type Command struct {
-	Handler Handler
+// NewCommand returns the CLI command "orbit init", which creates the sandbox
+// of the current working directory with handler and prints the result to the
+// output stream of the command. It takes no arguments.
+func NewCommand(handler Handler) *cobra.Command {
+	return &cobra.Command{
+		Use:   "init",
+		Short: "Create the sandbox of the current directory",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return run(cmd, handler)
+		},
+	}
 }
 
-// Run creates the sandbox of the current working directory and prints the
-// result to stdout. It takes no arguments.
-func (c Command) Run(ctx context.Context, args []string, stdout, _ io.Writer) error {
-	if len(args) > 0 {
-		return fmt.Errorf("%w %q", ErrUnexpectedArgument, args[0])
-	}
+// run calls handler for the current working directory and prints its output.
+func run(cmd *cobra.Command, handler Handler) error {
 	dir, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
-	out, err := c.Handler.Handle(ctx, Input{Dir: dir})
+	out, err := handler.Handle(cmd.Context(), Input{Dir: dir})
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(stdout, message(out)); err != nil {
+	if _, err := fmt.Fprintln(cmd.OutOrStdout(), message(out)); err != nil {
 		return fmt.Errorf("print the result: %w", err)
 	}
 	return nil

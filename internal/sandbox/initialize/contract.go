@@ -24,12 +24,7 @@ type Output struct {
 	Created bool
 }
 
-// A refused project directory fails with one of the errors of
+// ErrNotDirectory reports a project path that is not a directory. A refused
+// project directory fails with one of the errors of
 // sandbox.ValidateProjectDir, and a missing one with fs.ErrNotExist.
-var (
-	// ErrNotDirectory reports a project path that is not a directory.
-	ErrNotDirectory = errors.New("project path is not a directory")
-	// ErrUnexpectedArgument reports an argument that the command does not
-	// take.
-	ErrUnexpectedArgument = errors.New("unexpected argument")
-)
+var ErrNotDirectory = errors.New("project path is not a directory")

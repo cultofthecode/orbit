@@ -23,20 +23,20 @@ func TestCreateArgs(t *testing.T) {
 		{
 			name:    "project directory",
 			machine: "orbit-api-1d9b22c9",
-			dir:     "/Users/jacob/Project/api",
+			dir:     "/Users/dev/Project/api",
 			want: []string{
 				"create", "--isolated", "--isolate-network",
-				"--mount", "/Users/jacob/Project/api:/Users/jacob/Project/api",
+				"--mount", "/Users/dev/Project/api:/Users/dev/Project/api",
 				"ubuntu:26.04", "orbit-api-1d9b22c9",
 			},
 		},
 		{
 			name:    "directory with spaces and shell characters",
 			machine: "orbit-my-project-00db83c9",
-			dir:     "/Users/jacob/My Project; $(x)",
+			dir:     "/Users/dev/My Project; $(x)",
 			want: []string{
 				"create", "--isolated", "--isolate-network",
-				"--mount", "/Users/jacob/My Project; $(x):/Users/jacob/My Project; $(x)",
+				"--mount", "/Users/dev/My Project; $(x):/Users/dev/My Project; $(x)",
 				"ubuntu:26.04", "orbit-my-project-00db83c9",
 			},
 		},
@@ -137,13 +137,13 @@ func TestCheckMountable(t *testing.T) {
 		dir  string
 		want error
 	}{
-		{name: "absolute path", dir: "/Users/jacob/Project/api"},
-		{name: "path with spaces", dir: "/Users/jacob/My Project"},
+		{name: "absolute path", dir: "/Users/dev/Project/api"},
+		{name: "path with spaces", dir: "/Users/dev/My Project"},
 		{name: "empty", dir: "", want: ErrMountPath},
 		{name: "relative", dir: "Project/api", want: ErrMountPath},
-		{name: "colon in the last name", dir: "/Users/jacob/.ssh:x", want: ErrMountPath},
-		{name: "colon in a parent", dir: "/Users/jacob/a:/b", want: ErrMountPath},
-		{name: "source and destination", dir: "/Users/jacob/work:/Users/jacob", want: ErrMountPath},
+		{name: "colon in the last name", dir: "/Users/dev/.ssh:x", want: ErrMountPath},
+		{name: "colon in a parent", dir: "/Users/dev/a:/b", want: ErrMountPath},
+		{name: "source and destination", dir: "/Users/dev/work:/Users/dev", want: ErrMountPath},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -162,13 +162,13 @@ func TestGuardsRunNoCommand(t *testing.T) {
 	client := New(testPrefix)
 	ctx := context.Background()
 
-	if err := client.Create(ctx, "ubuntu", "/Users/jacob/Project/api"); !errors.Is(err, ErrForeignMachine) {
+	if err := client.Create(ctx, "ubuntu", "/Users/dev/Project/api"); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("Create of a foreign machine = %v, want %v", err, ErrForeignMachine)
 	}
 	if err := client.Delete(ctx, "ubuntu"); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("Delete of a foreign machine = %v, want %v", err, ErrForeignMachine)
 	}
-	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/jacob/.ssh:x"); !errors.Is(err, ErrMountPath) {
+	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/.ssh:x"); !errors.Is(err, ErrMountPath) {
 		t.Errorf("Create with a colon in the directory = %v, want %v", err, ErrMountPath)
 	}
 }
@@ -179,7 +179,7 @@ func TestFailedCommandCarriesStderr(t *testing.T) {
 	ctx := context.Background()
 	_, existsErr := client.Exists(ctx, "orbit-api-1d9b22c9")
 	failures := map[string]error{
-		"Create": client.Create(ctx, "orbit-api-1d9b22c9", "/Users/jacob/Project/api"),
+		"Create": client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
 		"Exists": existsErr,
 		"Delete": client.Delete(ctx, "orbit-api-1d9b22c9"),
 	}

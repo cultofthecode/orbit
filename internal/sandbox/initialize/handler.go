@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/cultofthecode/orbit/internal/sandbox"
+	"github.com/cultofthecode/orbit/internal/sandbox/internal/realpath"
 )
 
 // Machines is what the handler needs from OrbStack.
@@ -90,5 +91,5 @@ func resolveDir(path string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("%w: %s", ErrNotDirectory, path)
 	}
-	return realPath(path)
+	return realpath.Resolve(path)
 }

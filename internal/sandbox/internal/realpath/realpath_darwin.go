@@ -1,4 +1,4 @@
-package initialize
+package realpath
 
 import (
 	"bytes"
@@ -12,13 +12,12 @@ import (
 // fills.
 const maxPathLength = 1024
 
-// realPath returns the canonical path of the existing file path: absolute,
-// with symlinks resolved, in the one spelling that the kernel reports for the
-// file. filepath.EvalSymlinks is not enough on macOS. It keeps a spelling in
+// resolve asks the kernel for the path of the open file (F_GETPATH).
+// filepath.EvalSymlinks is not enough on macOS. It keeps a spelling in
 // another letter case, and a path through /System/Volumes/Data; each of them
 // names the same directory as the canonical path, so a comparison of paths
 // would not recognize the home directory.
-func realPath(path string) (string, error) {
+func resolve(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err

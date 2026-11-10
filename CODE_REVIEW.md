@@ -1,6 +1,6 @@
 # Code review rules — orbit
 
-`om-code-review` (and so `om-auto-review-pr`) applies this file automatically, in addition to its built-in checklist. The code so far is the CLI skeleton in `cmd/orbit`, so the repo-specific section is still short. Add rules as conventions appear, and cite the files that set them.
+`om-code-review` (and so `om-auto-review-pr`) applies this file automatically, in addition to its built-in checklist. The code so far is the CLI skeleton in `cmd/orbit`, the OrbStack adapter in `internal/orbstack`, and the sandbox module in `internal/sandbox` with the part of the `init` slice that creates the machine, so the repo-specific section is still short. Add rules as conventions appear, and cite the files that set them.
 
 ## Review priorities
 
