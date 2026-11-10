@@ -1,0 +1,23 @@
+# AGENTS.md — internal/provision
+
+What root sets up in a sandbox machine before any agent runs: the firewall, the proxy units, the hardened users, the agent user, and the fixed toolchain (D14, D17, D20, D22). Spec: `.ai/specs/2026-11-10-sandbox-provisioning.md`. Read the root `AGENTS.md` and `ARCHITECTURE.md` (Provisioning requirements) first. Every change here is `risk-high` and needs the integration test.
+
+## Layout
+
+- `firewall.go` — `Firewall(FirewallInput)`: `/etc/nftables.conf`, one table `inet orbit_egress`. Golden file: `testdata/firewall.nft` (`go test -update` after a review of the change).
+- `units.go` — `Units(defaultUID)`: the systemd units and drop-ins, and the harden script.
+- `script.go` — `Script(defaultUID)`: the root script that `init` runs through `RunAsRoot`.
+
+## Invariants
+
+- The firewall filters every uid from 1000 up and the default uid (the Mac uid, below 1000). The rules for the proxy user come before the accept for uids below 1000. The proxy user reaches only port 443 on public addresses and port 53 on OrbStack DNS.
+- `Firewall` refuses input that would weaken the rules: a default uid of 0, a proxy user that is `root` or not a plain name, a proxy port of 0 or 53, a proxy address that is neither loopback nor `proxy.ContainerAddr`, and an unspecified or multicast resolver. Keep these refusals and their hostile-input tests.
+- `systemd-user-sessions.service` requires and follows every unit of the boundary, so no login starts while one of them failed.
+- The script is idempotent and fail-closed: it removes the marker first and writes it last, loads rules with `nft -f` and never restarts `nftables.service` (its stop flushes the ruleset), writes every file through `put` (a temporary file and a rename), and creates the agent only after the boundary runs.
+- Root never writes into a home directory, and the script never adds the agent to a group. E01-S04 adds `orbstack` for the SSH agent socket.
+- The script unsets the proxy variables: a login of root gets them from `/etc/environment`, and root installs packages directly.
+
+## Validation
+
+- `go test ./internal/provision/...` needs no OrbStack.
+- `go test -tags integration -count=1 -run TestInitProvisionsTheSandbox -v ./cmd/orbit/` provisions a real machine twice and probes every scenario except the restart. Check the restart by hand: `orb restart <machine>`, then the probes of the restart scenario.

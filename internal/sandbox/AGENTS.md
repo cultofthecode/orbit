@@ -5,7 +5,7 @@ The sandbox module: the lifecycle of the sandbox of a project directory. Read th
 ## Layout
 
 - `sandbox.go` — the root package: `NamePrefix`, `MachineName`, `ProjectDir`, `ProtectedDirs`, `ValidateProjectDir`. Pure functions, no I/O.
-- `initialize/` — the slice of `orbit init`. The package is not named `init`, because Go refuses to import a package under that name. It creates the machine only; provisioning is not built, so `NewCommand` is not registered in `cmd/orbit`.
+- `initialize/` — the slice of `orbit init`. The package is not named `init`, because Go refuses to import a package under that name. It creates the machine and provisions it as root with the script that `Handler.ProvisionScript` returns (`provision.Script`, injected by `cmd/orbit`). `NewCommand` is not registered in `cmd/orbit` until the agent is installed as well (story E01-S01).
 - `internal/realpath/` — private to the module: `Resolve` returns the canonical path of a directory, and `ResolveNoFirmlink` its path on its own volume. Every slice resolves the project directory with `Resolve`.
 
 ## Invariants
@@ -19,7 +19,8 @@ The sandbox module: the lifecycle of the sandbox of a project directory. Read th
 - Pass only canonical paths to `ValidateProjectDir` and `MachineName`. On macOS `filepath.EvalSymlinks` is not enough: `/users/DEV` and `/System/Volumes/Data/Users/dev` both name the home directory. Resolve every path with `realpath.Resolve` (`F_GETPATH` on macOS), in every slice, so that all slices compute the same machine name for a directory. On macOS the tests of the other spellings fail when the file system does not accept a spelling; they never skip there.
 - The machine of a directory is found by its name: `orbit-<slug>-<hash>`, where the slug has at most 30 characters and the hash is the first 16 hex characters of the SHA-256 of the canonical path. A change to `MachineName` orphans every existing sandbox.
 - A slice declares the narrow interface that it needs from OrbStack and is tested against `internal/orbstack/orbstacktest`. No package here imports `internal/orbstack`; `golangci-lint` (depguard) fails on it.
-- A slice does not import another slice.
+- A slice does not import another slice, and it does not import another module: `cmd/orbit` injects functions such as `provision.Script`.
+- `init` provisions every time it runs, also on an existing machine. When provisioning fails on a machine that the same call created, it deletes that machine (with a context that cancellation does not stop). It never deletes a machine that existed before the call.
 
 ## Validation
 
