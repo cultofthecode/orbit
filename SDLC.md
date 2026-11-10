@@ -175,7 +175,7 @@ Every PR passes the full validation gate before review sign-off, in this order:
 
 1. `test -z "$(gofmt -l .)"` — formatting
 2. `go vet ./...` — static checks
-3. `golangci-lint run` — lint, including the import rules from `ARCHITECTURE.md`
+3. `golangci-lint run` — lint with the `standard` linters, plus a `depguard` rule that lets only `cmd/orbit` import `internal/orbstack` (the adapter part of dependency rule 1 in `ARCHITECTURE.md`)
 4. `go test ./...` — unit and handler tests
 5. `go build ./...` — build
 
