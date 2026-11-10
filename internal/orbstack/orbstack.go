@@ -6,11 +6,13 @@ package orbstack
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -27,6 +29,20 @@ const mountSeparator = ":"
 // OrbStack.
 const mountListSeparator = ","
 
+// Values of the mount table of a machine (/proc/self/mountinfo) that the
+// adapter reads.
+const (
+	// mountTable is the mount table of the process that reads it.
+	mountTable = "/proc/self/mountinfo"
+	// optionalFieldsEnd ends the optional fields of an entry of the table.
+	optionalFieldsEnd = "-"
+	// hostFileSystem is the type of the file system that shares the host.
+	hostFileSystem = "virtiofs"
+	// hostSource is the source of that file system. Its root is the root of
+	// the host, so the root of a mount of it is a path on the host.
+	hostSource = "mac"
+)
+
 var (
 	// ErrForeignMachine reports a machine name without the prefix of the
 	// client. The client creates and deletes only machines with its prefix.
@@ -34,6 +50,9 @@ var (
 	// ErrMountPath reports a directory that cannot be mounted at its own
 	// path: it is not absolute, or it holds a separator of mounts.
 	ErrMountPath = errors.New("mount path is not absolute or contains a colon or a comma")
+	// ErrMountTable reports a list of machines or a mount table that does not
+	// say for certain what is mounted where.
+	ErrMountTable = errors.New("mounts cannot be read")
 )
 
 // Client drives the orb CLI.
@@ -70,6 +89,32 @@ func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
 		return false, fmt.Errorf("list machines: %w", err)
 	}
 	return listsMachine(names, name), nil
+}
+
+// Mounts returns the configured mounts of every machine: for each machine
+// name, the host directory of each mount by its mount point. A machine
+// without isolation has no configured mounts.
+func (c *Client) Mounts(ctx context.Context) (map[string]map[string]string, error) {
+	list, err := run(ctx, mountsArgs())
+	if err != nil {
+		return nil, fmt.Errorf("list machines: %w", err)
+	}
+	return parseMounts([]byte(list))
+}
+
+// ActiveMounts returns the host directory of each mount of the host file
+// system in the machine name, by its mount point, as the kernel of the
+// machine reports it. It starts the machine when it is stopped. It runs no
+// command when name lacks the prefix of the client.
+func (c *Client) ActiveMounts(ctx context.Context, name string) (map[string]string, error) {
+	if err := c.checkOwned(name); err != nil {
+		return nil, err
+	}
+	table, err := run(ctx, activeMountsArgs(name))
+	if err != nil {
+		return nil, fmt.Errorf("read the mounts of machine %s: %w", name, err)
+	}
+	return parseMountTable(table)
 }
 
 // Delete deletes the machine name with everything stored in it. It runs no
@@ -121,6 +166,127 @@ func createArgs(name, dir string) []string {
 // one on each line.
 func listArgs() []string {
 	return []string{"list", "--quiet"}
+}
+
+// mountsArgs returns the arguments of orb that print every machine with its
+// configuration as JSON.
+func mountsArgs() []string {
+	return []string{"list", "--format", "json"}
+}
+
+// activeMountsArgs returns the arguments of orb that print the mount table of
+// the machine name, read as root.
+func activeMountsArgs(name string) []string {
+	return []string{"-m", name, "-u", "root", "cat", mountTable}
+}
+
+// machine is the part of an entry of "orb list --format json" that the
+// adapter reads.
+type machine struct {
+	Name   string `json:"name"`
+	Config struct {
+		Mounts []struct {
+			Source      string `json:"source"`
+			Destination string `json:"destination"`
+		} `json:"mounts"`
+	} `json:"config"`
+}
+
+// parseMounts returns the configured mounts of every machine in the output
+// of "orb list --format json". It fails on a machine name or a mount point
+// that appears twice.
+func parseMounts(list []byte) (map[string]map[string]string, error) {
+	var machines []machine
+	if err := json.Unmarshal(list, &machines); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrMountTable, err)
+	}
+	mounts := make(map[string]map[string]string, len(machines))
+	for _, m := range machines {
+		if _, seen := mounts[m.Name]; seen {
+			return nil, fmt.Errorf("%w: machine %q is listed twice", ErrMountTable, m.Name)
+		}
+		mounts[m.Name] = map[string]string{}
+		for _, mount := range m.Config.Mounts {
+			if err := addMount(mounts[m.Name], mount.Destination, mount.Source); err != nil {
+				return nil, fmt.Errorf("machine %q: %w", m.Name, err)
+			}
+		}
+	}
+	return mounts, nil
+}
+
+// parseMountTable returns the mounts of the host file system in a mount table
+// in the format of /proc/self/mountinfo: the root of each mount, which is a
+// path on the host, by its mount point. It fails on an entry that it cannot
+// read and on a mount point that appears twice.
+func parseMountTable(table string) (map[string]string, error) {
+	mounts := map[string]string{}
+	for _, line := range strings.Split(strings.TrimRight(table, "\n"), "\n") {
+		root, mountPoint, isHost, err := parseMountEntry(line)
+		if err != nil {
+			return nil, err
+		}
+		if !isHost {
+			continue
+		}
+		if err := addMount(mounts, mountPoint, root); err != nil {
+			return nil, err
+		}
+	}
+	return mounts, nil
+}
+
+// parseMountEntry returns the root and the mount point of one entry of a
+// mount table, and whether it mounts the host file system.
+func parseMountEntry(line string) (root, mountPoint string, isHost bool, err error) {
+	fields := strings.Split(line, " ")
+	end := slices.Index(fields, optionalFieldsEnd)
+	if len(fields) < 10 || end < 6 || end+3 >= len(fields) {
+		return "", "", false, fmt.Errorf("%w: entry %q", ErrMountTable, line)
+	}
+	if fields[end+1] != hostFileSystem || fields[end+2] != hostSource {
+		return "", "", false, nil
+	}
+	root, err = unescapeMountPath(fields[3])
+	if err != nil {
+		return "", "", false, err
+	}
+	mountPoint, err = unescapeMountPath(fields[4])
+	return root, mountPoint, true, err
+}
+
+// unescapeMountPath reverses the escapes of a path in a mount table: the
+// kernel writes a space, a tab, a newline, and a backslash as a backslash
+// with three octal digits.
+func unescapeMountPath(path string) (string, error) {
+	var out strings.Builder
+	for i := 0; i < len(path); i++ {
+		if path[i] != '\\' {
+			out.WriteByte(path[i])
+			continue
+		}
+		if i+4 > len(path) {
+			return "", fmt.Errorf("%w: escape in %q", ErrMountTable, path)
+		}
+		code, err := strconv.ParseUint(path[i+1:i+4], 8, 8)
+		if err != nil {
+			return "", fmt.Errorf("%w: escape in %q", ErrMountTable, path)
+		}
+		out.WriteByte(byte(code))
+		i += 3
+	}
+	return out.String(), nil
+}
+
+// addMount adds the mount of hostDir at mountPoint to mounts. It fails when
+// mountPoint is already in mounts, because then the table does not say which
+// directory is mounted there.
+func addMount(mounts map[string]string, mountPoint, hostDir string) error {
+	if _, seen := mounts[mountPoint]; seen {
+		return fmt.Errorf("%w: two mounts at %q", ErrMountTable, mountPoint)
+	}
+	mounts[mountPoint] = hostDir
+	return nil
 }
 
 // deleteArgs returns the arguments of orb that delete the machine name

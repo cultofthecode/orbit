@@ -3,6 +3,7 @@ package orbstacktest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -31,8 +32,76 @@ func TestFakeCreatesAndFindsMachines(t *testing.T) {
 	if !slices.Equal(fake.Calls, wantCalls) {
 		t.Errorf("Calls = %v, want %v", fake.Calls, wantCalls)
 	}
-	if dir := fake.Machines["orbit-api-1d9b22c9"]; dir != "/work/api" {
-		t.Errorf("mount = %q, want /work/api", dir)
+	if mounts := fake.Machines["orbit-api-1d9b22c9"]; !reflect.DeepEqual(mounts, map[string]string{"/work/api": "/work/api"}) {
+		t.Errorf("mounts = %v, want /work/api at its own path", mounts)
+	}
+}
+
+func TestFakeReportsMountsAndDeletes(t *testing.T) {
+	const name = "orbit-api-1d9b22c9"
+	fake := New("orbit-")
+	ctx := context.Background()
+	if err := fake.Create(ctx, name, "/work/api"); err != nil {
+		t.Fatalf("Create = %v", err)
+	}
+	own := map[string]string{"/work/api": "/work/api"}
+
+	mounts, err := fake.Mounts(ctx)
+	if err != nil || !reflect.DeepEqual(mounts, map[string]map[string]string{name: own}) {
+		t.Errorf("Mounts = %v, %v, want %v for %s", mounts, err, own, name)
+	}
+	mounts[name]["/work/api"] = "/changed"
+	active, err := fake.ActiveMounts(ctx, name)
+	if err != nil || !reflect.DeepEqual(active, own) {
+		t.Errorf("ActiveMounts = %v, %v, want the configured mounts %v", active, err, own)
+	}
+	swapped := map[string]string{"/work/api": "/home/.ssh"}
+	fake.Active[name] = swapped
+	if active, err := fake.ActiveMounts(ctx, name); err != nil || !reflect.DeepEqual(active, swapped) {
+		t.Errorf("ActiveMounts after a swap = %v, %v, want %v", active, err, swapped)
+	}
+	if err := fake.Delete(ctx, name); err != nil {
+		t.Fatalf("Delete = %v", err)
+	}
+	if len(fake.Machines) != 0 || len(fake.Active) != 0 {
+		t.Errorf("after Delete: Machines = %v, Active = %v, want none", fake.Machines, fake.Active)
+	}
+	wantCalls := []Call{
+		{Op: OpCreate, Name: name, Dir: "/work/api"},
+		{Op: OpMounts},
+		{Op: OpActiveMounts, Name: name},
+		{Op: OpActiveMounts, Name: name},
+		{Op: OpDelete, Name: name},
+	}
+	if !slices.Equal(fake.Calls, wantCalls) {
+		t.Errorf("Calls = %v, want %v", fake.Calls, wantCalls)
+	}
+}
+
+func TestFakeRefusesMissingAndForeignMachines(t *testing.T) {
+	fake := New("orbit-")
+	ctx := context.Background()
+	fake.Machines["ubuntu"] = map[string]string{}
+	tests := []struct {
+		name    string
+		machine string
+		want    error
+	}{
+		{name: "missing machine", machine: "orbit-api-1d9b22c9", want: ErrNoMachine},
+		{name: "foreign machine", machine: "ubuntu", want: ErrForeignMachine},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := fake.ActiveMounts(ctx, test.machine); !errors.Is(err, test.want) {
+				t.Errorf("ActiveMounts(%q) = %v, want %v", test.machine, err, test.want)
+			}
+			if err := fake.Delete(ctx, test.machine); !errors.Is(err, test.want) {
+				t.Errorf("Delete(%q) = %v, want %v", test.machine, err, test.want)
+			}
+		})
+	}
+	if _, exists := fake.Machines["ubuntu"]; !exists {
+		t.Errorf("Delete removed the foreign machine")
 	}
 }
 
@@ -79,6 +148,9 @@ func TestFakeFailsWhenTold(t *testing.T) {
 	fake := New("orbit-")
 	fake.ExistsErr = boom
 	fake.CreateErr = boom
+	fake.MountsErr = boom
+	fake.ActiveMountsErr = boom
+	fake.DeleteErr = boom
 	ctx := context.Background()
 
 	if _, err := fake.Exists(ctx, "orbit-api-1d9b22c9"); !errors.Is(err, boom) {
@@ -89,5 +161,18 @@ func TestFakeFailsWhenTold(t *testing.T) {
 	}
 	if len(fake.Machines) != 0 {
 		t.Errorf("Machines = %v, want none", fake.Machines)
+	}
+	if _, err := fake.Mounts(ctx); !errors.Is(err, boom) {
+		t.Errorf("Mounts = %v, want %v", err, boom)
+	}
+	fake.Machines["orbit-api-1d9b22c9"] = map[string]string{"/work/api": "/work/api"}
+	if _, err := fake.ActiveMounts(ctx, "orbit-api-1d9b22c9"); !errors.Is(err, boom) {
+		t.Errorf("ActiveMounts = %v, want %v", err, boom)
+	}
+	if err := fake.Delete(ctx, "orbit-api-1d9b22c9"); !errors.Is(err, boom) {
+		t.Errorf("Delete = %v, want %v", err, boom)
+	}
+	if len(fake.Machines) != 1 {
+		t.Errorf("Machines = %v, want the machine kept after a failed Delete", fake.Machines)
 	}
 }

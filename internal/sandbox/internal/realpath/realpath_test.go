@@ -233,3 +233,126 @@ func TestResolveRefusesOtherFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveWithOwner(t *testing.T) {
+	root := newTree(t)
+	project := filepath.Join(root, "Work", "api")
+	t.Chdir(root)
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "canonical path", path: project},
+		{name: "relative path", path: "Work/api"},
+		{name: "dot dot and double slash", path: root + "/Work/../Work//api/"},
+		{name: "symlink to a symlink", path: symlink(t, symlink(t, project))},
+		{name: "path through a symlink", path: symlink(t, root) + "/Work/api"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, owner, err := ResolveWithOwner(test.path)
+			if err != nil || got != project || owner != uint32(os.Getuid()) {
+				t.Errorf("ResolveWithOwner(%q) = %q, %d, %v, want %q, %d", test.path, got, owner, err, project, os.Getuid())
+			}
+		})
+	}
+}
+
+// TestResolveWithOwnerOfOtherSpellings covers the spellings that macOS
+// accepts for a directory besides its canonical path.
+func TestResolveWithOwnerOfOtherSpellings(t *testing.T) {
+	root := newTree(t)
+	project := filepath.Join(root, "Work", "api")
+	for _, path := range []string{strings.ToUpper(project), dataVolume + project, dataVolume + strings.ToUpper(project)} {
+		t.Run(path, func(t *testing.T) {
+			requireSpelling(t, path)
+			got, _, err := ResolveWithOwner(path)
+			if err != nil || got != project {
+				t.Errorf("ResolveWithOwner(%q) = %q, %v, want %q", path, got, err, project)
+			}
+		})
+	}
+}
+
+// TestOwnerAndPathDescribeTheOpenDirectory swaps the path of an open
+// directory for a symlink to another directory, as an agent that controls
+// the parent can do. The path and the owner must still describe the open
+// directory, not what its old path names now.
+func TestOwnerAndPathDescribeTheOpenDirectory(t *testing.T) {
+	root := newTree(t)
+	project := filepath.Join(root, "Work", "api")
+	moved := filepath.Join(root, "Work", "moved")
+	decoy := filepath.Join(root, "decoy")
+	if err := os.Mkdir(decoy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.Open(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dir.Close() })
+	if err := os.Rename(project, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(decoy, project); err != nil {
+		t.Fatal(err)
+	}
+
+	got, owner, err := openDirFacts(dir)
+
+	if err != nil || got != moved {
+		t.Fatalf("path of the open directory = %q, %v, want %q", got, err, moved)
+	}
+	opened, err := dir.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	named, err := os.Stat(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(opened, named) {
+		t.Errorf("%q names another directory than the open one", got)
+	}
+	if want := opened.Sys().(*syscall.Stat_t).Uid; owner != want {
+		t.Errorf("owner = %d, want %d, the owner of the open directory", owner, want)
+	}
+}
+
+func TestResolveWithOwnerRefusesWhatIsNoDirectory(t *testing.T) {
+	root := newTree(t)
+	file := filepath.Join(root, "Work", "notes.txt")
+	fifo := filepath.Join(root, "Work", "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		path string
+		want error
+	}{
+		{name: "missing directory", path: filepath.Join(root, "missing"), want: fs.ErrNotExist},
+		{name: "broken symlink", path: symlink(t, filepath.Join(root, "missing")), want: fs.ErrNotExist},
+		{name: "empty path", path: "", want: fs.ErrNotExist},
+		{name: "file", path: file, want: syscall.ENOTDIR},
+		{name: "symlink to a file", path: symlink(t, file), want: syscall.ENOTDIR},
+		{name: "FIFO", path: fifo, want: syscall.ENOTDIR},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := ResolveWithOwner(test.path)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, test.want) {
+					t.Errorf("ResolveWithOwner(%q) = %v, want %v", test.path, err, test.want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("ResolveWithOwner(%q) blocks", test.path)
+			}
+		})
+	}
+}

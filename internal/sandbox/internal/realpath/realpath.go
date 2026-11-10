@@ -12,6 +12,14 @@ func Resolve(path string) (string, error) {
 	return resolve(path)
 }
 
+// ResolveWithOwner returns the canonical path of the existing directory path,
+// as Resolve does, and the uid of the owner of that directory. It opens the
+// directory once and reads both facts from the open handle, so they describe
+// the same directory even when path is changed while it runs.
+func ResolveWithOwner(path string) (string, uint32, error) {
+	return resolveWithOwner(path)
+}
+
 // ResolveNoFirmlink returns the path of the existing directory path on its
 // own volume. On macOS a firmlink joins the directories of the data volume
 // to the root, so the home directory /Users/dev is also the directory

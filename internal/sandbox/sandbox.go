@@ -48,6 +48,13 @@ var (
 	ErrProtectedAncestor = errors.New("project directory contains a protected directory")
 	// ErrNotOwner reports a directory that the user does not own.
 	ErrNotOwner = errors.New("project directory is not owned by the user")
+	// ErrNestedProjectDir reports a directory inside the project directory
+	// of another sandbox. The agent of that sandbox controls the path of the
+	// directory and can swap it between the check and the mount.
+	ErrNestedProjectDir = errors.New("project directory is inside the project directory of another sandbox")
+	// ErrMountMismatch reports a machine that does not mount exactly the
+	// project directory, once, at its own path.
+	ErrMountMismatch = errors.New("machine does not mount exactly the project directory at its own path")
 )
 
 // protectedNames are the directories of a home directory that never enter a
@@ -117,13 +124,46 @@ func ValidateProjectDir(dir ProjectDir) error {
 	return nil
 }
 
+// ValidateNotNested reports whether the project directory dir lies outside
+// the project directories of the other sandboxes, sandboxDirs. It refuses dir
+// when it is one of them or lies inside one, with ErrNestedProjectDir. Every
+// path must be absolute and clean, in a spelling that the system reports.
+func ValidateNotNested(dir string, sandboxDirs []string) error {
+	if err := checkPaths(slices.Concat([]string{dir}, sandboxDirs)); err != nil {
+		return err
+	}
+	if isWithinAny(dir, sandboxDirs) {
+		return fmt.Errorf("%w: %s", ErrNestedProjectDir, dir)
+	}
+	return nil
+}
+
+// ValidateMounts reports whether mounts, the host directory of each mount of
+// a machine by its mount point, are exactly the project directory dir at its
+// own path. Paths are compared as they are, so dir must be absolute, clean,
+// and canonical. It refuses every other set of mounts with ErrMountMismatch.
+func ValidateMounts(dir string, mounts map[string]string) error {
+	if err := checkPaths([]string{dir}); err != nil {
+		return err
+	}
+	if len(mounts) != 1 || mounts[dir] != dir {
+		return fmt.Errorf("%w: want %s, got %v", ErrMountMismatch, dir, mounts)
+	}
+	return nil
+}
+
 // checkFacts refuses facts that the rules cannot decide on: no home
 // directory, or a path that is not absolute and clean.
 func checkFacts(dir ProjectDir) error {
 	if len(dir.Homes) == 0 {
 		return ErrNoHome
 	}
-	for _, path := range slices.Concat([]string{dir.Path}, dir.Homes, dir.Protected) {
+	return checkPaths(slices.Concat([]string{dir.Path}, dir.Homes, dir.Protected))
+}
+
+// checkPaths refuses a path that is not absolute and clean.
+func checkPaths(paths []string) error {
+	for _, path := range paths {
 		if !isAbsoluteAndClean(path) {
 			return fmt.Errorf("%w: %q", ErrPathNotClean, path)
 		}

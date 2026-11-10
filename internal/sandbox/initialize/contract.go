@@ -26,5 +26,7 @@ type Output struct {
 
 // ErrNotDirectory reports a project path that is not a directory. A refused
 // project directory fails with one of the errors of
-// sandbox.ValidateProjectDir, and a missing one with fs.ErrNotExist.
+// sandbox.ValidateProjectDir or sandbox.ErrNestedProjectDir, a missing one
+// with fs.ErrNotExist, and a machine that mounts something else than the
+// project directory with sandbox.ErrMountMismatch.
 var ErrNotDirectory = errors.New("project path is not a directory")

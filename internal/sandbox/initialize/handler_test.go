@@ -141,12 +141,29 @@ func checkCreates(t *testing.T, entry *user.User, dir, project string) {
 	if want := (Output{Name: name, Dir: project, Created: true}); got != want {
 		t.Errorf("Handle(%q) = %+v, want %+v", dir, got, want)
 	}
-	wantCalls := []orbstacktest.Call{
-		{Op: orbstacktest.OpExists, Name: name},
-		{Op: orbstacktest.OpCreate, Name: name, Dir: project},
+	if !slices.Equal(fake.Calls, createCalls(name, project)) {
+		t.Errorf("calls = %v, want %v", fake.Calls, createCalls(name, project))
 	}
-	if !slices.Equal(fake.Calls, wantCalls) {
-		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+}
+
+// createCalls returns the calls that create the machine name of the
+// directory project and check its mounts.
+func createCalls(name, project string) []orbstacktest.Call {
+	return []orbstacktest.Call{
+		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpCreate, Name: name, Dir: project},
+		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpActiveMounts, Name: name},
+	}
+}
+
+// keepCalls returns the calls that find the machine name and check its
+// mounts.
+func keepCalls(name string) []orbstacktest.Call {
+	return []orbstacktest.Call{
+		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpActiveMounts, Name: name},
 	}
 }
 
@@ -173,7 +190,7 @@ func TestHandleKeepsAnExistingMachine(t *testing.T) {
 	project := filepath.Join(home, "work", "api")
 	name := sandbox.MachineName(project)
 	fake := orbstacktest.New(sandbox.NamePrefix)
-	fake.Machines[name] = project
+	fake.Machines[name] = map[string]string{project: project}
 
 	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
 
@@ -183,9 +200,185 @@ func TestHandleKeepsAnExistingMachine(t *testing.T) {
 	if want := (Output{Name: name, Dir: project, Created: false}); got != want {
 		t.Errorf("Handle = %+v, want %+v", got, want)
 	}
-	wantCalls := []orbstacktest.Call{{Op: orbstacktest.OpExists, Name: name}}
-	if !slices.Equal(fake.Calls, wantCalls) {
-		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+	if !slices.Equal(fake.Calls, keepCalls(name)) {
+		t.Errorf("calls = %v, want %v", fake.Calls, keepCalls(name))
+	}
+}
+
+// TestHandleRefusesNestedProjectDirectories covers a project directory that
+// another machine already mounts, in any spelling: the agent of that machine
+// controls its path and could swap it between the check and the mount.
+func TestHandleRefusesNestedProjectDirectories(t *testing.T) {
+	home := newHome(t)
+	work := filepath.Join(home, "work")
+	project := filepath.Join(work, "api")
+	makeDirs(t, home, "work/api/sub", "work/ap", "other")
+	tests := []struct {
+		name  string
+		mount string
+		dir   string
+	}{
+		{name: "parent mounted by another sandbox", mount: work, dir: project},
+		{name: "grandparent mounted by another sandbox", mount: home + "/work", dir: filepath.Join(project, "sub")},
+		{name: "project mounted by another machine", mount: project, dir: project},
+		{name: "parent mounted through a symlink", mount: symlink(t, work), dir: project},
+		{name: "parent mounted in upper case", mount: strings.ToUpper(work), dir: project},
+		{name: "parent mounted on the data volume", mount: dataVolume + work, dir: project},
+		{name: "project reached through a symlink", mount: work, dir: symlink(t, project)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			requireSpelling(t, test.mount)
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.Machines["orbit-work-0123456789abcdef"] = map[string]string{"/srv/work": test.mount}
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: test.dir})
+
+			if !errors.Is(err, sandbox.ErrNestedProjectDir) || got != (Output{}) {
+				t.Errorf("Handle(%q) = %+v, %v, want %v", test.dir, got, err, sandbox.ErrNestedProjectDir)
+			}
+			if wantCalls := []orbstacktest.Call{{Op: orbstacktest.OpMounts}}; !slices.Equal(fake.Calls, wantCalls) {
+				t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+			}
+		})
+	}
+	t.Run("mount of a machine without the prefix", func(t *testing.T) {
+		fake := orbstacktest.New(sandbox.NamePrefix)
+		fake.Machines["ubuntu"] = map[string]string{work: work}
+		if _, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project}); !errors.Is(err, sandbox.ErrNestedProjectDir) {
+			t.Errorf("Handle(%q) = %v, want %v", project, err, sandbox.ErrNestedProjectDir)
+		}
+	})
+}
+
+func TestHandleAcceptsDirectoriesOutsideOtherSandboxes(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	makeDirs(t, home, "work/ap", "work/api-old", "other")
+	tests := []struct {
+		name   string
+		mounts map[string]string
+	}{
+		{name: "sibling", mounts: map[string]string{filepath.Join(home, "other"): filepath.Join(home, "other")}},
+		{name: "prefix look-alike", mounts: map[string]string{"/srv/ap": filepath.Join(home, "work", "ap")}},
+		{name: "longer sibling", mounts: map[string]string{"/srv/old": filepath.Join(home, "work", "api-old")}},
+		{name: "directory that does not exist", mounts: map[string]string{"/srv/gone": filepath.Join(home, "gone")}},
+		{name: "machine without mounts", mounts: map[string]string{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.Machines["orbit-other-0123456789abcdef"] = test.mounts
+			name := sandbox.MachineName(project)
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+			if want := (Output{Name: name, Dir: project, Created: true}); err != nil || got != want {
+				t.Errorf("Handle = %+v, %v, want %+v", got, err, want)
+			}
+		})
+	}
+}
+
+// TestHandleDeletesACreatedMachineThatMountsAnotherDirectory covers a
+// project path that is swapped between the check and the mount: the new
+// machine mounts another directory, and the handler deletes it.
+func TestHandleDeletesACreatedMachineThatMountsAnotherDirectory(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	ssh := filepath.Join(home, ".ssh")
+	name := sandbox.MachineName(project)
+	tests := []struct {
+		name   string
+		active map[string]string
+	}{
+		{name: "swapped for .ssh", active: map[string]string{project: ssh}},
+		{name: "swapped for the parent", active: map[string]string{project: filepath.Dir(project)}},
+		{name: "second mount", active: map[string]string{project: project, "/mnt/mac": "/"}},
+		{name: "no mount", active: map[string]string{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.Active[name] = test.active
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+			if !errors.Is(err, sandbox.ErrMountMismatch) || got != (Output{}) {
+				t.Errorf("Handle = %+v, %v, want %v", got, err, sandbox.ErrMountMismatch)
+			}
+			if len(fake.Machines) != 0 {
+				t.Errorf("machines = %v, want the new machine deleted", fake.Machines)
+			}
+			wantCalls := append(createCalls(name, project), orbstacktest.Call{Op: orbstacktest.OpDelete, Name: name})
+			if !slices.Equal(fake.Calls, wantCalls) {
+				t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+			}
+		})
+	}
+}
+
+// TestHandleRefusesAnExistingMachineThatMountsAnotherDirectory covers a
+// machine with the name of the project that mounts something else: the
+// handler does not trust a machine by its name, and does not delete it.
+func TestHandleRefusesAnExistingMachineThatMountsAnotherDirectory(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	ssh := filepath.Join(home, ".ssh")
+	name := sandbox.MachineName(project)
+	tests := []struct {
+		name       string
+		configured map[string]string
+		active     map[string]string
+		wantCalls  []orbstacktest.Call
+	}{
+		{
+			name:       "configured with .ssh",
+			configured: map[string]string{project: ssh},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+		},
+		{
+			name:       "configured with a second mount",
+			configured: map[string]string{project: project, "/home/dev": home},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+		},
+		{
+			name:       "configured at another path",
+			configured: map[string]string{"/mnt/mac" + project: project},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+		},
+		{
+			name:       "no mount",
+			configured: map[string]string{},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+		},
+		{
+			name:       "mounts .ssh after a swap",
+			configured: map[string]string{project: project},
+			active:     map[string]string{project: ssh},
+			wantCalls:  keepCalls(name),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.Machines[name] = test.configured
+			if test.active != nil {
+				fake.Active[name] = test.active
+			}
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+			if !errors.Is(err, sandbox.ErrMountMismatch) || got != (Output{}) {
+				t.Errorf("Handle = %+v, %v, want %v", got, err, sandbox.ErrMountMismatch)
+			}
+			if _, kept := fake.Machines[name]; !kept {
+				t.Errorf("the existing machine was deleted")
+			}
+			if !slices.Equal(fake.Calls, test.wantCalls) {
+				t.Errorf("calls = %v, want %v", fake.Calls, test.wantCalls)
+			}
+		})
 	}
 }
 
@@ -479,30 +672,37 @@ func TestHandleReportsOrbStackFailures(t *testing.T) {
 	project := filepath.Join(home, "work", "api")
 	name := sandbox.MachineName(project)
 	tests := []struct {
-		name      string
-		existsErr error
-		createErr error
-		wantCalls []orbstacktest.Call
+		name            string
+		mountsErr       error
+		createErr       error
+		activeMountsErr error
+		wantCalls       []orbstacktest.Call
 	}{
 		{
-			name:      "exists fails",
-			existsErr: boom,
-			wantCalls: []orbstacktest.Call{{Op: orbstacktest.OpExists, Name: name}},
+			name:      "listing the machines fails",
+			mountsErr: boom,
+			wantCalls: []orbstacktest.Call{{Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:      "create fails",
 			createErr: boom,
 			wantCalls: []orbstacktest.Call{
-				{Op: orbstacktest.OpExists, Name: name},
+				{Op: orbstacktest.OpMounts},
 				{Op: orbstacktest.OpCreate, Name: name, Dir: project},
 			},
+		},
+		{
+			name:            "reading the mounts of the new machine fails",
+			activeMountsErr: boom,
+			wantCalls:       append(createCalls(name, project), orbstacktest.Call{Op: orbstacktest.OpDelete, Name: name}),
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fake := orbstacktest.New(sandbox.NamePrefix)
-			fake.ExistsErr = test.existsErr
+			fake.MountsErr = test.mountsErr
 			fake.CreateErr = test.createErr
+			fake.ActiveMountsErr = test.activeMountsErr
 
 			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
 
@@ -515,6 +715,25 @@ func TestHandleReportsOrbStackFailures(t *testing.T) {
 			if !slices.Equal(fake.Calls, test.wantCalls) {
 				t.Errorf("calls = %v, want %v", fake.Calls, test.wantCalls)
 			}
+			if len(fake.Machines) != 0 {
+				t.Errorf("machines = %v, want none", fake.Machines)
+			}
 		})
+	}
+}
+
+func TestHandleReportsAFailedDeletion(t *testing.T) {
+	boom := errors.New("orb: boom")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Active[name] = map[string]string{project: filepath.Join(home, ".ssh")}
+	fake.DeleteErr = boom
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+	if !errors.Is(err, sandbox.ErrMountMismatch) || !errors.Is(err, boom) {
+		t.Errorf("Handle = %v, want an error that wraps %v and %v", err, sandbox.ErrMountMismatch, boom)
 	}
 }
