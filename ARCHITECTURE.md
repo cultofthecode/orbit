@@ -68,7 +68,7 @@ internal/
 | Composition root | `cmd/orbit` | Builds the adapters, adds the cobra command of every slice to the root command, prints errors, and sets the exit code. Contains no behavior. | every module |
 | Sandbox | `internal/sandbox` | Lifecycle of the sandbox of a project directory: init, shell, stop, start, destroy, list (D19). Owns the sandbox spec and the mount rules. | `orbstack`, `provision`, `agent`, `policy`, `credential`, `kernel` |
 | Policy | `internal/policy` | Network policy rules: the default rules, and matching a destination. Commands that list and change rules are later scope (D19). | `kernel` |
-| Agent | `internal/agent` | What each agent needs: image, start command, start command, required domains, and state paths. See Agent definitions. Claude Code first. | `kernel` |
+| Agent | `internal/agent` | What each agent needs: image, start command, required domains, and state paths. See Agent definitions. Claude Code first. | `kernel` |
 | Credential | `internal/credential` | Which host credentials a sandbox may get, and in which form. By default only the forwarded SSH agent socket, which `--no-ssh` removes (R08). | `kernel` |
 | Provision | `internal/provision` | The root-owned setup of a machine: the agent user without sudo, the firewall, the proxy service, rootless Docker, the fixed toolchain. Owns the firewall rules as a pure function. | `policy`, `kernel` |
 | Proxy | `internal/proxy` | The configuration of tinyproxy, the egress proxy that root runs in the machine (D22). The proxy enforces the policy. | `policy`, `kernel` |
