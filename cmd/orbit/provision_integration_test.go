@@ -43,7 +43,7 @@ allowed() { local what=$1; shift; "$@" >/dev/null 2>&1 || fail "$what failed"; }
 as_agent() { runuser -u agent -- "$@"; }
 as_uid() { local uid=$1; shift; setpriv --reuid "$uid" --regid "$uid" --clear-groups "$@"; }
 direct() { curl -sSf --noproxy '*' -m 5 "$@"; }
-proxied() { curl -sSf -m 15 -x "$1" -o /dev/null "$2"; }
+refused_by_proxy() { local what=$1; shift; local out; out=$("$@" 2>&1) && fail "$what succeeded"; case "$out" in *403*) ;; *) fail "$what failed without a 403: $out";; esac; }
 DEFAULT_UID=%d
 MAC_PORT=%d
 DEFAULT_USER=$(getent passwd "$DEFAULT_UID" | cut -d: -f1)
@@ -80,8 +80,8 @@ blocked "container uid direct" as_uid 100000 curl -sSf --noproxy '*' -m 5 -k htt
 allowed "agent proxy to github.com" as_agent curl -sSf -m 15 -x http://127.0.0.1:3128 -o /dev/null https://github.com
 allowed "agent proxy on the container address" as_agent curl -sSf -m 15 -x http://172.31.255.1:3128 -o /dev/null https://github.com
 allowed "agent proxy without case" as_agent curl -sSf -m 15 -x http://127.0.0.1:3128 -o /dev/null https://GitHub.com
-blocked "agent proxy to example.org" as_agent curl -sSf -m 15 -x http://127.0.0.1:3128 -o /dev/null https://example.org
-blocked "agent proxy to github.com:22" as_agent curl -sSf -m 15 -x http://127.0.0.1:3128 -o /dev/null https://github.com:22
+refused_by_proxy "agent proxy to example.org" as_agent curl -sSf -m 15 -x http://127.0.0.1:3128 -o /dev/null https://example.org
+refused_by_proxy "agent proxy to github.com:22" as_agent curl -sSf -m 15 -x http://127.0.0.1:3128 -o /dev/null https://github.com:22
 
 blocked "proxy user to 169.254.169.254" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 http://169.254.169.254
 blocked "proxy user to 198.19.249.1" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 http://198.19.249.1

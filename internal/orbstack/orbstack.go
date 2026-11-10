@@ -1,6 +1,7 @@
-// Package orbstack is the adapter to OrbStack. It creates, finds, and deletes
-// isolated machines, and runs scripts as root in them, through the orb CLI, and it is the only package with
-// OrbStack-specific code. It depends on no other package of this repository.
+// Package orbstack is the adapter to OrbStack. Through the orb CLI it
+// creates, finds, and deletes isolated machines and runs scripts in them as
+// root. It is the only package with OrbStack-specific code, and it depends on
+// no other package of this repository.
 package orbstack
 
 import (

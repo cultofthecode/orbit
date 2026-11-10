@@ -78,7 +78,7 @@ func Script(defaultUID uint32) ([]byte, error) {
 		selfCheck(defaultUID),
 		writeMarker(),
 	}
-	return []byte(lines(slices.Concat(sections...)...)), nil
+	return []byte(lines(group(slices.Concat(sections...))...)), nil
 }
 
 // scriptFiles returns every file that the script writes, after the
@@ -138,13 +138,21 @@ func environment() string {
 	)
 }
 
+// group puts the body of the script into one braced group. bash reads the
+// script from standard input as it runs; with the group it parses the whole
+// script before it runs any of it, so a child that reads standard input
+// cannot consume the rest, and a truncated script fails to parse instead of
+// exiting 0 early.
+func group(body []string) []string {
+	return slices.Concat([]string{"#!/bin/bash", "{"}, body, []string{"}"})
+}
+
 // prelude stops at the first failure, drops the proxy settings that a
 // login of root gets from /etc/environment (root installs packages
 // directly, not through the allowlist), and removes the marker, so that a
 // failed run never leaves a machine that looks provisioned.
 func prelude() []string {
 	return []string{
-		"#!/bin/bash",
 		"set -euo pipefail",
 		"umask 022",
 		"cd /",
@@ -156,12 +164,18 @@ func prelude() []string {
 	}
 }
 
-// installPackages installs the toolchain and the infrastructure as root.
+// aptGet runs apt-get with a wait for the dpkg lock, which apt-daily can
+// hold right after the first boot.
+const aptGet = "apt-get -o DPkg::Lock::Timeout=120"
+
+// installPackages installs the toolchain and the infrastructure as root. It
+// keeps the configuration files that Orbit wrote when a package upgrade
+// brings new ones, and gives apt-get no standard input to ask on.
 func installPackages() []string {
 	packages := strings.Join(slices.Concat(toolchain, infrastructure), " ")
 	return []string{
-		"apt-get update -q",
-		"apt-get install -y -q --no-install-recommends " + packages,
+		aptGet + " update -q </dev/null",
+		aptGet + " -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y -q --no-install-recommends " + packages + " </dev/null",
 	}
 }
 
@@ -237,15 +251,16 @@ func selfCheck(defaultUID uint32) []string {
 		"done",
 		"getent passwd | while IFS=: read -r name _ uid _ _ home _; do",
 		`  [ "$name" = root ] && continue`,
-		`  if sudo -n -l -U "$name" 2>/dev/null | grep -q 'may run'; then fail "$name has a sudo rule"; fi`,
+		`  rules=$(sudo -n -l -U "$name" 2>/dev/null || true)`,
+		`  case "$rules" in *"may run"*) fail "$name has a sudo rule";; esac`,
 		fmt.Sprintf(`  if [ "$uid" -lt %d ] && [ "$uid" -ne %d ]; then`, uidFloor, defaultUID),
 		`    case "$home" in /home/*) fail "$name has uid $uid below the floor and a home under /home";; esac`,
-		`    if id -nG "$name" | tr ' ' '\n' | grep -qx orbstack; then fail "$name has uid $uid below the floor and the group orbstack"; fi`,
+		`    case " $(id -nG "$name") " in *" orbstack "*) fail "$name has uid $uid below the floor and the group orbstack";; esac`,
 		"  fi",
 		"done",
 		fmt.Sprintf(`if runuser -u %s -- sudo -n true 2>/dev/null; then fail "%s can use sudo"; fi`, AgentUser, AgentUser),
 		fmt.Sprintf("for group in %s; do", strings.Join(privilegedGroups, " ")),
-		fmt.Sprintf(`  if id -nG %s | tr ' ' '\n' | grep -qx "$group"; then fail "%s is in the group $group"; fi`, AgentUser, AgentUser),
+		fmt.Sprintf(`  case " $(id -nG %s) " in *" $group "*) fail "%s is in the group $group";; esac`, AgentUser, AgentUser),
 		"done",
 	}
 	return script

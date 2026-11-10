@@ -10,10 +10,14 @@ import (
 	"slices"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/cultofthecode/orbit/internal/sandbox"
 	"github.com/cultofthecode/orbit/internal/sandbox/internal/realpath"
 )
+
+// discardTimeout bounds the deletion of a machine whose provisioning failed.
+const discardTimeout = 2 * time.Minute
 
 // Machines is what the handler needs from OrbStack.
 type Machines interface {
@@ -89,9 +93,11 @@ func (h Handler) runScript(ctx context.Context, name string, uid uint32) error {
 }
 
 // discard deletes the unprovisioned machine name after the failure cause,
-// also when ctx is cancelled, and reports both.
+// also when ctx is cancelled, within discardTimeout, and reports both.
 func (h Handler) discard(ctx context.Context, name string, cause error) error {
-	if err := h.Machines.Delete(context.WithoutCancel(ctx), name); err != nil {
+	deleteCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardTimeout)
+	defer cancel()
+	if err := h.Machines.Delete(deleteCtx, name); err != nil {
 		return errors.Join(cause, fmt.Errorf("delete the unprovisioned sandbox %s: %w", name, err))
 	}
 	return fmt.Errorf("%w (the new sandbox %s was deleted)", cause, name)

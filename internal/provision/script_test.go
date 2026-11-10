@@ -19,12 +19,12 @@ func script(t *testing.T) []string {
 
 func TestScriptStopsAtTheFirstFailureAndRemovesTheMarkerFirst(t *testing.T) {
 	lines := script(t)
-	if lines[0] != "#!/bin/bash" || lines[1] != "set -euo pipefail" {
-		t.Errorf("script starts with %q, want the shebang and set -euo pipefail", lines[:2])
+	if !slices.Equal(lines[:3], []string{"#!/bin/bash", "{", "set -euo pipefail"}) {
+		t.Errorf("script starts with %q, want the shebang, a group, and set -euo pipefail", lines[:3])
 	}
 	unset := lineIndex(t, lines, "unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy")
 	removal := lineIndex(t, lines, "rm -f /etc/orbit/provisioned")
-	install := lineIndex(t, lines, "apt-get update -q")
+	install := lineIndex(t, lines, "apt-get -o DPkg::Lock::Timeout=120 update -q </dev/null")
 	if removal > install {
 		t.Error("the marker is removed after the first change")
 	}
@@ -35,9 +35,9 @@ func TestScriptStopsAtTheFirstFailureAndRemovesTheMarkerFirst(t *testing.T) {
 
 func TestScriptInstallsExactlyTheToolchainAndInfrastructure(t *testing.T) {
 	lines := script(t)
-	i := lineIndex(t, lines, "apt-get install -y -q --no-install-recommends git openssh-client curl ca-certificates jq ripgrep unzip nftables tinyproxy")
+	i := lineIndex(t, lines, "apt-get -o DPkg::Lock::Timeout=120 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y -q --no-install-recommends git openssh-client curl ca-certificates jq ripgrep unzip nftables tinyproxy </dev/null")
 	for _, line := range lines {
-		if strings.Contains(line, "apt-get install") && line != lines[i] {
+		if strings.Contains(line, " install -y") && line != lines[i] {
 			t.Errorf("unexpected install: %q", line)
 		}
 	}
@@ -122,6 +122,7 @@ func TestScriptSelfChecks(t *testing.T) {
 		`  if [ "$uid" -lt 1000 ] && [ "$uid" -ne 501 ]; then`,
 		`if runuser -u agent -- sudo -n true 2>/dev/null; then fail "agent can use sudo"; fi`,
 		"for group in sudo admin adm docker lxd disk shadow; do",
+		`  case "$rules" in *"may run"*) fail "$name has a sudo rule";; esac`,
 	} {
 		lineIndex(t, lines, want)
 	}
@@ -148,9 +149,42 @@ func TestScriptWritesTheMarkerLast(t *testing.T) {
 		"put /etc/orbit/provisioned 0644 <<'ORBIT_EOF'",
 		"1",
 		"ORBIT_EOF",
+		"}",
 	}
-	if got := lines[end-4 : end]; !slices.Equal(got, want) {
+	if got := lines[end-5 : end]; !slices.Equal(got, want) {
 		t.Errorf("script ends with %q, want %q", got, want)
+	}
+}
+
+func TestScriptIsOneGroupThatChildrenCannotTruncate(t *testing.T) {
+	lines := script(t)
+	opens, closes := 0, 0
+	for _, line := range lines {
+		switch line {
+		case "{":
+			opens++
+		case "}":
+			closes++
+		}
+	}
+	if opens != 1 || lines[len(lines)-2] != "}" {
+		t.Errorf("script has %d top-level group openings and ends with %q, want one group around the body", opens, lines[len(lines)-2])
+	}
+	if closes < 1 {
+		t.Error("script never closes its group")
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "apt-get") && !strings.HasSuffix(line, "</dev/null") {
+			t.Errorf("apt-get can read the script from standard input: %q", line)
+		}
+	}
+}
+
+func TestScriptNegativeChecksDoNotPipeIntoGrep(t *testing.T) {
+	for _, line := range script(t) {
+		if strings.Contains(line, "| grep -q") {
+			t.Errorf("a pipe into grep -q passes silently on SIGPIPE under pipefail: %q", line)
+		}
 	}
 }
 

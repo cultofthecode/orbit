@@ -658,14 +658,18 @@ func TestHandleDeletesANewMachineAfterCancellation(t *testing.T) {
 	if machines.deleteCtxErr != nil {
 		t.Errorf("Delete got a cancelled context: %v", machines.deleteCtxErr)
 	}
+	if !machines.deleteHadDeadline {
+		t.Error("Delete got a context without a deadline")
+	}
 }
 
 // deleteRecorder cancels the context of the run when the script runs, and
 // records whether Delete got a context that was still usable.
 type deleteRecorder struct {
 	*orbstacktest.Fake
-	cancel       context.CancelFunc
-	deleteCtxErr error
+	cancel            context.CancelFunc
+	deleteCtxErr      error
+	deleteHadDeadline bool
 }
 
 // RunAsRoot cancels the context of the run and then fails like the fake.
@@ -677,5 +681,6 @@ func (r *deleteRecorder) RunAsRoot(ctx context.Context, name string, script []by
 // Delete records the error of ctx and deletes like the fake.
 func (r *deleteRecorder) Delete(ctx context.Context, name string) error {
 	r.deleteCtxErr = ctx.Err()
+	_, r.deleteHadDeadline = ctx.Deadline()
 	return r.Fake.Delete(ctx, name)
 }
