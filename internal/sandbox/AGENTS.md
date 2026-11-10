@@ -11,7 +11,7 @@ The sandbox module: the lifecycle of the sandbox of a project directory. Read th
 ## Invariants
 
 - A decision about what a sandbox is or what enters it is a pure function in `sandbox.go`, with table tests that include hostile input. A handler loads the facts (`ProjectDir`) from the system, calls the function, and acts on the result. A fact that cannot be read is an error, never a default.
-- `ValidateProjectDir` applies two independent rules, and both must accept the directory (R08). Do not add an exception, and do not drop one rule because the other covers a case.
+- `ValidateProjectDir` applies two independent rules, and both must accept the directory (R08, R09). Do not add an exception, and do not drop one rule because the other covers a case.
   - Paths: it refuses `/`; a home directory and every directory that contains one; a protected directory (`.claude` and `.ssh` of every home), every directory inside one, and every directory that contains one. It compares path components, not string prefixes.
   - Ownership: it refuses a directory that the user does not own. This covers system directories such as `/System`, `/.vol`, `/.nofollow`, and `/.resolve`.
 - The home directories are the one of `$HOME` and the one of the account database (`os/user`), each as its canonical path and as its path on its own volume. Both must exist. `$HOME` alone can name any directory, and on macOS the home directory `/Users/dev` is also `/System/Volumes/Data/Users/dev`, so `/System`, `/System/Volumes`, and `/System/Volumes/Data` contain it.

@@ -3,7 +3,7 @@
 - Date: 2026-11-10
 - Mode: own; Owner: Jakub Tobiasz; Pass: Quick pass
 - Evidence basis: one owner request (2026-11-10) and the public Docker Sandboxes documentation, checked the same day. No interviews and no usage data. One technical spike on the owner's OrbStack (2026-11-10) supports the feasibility claims. An earlier ChatGPT design for an OrbStack-native tool (`orb-sbx`), pasted by the owner the same day and cut off at its section 8, is a third source; it is a design proposal, not evidence about users. The most consequential untested belief is A01: container isolation is a sufficient boundary.
-- Coverage: 60 claims — 57 sourced (interview 0, data 3, document 43, product 0, benchmark 11), 0 synthetic, 3 assumed; 0 entries on the collection plan
+- Coverage: 61 claims — 58 sourced (interview 0, data 3, document 44, product 0, benchmark 11), 0 synthetic, 3 assumed; 0 entries on the collection plan
 - Synthetic hypotheses outside Coverage: 0
 - Definition of Ready signed by: not yet signed. Missing: the sign-in test for A02 and the SSH agent test for A06. No proposal rows are left.
 - Sources: owner request of 2026-11-10 (conversation, not stored in the repository); https://docs.docker.com/ai/sandboxes/ and its Architecture, Security model, Isolation layers, Default security posture, Manage credentials, and Claude Code pages; the `orb-sbx` design dump (pasted in the conversation of 2026-11-10, not stored in the repository); `ARCHITECTURE.md`
@@ -93,6 +93,7 @@ Next action: build `orbit init` and `orbit shell` (backlog items E01-S01 and E01
 | R06 | Only the workspace paths that the user passes are shared from the host. A host credential enters a sandbox only when the user opts in to that one credential, and in the narrowest form available: a forwarded agent socket or a short-lived token, not a key file. The set is configurable per project. The home directory and `~/.claude` are never mounted. | every sandbox | `[DOCUMENT]` owner decision, 2026-11-10 (answer to Q06) | superseded by R08 | unknown | owner approves a superseding row | Jakub Tobiasz | R02 |
 | R07 | Orbit supports OrbStack only. OrbStack-specific code lives in one package; slices use it through narrow interfaces, so that handler tests run without OrbStack. | backend support | `[DOCUMENT]` owner decision, 2026-11-10 (D13) | active | unknown | owner approves a superseding row | Jakub Tobiasz | R05 |
 | R08 | Only the project directory is shared from the host. The host SSH agent is forwarded into the sandbox by default, as a socket; `orbit init --no-ssh` leaves it out. No key file enters a sandbox. Any other host credential enters only when the user opts in to that one credential, in the narrowest form available. The home directory and `~/.claude` are never mounted. This amends D10: the SSH agent is no longer opt-in. | every sandbox | `[DOCUMENT]` owner decision, 2026-11-10 | active | when A06 is tested | owner approves a superseding row | Jakub Tobiasz | R06 |
+| R09 | The project directory must be owned by the user who runs Orbit. Orbit refuses a directory that belongs to another account or to the system, for example `/tmp`, `/Users/Shared`, `/usr`, and `/System`. This rule is independent of the path rules that enforce R08 (not the root, a home directory, `~/.ssh`, or `~/.claude`): both must accept the directory. This adds to R08; it does not replace it. | every sandbox | `[DOCUMENT]` owner decision, 2026-11-10, on PR #22 (https://github.com/cultofthecode/orbit/pull/22#issuecomment-6779221685) | active | unknown | owner approves a superseding row | Jakub Tobiasz | none |
 
 ## Non-goals
 
@@ -176,7 +177,7 @@ None. No synthetic material exists.
 
 ## Definition of Ready addendum (own)
 
-Problems and Target group rest on one owner account, which is enough for the owner's own tool but not for a wider audience. The active rows (D02–D04, D08, D10, D12–D23, R01, R03, R04, R07, R08, N01, N02, N04–N07) are ready for implementation planning. This brief is ready for: architecture review and a spec for provisioning. A backlog can start; A02 needs one manual sign-in, and A06 needs one SSH agent test.
+Problems and Target group rest on one owner account, which is enough for the owner's own tool but not for a wider audience. The active rows (D02–D04, D08, D10, D12–D23, R01, R03, R04, R07, R08, R09, N01, N02, N04–N07) are ready for implementation planning. This brief is ready for: architecture review and a spec for provisioning. A backlog can start; A02 needs one manual sign-in, and A06 needs one SSH agent test.
 
 ## Collection plan
 
