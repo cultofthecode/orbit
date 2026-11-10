@@ -290,3 +290,22 @@ These are agent-owned files. Changing them cannot widen egress, because nftables
 - The Mac `python3 -m http.server 38517` was stopped. `lsof -iTCP:38517 -sTCP:LISTEN`: nothing.
 - Per-machine settings changed during the spike (`isolate_network`, `mounts`) applied only to `orbit-spike` and were removed with it. No global OrbStack setting was changed.
 - The scratch directories (`spike-ws`, `spike-scripts`, `httproot`) remain in the session scratchpad. No repo file other than this report was changed.
+
+## Addendum: SSH agent forwarding (A06, Q15)
+
+Date: 2026-11-10, same host and OrbStack 2.2.5. Machine `orbit-spike-ssh`, created with `orb create --isolated --isolate-network --forward-ssh-agent ubuntu` (13.6 s), deleted afterwards (`orb list`: no match).
+
+| Check | Result |
+|---|---|
+| Socket in the machine | `SSH_AUTH_SOCK=/opt/orbstack-guest/run/host-ssh-agent.sock`, mode `srw-rw----`, owner: the default user, group `orbstack` (gid 67278). The variable is also set for `orb -m <machine> -u agent`. |
+| `agent` user (uid 1000, no extra group) | `ssh-add -l`: `Error connecting ... denied`. |
+| `agent` user after `usermod -aG orbstack agent` | The socket answers. It reports the same as the Mac: `The agent has no identities.` The group owns nothing else that `find / -xdev -group orbstack` shows. |
+| After `orb stop` and `orb start` | The socket is back with the same owner and group, and it still answers for `agent`. |
+| Direct `ssh git@github.com` behind the firewall | Blocked: `Could not resolve hostname` (no DNS for the agent). |
+| `ssh.github.com:443` through the proxy (`ProxyCommand=nc -X connect -x 127.0.0.1:3128 ssh.github.com 443`, `ConnectPort 443` unchanged, allowlist entry `ssh.github.com`) | Reached the GitHub SSH server: `git@github.com: Permission denied (publickey)`. No port 22 is needed. |
+| `github.com:22` through the proxy | Refused by the proxy (`ConnectPort 443`). |
+| An SSH host that is not allowlisted (`altssh.gitlab.com:443`) through the proxy | Refused by the proxy. |
+| `userdel -r <default user>` | Failed: `user ... is currently used by process`. `/etc/sudoers.d/orbstack` holds the sudo rule. |
+
+**Verdict.** Forwarding into an isolated machine works, and the unprivileged agent user can use the socket once it is in the group `orbstack`. Git over SSH can pass the egress design without port 22, through `ssh.github.com:443` and the existing proxy. **Not shown:** an authenticated push. The SSH agent of the Mac held no identity during the test, so GitHub refused the key exchange at the last step. The owner loads a key (`ssh-add`) and repeats `ssh -T git@github.com` to close A06.
+
