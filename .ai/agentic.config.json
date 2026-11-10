@@ -4,7 +4,13 @@
   "tracker": "github",
   "browser": { "provider": "agent-browser" },
   "validation": {
-    "commands": []
+    "commands": [
+      "test -z \"$(gofmt -l .)\"",
+      "go vet ./...",
+      "golangci-lint run",
+      "go test ./...",
+      "go build ./..."
+    ]
   },
   "labels": {
     "enabled": true,

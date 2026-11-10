@@ -173,10 +173,6 @@ Automation applies `qa-approved` only through the self-QA exception: `om-auto-qa
 
 Every PR passes the full validation gate before review sign-off, in this order:
 
-_No validation commands are active yet. `validation.commands` in `.ai/agentic.config.json` is empty because the repository has no Go module, and the commands would fail. Until then, gate-running skills have nothing to run._
-
-The PR that adds `go.mod` must put this gate into the config and replace the note above:
-
 1. `test -z "$(gofmt -l .)"` — formatting
 2. `go vet ./...` — static checks
 3. `golangci-lint run` — lint, including the import rules from `ARCHITECTURE.md`

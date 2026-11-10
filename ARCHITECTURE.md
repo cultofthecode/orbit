@@ -1,6 +1,6 @@
 # Architecture — orbit
 
-The repository has no code yet. This file records the target structure, so that the first code follows it. Rows marked **proposal** are not yet confirmed by the owner; they mirror the proposal rows in `.ai/specs/product-brief.md`. Keep this file current as the system changes. Agents read it (through `AGENTS.md`) before structural changes.
+The code so far is the composition root in `cmd/orbit`; the modules under `internal/` do not exist yet. This file records the target structure, so that new code follows it. Rows marked **proposal** are not yet confirmed by the owner; they mirror the proposal rows in `.ai/specs/product-brief.md`. Keep this file current as the system changes. Agents read it (through `AGENTS.md`) before structural changes.
 
 ## Purpose and scope
 
@@ -114,7 +114,7 @@ Rules:
 4. `kernel` imports nothing from this repository.
 5. A security decision is a pure function in a module, not logic in a handler or a command: the sandbox spec, mount validation, credential selection, firewall rules, and policy matching. Handlers load, call the function, and act on the result.
 
-The compiler enforces rule 3. A lint rule (import restrictions in `golangci-lint`) will enforce rules 1, 2, and 4 once code exists.
+The compiler enforces rule 3. A lint rule (import restrictions in `golangci-lint`) will enforce rules 1, 2, and 4 once the packages that they name exist.
 
 ### Provisioning requirements
 
