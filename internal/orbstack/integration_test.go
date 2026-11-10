@@ -82,3 +82,30 @@ func TestCreateMountsOnlyTheDirectoryAtItsOwnPath(t *testing.T) {
 		t.Errorf("ls -d / in the machine = %q, %v, want /", root, err)
 	}
 }
+
+func TestRunAsRootRunsTheScriptAsRoot(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
+	t.Cleanup(cancel)
+	client := New(integrationPrefix)
+	name := integrationPrefix + strings.ToLower(rand.Text()[:8])
+	if exists, err := client.Exists(ctx, name); err != nil || exists {
+		t.Fatalf("Exists(%q) before Create = %v, %v, want false", name, exists, err)
+	}
+	t.Cleanup(func() {
+		if err := client.Delete(context.WithoutCancel(ctx), name); err != nil {
+			t.Errorf("Delete(%q) = %v", name, err)
+		}
+	})
+	if err := client.Create(ctx, name, hostDir(t)); err != nil {
+		t.Fatalf("Create(%q) = %v", name, err)
+	}
+	if err := client.RunAsRoot(ctx, name, []byte("set -eu\n[ \"$(id -u)\" = 0 ]\necho done > /root/ran\n")); err != nil {
+		t.Fatalf("RunAsRoot = %v", err)
+	}
+	if output, err := inMachine(ctx, name, "cat", "/root/ran"); err != nil || output != "done" {
+		t.Errorf("the script did not run as root: %q, %v", output, err)
+	}
+	if err := client.RunAsRoot(ctx, name, []byte("exit 7\n")); err == nil || !strings.Contains(err.Error(), "exit status 7") {
+		t.Errorf("RunAsRoot of a failing script = %v, want exit status 7", err)
+	}
+}
