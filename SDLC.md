@@ -65,7 +65,7 @@ When an item has no priority label, infer one:
 
 When an item has no risk label, infer one:
 
-- `risk-high` — authentication and login sessions, data scoping, money, schema migrations, shared contract surfaces, or broad cross-cutting edits.
+- `risk-high` — the sandbox boundary (mounts, machine isolation settings, provisioning of the agent user, firewall, and proxy, network policy, credential handling), authentication and login sessions, data scoping, money, schema migrations, shared contract surfaces, or broad cross-cutting edits.
 - `risk-medium` — an ordinary single-area change that ships with tests. This is also the default reading when the label is unset.
 - `risk-low` — docs-only, test-only, typo, or isolated cosmetic changes.
 
@@ -73,6 +73,7 @@ When signals conflict, pick the higher label and give the reason in the label co
 
 | Area behind `risk-high` | What the PR must carry |
 |---|---|
+| Sandbox boundary (mounts, machine isolation settings, provisioning of the agent user, firewall, and proxy, network policy, credential handling) | a unit test with hostile input for the changed rule, a passing run of the escape suite against a real OrbStack (`ARCHITECTURE.md`, Testing strategy) with its output in the PR, and a review by a second person. Until the escape suite exists, the PR states that it did not run. |
 | Auth, sessions, permissions | an integration test for the denied path and the wrong-scope read, and a review by a second person |
 | Data scoping | an isolation test that proves one scope cannot read another |
 | Money | tests for the failure, retry, and idempotency paths, and a review by a second person |
@@ -120,6 +121,7 @@ This process has one hard rule. **A PR that carries `needs-qa` must not merge un
 
 - Apply `needs-qa` to UI changes, new features, and other user-facing behavior that needs manual testing.
 - For a UI change, QA covers more than "it works". The state matrix is part of the pass/fail result: default, empty, loading, error, no-permission, long content, and narrow viewport. Conformance to the design contract in `.uxproof/` is also part of it, when the repository has that contract. A missing state fails QA. `om-ux-review-pr` stays the advisory design review. QA runs its objective checks.
+- Orbit is a CLI and has no web UI. For Orbit, "user-facing" means commands, flags, output, exit codes, and what a sandbox can reach. QA evidence is a terminal transcript of the tested commands on a named OrbStack version, not a browser screenshot. The browser skills and the Design stage apply only if Orbit gets a UI.
 - `skip-qa` is the explicit opt-out for docs-only, dependency-only, CI-only, test-only, and similar low-risk changes that are not user-facing. Never combine it with `needs-qa`.
 - `qa-failed`, `do-not-merge`, and `blocked` are hard blocks, whatever the other signals say. An active `qa` pipeline label means that a tester works on the PR now. Never merge while a tester is active.
 - A QA reviewer satisfies the gate when they test the PR and apply `qa-approved`.
@@ -171,7 +173,17 @@ Automation applies `qa-approved` only through the self-QA exception: `om-auto-qa
 
 Every PR passes the full validation gate before review sign-off, in this order:
 
-_No validation commands are configured yet. `validation.commands` in `.ai/agentic.config.json` is empty because the repository has no code. Add the typecheck, lint, test, and build commands there and here when the stack exists. Until then, gate-running skills have nothing to run._
+_No validation commands are active yet. `validation.commands` in `.ai/agentic.config.json` is empty because the repository has no Go module, and the commands would fail. Until then, gate-running skills have nothing to run._
+
+The PR that adds `go.mod` must put this gate into the config and replace the note above:
+
+1. `test -z "$(gofmt -l .)"` — formatting
+2. `go vet ./...` — static checks
+3. `golangci-lint run` — lint, including the import rules from `ARCHITECTURE.md`
+4. `go test ./...` — unit and handler tests
+5. `go build ./...` — build
+
+Integration tests and the escape suite need a running OrbStack (`go test -tags integration ./...`). They are not in the default gate. A `risk-high` change to the sandbox boundary must run them (see the risk table).
 
 Any non-zero exit fails the gate and blocks the PR. The implementing skills run the gate before they open a PR. `om-check-and-commit` runs it before it pushes a branch that a human worked on. The command list lives in `.ai/agentic.config.json`. When the list changes, update it there and in this section together.
 
