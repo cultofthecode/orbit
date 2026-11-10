@@ -2,11 +2,11 @@
 
 ## Project overview
 
-Orbit is a Go CLI that runs coding agents in sandboxes. It is the OrbStack counterpart of local Docker Sandboxes; other engines are a non-goal. A sandbox is one OrbStack isolated machine in which root owns the firewall and the egress proxy, and the agent is an unprivileged user with rootless Docker. The first version runs Claude Code on OrbStack on macOS, with the official client, unmodified, and the subscription of the user. More agents are added as agent definitions. A sandbox belongs to one project directory and shares only that directory; agents and Git worktrees run inside it. The host SSH agent is forwarded as a socket unless the user passes `--no-ssh`. The agent must not reach the rest of the host. The user today is the owner. The repository has no code yet. Distribution is not decided (see Q03 in the product brief); nothing is deployed.
+Orbit is a Go CLI that runs coding agents in sandboxes. It is the OrbStack counterpart of local Docker Sandboxes; other engines are a non-goal. A sandbox is one OrbStack isolated machine in which root owns the firewall and the egress proxy, and the agent is an unprivileged user with rootless Docker. The first version runs Claude Code on OrbStack on macOS, with the official client, unmodified, and the subscription of the user. More agents are added as agent definitions. A sandbox belongs to one project directory and shares only that directory; agents and Git worktrees run inside it. The host SSH agent is forwarded as a socket unless the user passes `--no-ssh`. The agent must not reach the rest of the host. The user today is the owner. The code so far is the CLI skeleton in `cmd/orbit`, with no command besides `help`. Distribution is not decided (see Q03 in the product brief); nothing is deployed.
 
 ## Task routing
 
-Before you work on a task of a given kind, read the files in **Read first**. Locations under `cmd/` and `internal/` are planned in `ARCHITECTURE.md` and do not exist yet. When a module exists, give it its own row and a short `AGENTS.md` with its invariants.
+Before you work on a task of a given kind, read the files in **Read first**. Locations under `internal/` are planned in `ARCHITECTURE.md` and do not exist yet. When a module exists, give it its own row and a short `AGENTS.md` with its invariants.
 
 | When the task involves… | Read first | Key rules |
 |---|---|---|
@@ -32,7 +32,7 @@ Before you work on a task of a given kind, read the files in **Read first**. Loc
 
 ## Validation commands
 
-None are active. `validation.commands` in `.ai/agentic.config.json` is empty, because there is no `go.mod` and the commands would fail. The PR that adds the Go module must add this gate to the config, to `SDLC.md`, and here, in this order:
+The gate is active. The same commands are in `validation.commands` in `.ai/agentic.config.json` and in `SDLC.md`. Run them from the repository root, in this order:
 
 ```sh
 test -z "$(gofmt -l .)"
