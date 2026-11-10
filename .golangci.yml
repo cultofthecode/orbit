@@ -2,3 +2,16 @@ version: "2"
 
 linters:
   default: standard
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        orbstack-adapter:
+          list-mode: lax
+          files:
+            - "!**/cmd/orbit/*.go"
+            - "!**/internal/orbstack/**"
+          deny:
+            - pkg: github.com/cultofthecode/orbit/internal/orbstack$
+              desc: only cmd/orbit imports the OrbStack adapter (ARCHITECTURE.md, dependency rule 1)
