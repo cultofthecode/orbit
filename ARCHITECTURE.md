@@ -1,6 +1,6 @@
 # Architecture — orbit
 
-The code so far is the composition root in `cmd/orbit`, the OrbStack adapter in `internal/orbstack` (create, exists, delete), and the sandbox module in `internal/sandbox` with the part of the `init` slice that creates the machine; the other modules under `internal/` do not exist yet. This file records the target structure, so that new code follows it. Rows marked **proposal** are not yet confirmed by the owner; they mirror the proposal rows in `.ai/specs/product-brief.md`. Keep this file current as the system changes. Agents read it (through `AGENTS.md`) before structural changes.
+The code so far is the composition root in `cmd/orbit`, the OrbStack adapter in `internal/orbstack` (create, exists, delete, run a script as root), the sandbox module in `internal/sandbox` with the `init` slice that creates and provisions the machine, and the pure modules `internal/policy`, `internal/proxy`, and `internal/provision`; the other modules under `internal/` do not exist yet. This file records the target structure, so that new code follows it. Rows marked **proposal** are not yet confirmed by the owner; they mirror the proposal rows in `.ai/specs/product-brief.md`. Keep this file current as the system changes. Agents read it (through `AGENTS.md`) before structural changes.
 
 ## Purpose and scope
 
@@ -124,7 +124,8 @@ These come from the spike of 2026-11-10 on OrbStack 2.2.5 (`.ai/analysis/2026-11
 
 - Create the machine with `--isolated --isolate-network` and mount the workspace as `SRC:SRC`. A mount without a destination lands under `/mnt/mac`. The image is Ubuntu 26.04, the one the spike used.
 - The machine name is the Orbit prefix, a slug of the directory name (at most 30 characters), and the first 16 hex characters of the SHA-256 of the canonical path of the project directory: `orbit-<slug>-<hash>`. Orbit finds the sandbox of a directory by computing this name.
-- Remove the default user that OrbStack creates, or its sudo rule. It has passwordless sudo.
+- Remove the default user that OrbStack creates, or its sudo rule. It has passwordless sudo. Provisioning keeps the user, removes every file in `/etc/sudoers.d` (the image also ships `90-incus`, a passwordless rule for `ubuntu`), and locks its password. Its uid is the Mac uid, below 1000, so the firewall names it explicitly.
+- systemd-resolved and its varlink sockets are masked, and `/etc/resolv.conf` names OrbStack DNS (`0.250.250.200`). Otherwise the agent can resolve any name through `resolvectl`, which no port 53 rule sees.
 - The firewall rule matches every uid from 1000 up, not only the agent uid. Rootless container traffic leaves as the agent uid or as one of its sub-uids. IPv4, IPv6, DNS, UDP, and ICMP are covered.
 - The proxy is tinyproxy (D22). A firewall rule for the uid of the proxy refuses private, link-local, and loopback destinations, except its DNS resolver, so that an allow rule cannot open the host engine or the Mac.
 - The agent has no DNS. Its tools use the proxy: `HTTPS_PROXY`, the proxy settings in `~/.docker/config.json`, and a proxy drop-in for the rootless Docker daemon.
@@ -132,6 +133,7 @@ These come from the spike of 2026-11-10 on OrbStack 2.2.5 (`.ai/analysis/2026-11
 - Allow rules are host names seen in `CONNECT`. This is not data-loss prevention: an allowed host can receive uploads, and a different TLS name behind an allowed host is not detected.
 - The default allowlist is the list in D21, plus the `EgressDomains` of the installed agent. It is fixed in the first version.
 - With SSH agent forwarding (R08), the host agent is the socket `/opt/orbstack-guest/run/host-ssh-agent.sock`, group `orbstack`. The agent user needs that group. Git reaches GitHub over `ssh.github.com:443` through the proxy; port 22 stays closed.
+- Rootless Docker and its proxy settings (`~/.docker/config.json`, the daemon drop-in) come with E01-S05. Root never writes into the home of the agent; the shell proxy settings are in `/etc/environment`.
 - Provisioning installs a fixed toolchain as root (D17): git, openssh-client, curl, ca-certificates, jq, ripgrep, unzip (D20). The agent cannot install system packages: no `apt-get`, no system-wide `pip`. It uses user-space installs or a container. No `--privileged` containers.
 
 Measured footprint of one sandbox: 1.3 GB of disk when provisioned, 2.3 GB with Claude Code and a few images; about 400 MB of memory when idle; 12 s to create, under 2 s to start, stop, or delete. Images are stored per sandbox and are not shared with the host engine.
@@ -175,4 +177,5 @@ The product brief is the decision record; the ids below point to it.
 | 2026-11-10 | Host SSH agent forwarded by default (R08) | Owner's choice; `--no-ssh` turns it off. | The agent can use every key in the forwarded agent on every SSH host it can reach. Port 22 needs an allow path for Git hosts (Q15). Untested in an isolated machine (A06). |
 | 2026-11-10 | tinyproxy and nftables enforce egress; fixed default allowlist (D21, D22) | Both spikes proved the pair. The first version has no `orbit policy`. | `internal/proxy` and `internal/provision` generate configuration; they are pure functions with hostile-input tests. A new default destination needs the owner's yes. |
 | 2026-11-10 | cobra for the CLI (D23) | Six commands need dispatch, help, and completion; cobra leaves error output and the exit code to the composition root with two settings. | The first third-party dependency (cobra and pflag are compiled in). Each slice exports a command constructor. `orbit completion` exists by default. |
+| 2026-11-10 | `provision` imports `proxy`; `cmd/orbit` injects `provision.Script` into the `init` handler (spec `.ai/specs/2026-11-10-sandbox-provisioning.md`, Q5) | The root script writes the tinyproxy files and the firewall from one source of the proxy port, user, and addresses. A slice may not import another module (dependency rule 2). | `proxy` imports `policy`; `provision` imports both. The `init` slice depends on a function field, not on `provision`. |
 | 2026-11-10 | OrbStack is the state store | No second source of truth to drift. | Every machine that Orbit creates carries the Orbit name prefix. |

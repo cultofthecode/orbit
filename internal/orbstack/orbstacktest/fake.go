@@ -31,13 +31,15 @@ const (
 	OpMounts       = "mounts"
 	OpActiveMounts = "active-mounts"
 	OpDelete       = "delete"
+	OpRunAsRoot    = "run-as-root"
 )
 
 // Call is one call that a Fake received.
 type Call struct {
-	Op   string
-	Name string
-	Dir  string
+	Op     string
+	Name   string
+	Dir    string
+	Script string
 }
 
 // Fake keeps machines in memory and records every call.
@@ -60,6 +62,8 @@ type Fake struct {
 	ActiveMountsErr error
 	// DeleteErr, when set, is the result of every Delete call.
 	DeleteErr error
+	// RunAsRootErr, when set, is the result of every RunAsRoot call.
+	RunAsRootErr error
 	// Calls holds the received calls, in order.
 	Calls []Call
 
@@ -164,4 +168,14 @@ func (f *Fake) checkOwned(name string) error {
 		return fmt.Errorf("%w %q: %q", ErrForeignMachine, f.prefix, name)
 	}
 	return nil
+}
+
+// RunAsRoot records script for the machine name. It refuses a name without
+// the prefix of the fake.
+func (f *Fake) RunAsRoot(_ context.Context, name string, script []byte) error {
+	f.Calls = append(f.Calls, Call{Op: OpRunAsRoot, Name: name, Script: string(script)})
+	if err := f.checkOwned(name); err != nil {
+		return err
+	}
+	return f.RunAsRootErr
 }

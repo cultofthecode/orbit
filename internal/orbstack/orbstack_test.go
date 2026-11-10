@@ -376,6 +376,12 @@ func TestGuardsRunNoCommand(t *testing.T) {
 	if _, err := client.ActiveMounts(ctx, "ubuntu"); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("ActiveMounts of a foreign machine = %v, want %v", err, ErrForeignMachine)
 	}
+	if err := client.RunAsRoot(ctx, "ubuntu", []byte("true\n")); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("RunAsRoot in a foreign machine = %v, want %v", err, ErrForeignMachine)
+	}
+	if err := client.RunAsRoot(ctx, "orbit-", []byte("true\n")); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("RunAsRoot in a machine named only by the prefix = %v, want %v", err, ErrForeignMachine)
+	}
 	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/.ssh:x"); !errors.Is(err, ErrMountPath) {
 		t.Errorf("Create with a colon in the directory = %v, want %v", err, ErrMountPath)
 	}
@@ -397,6 +403,7 @@ func TestFailedCommandCarriesStderr(t *testing.T) {
 		"Mounts":       mountsErr,
 		"ActiveMounts": activeMountsErr,
 		"Delete":       client.Delete(ctx, "orbit-api-1d9b22c9"),
+		"RunAsRoot":    client.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
 	}
 
 	for operation, err := range failures {
@@ -482,4 +489,28 @@ func useFakeCLI(t *testing.T, body string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
+}
+
+func TestRunAsRootArgs(t *testing.T) {
+	want := []string{"-m", "orbit-api-1d9b22c9", "-u", "root", "bash", "-s"}
+	if got := runAsRootArgs("orbit-api-1d9b22c9"); !slices.Equal(got, want) {
+		t.Errorf("runAsRootArgs() = %q, want %q", got, want)
+	}
+}
+
+func TestRunAsRootPassesTheScriptOnStdin(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "received")
+	useFakeCLI(t, "printf '%s\\n' \"$*\" > '"+out+".args'\n/bin/cat > '"+out+"'\n")
+	script := []byte("#!/bin/bash\necho 'it is $HOME' ; exit 0\n")
+	if err := New(testPrefix).RunAsRoot(context.Background(), "orbit-api-1d9b22c9", script); err != nil {
+		t.Fatalf("RunAsRoot = %v", err)
+	}
+	received, err := os.ReadFile(out)
+	if err != nil || string(received) != string(script) {
+		t.Errorf("stdin of orb = %q, %v, want %q", received, err, script)
+	}
+	args, err := os.ReadFile(out + ".args")
+	if err != nil || string(args) != "-m orbit-api-1d9b22c9 -u root bash -s\n" {
+		t.Errorf("arguments of orb = %q, %v", args, err)
+	}
 }

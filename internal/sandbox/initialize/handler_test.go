@@ -76,12 +76,29 @@ func account(home string) *user.User {
 }
 
 // newHandler returns a handler on fake that finds entry in the account
-// database.
+// database and builds the root script with fakeScript.
 func newHandler(fake *orbstacktest.Fake, entry *user.User) Handler {
 	return Handler{
-		Machines:    fake,
-		CurrentUser: func() (*user.User, error) { return entry, nil },
+		Machines:        fake,
+		ProvisionScript: fakeScript,
+		CurrentUser:     func() (*user.User, error) { return entry, nil },
 	}
+}
+
+// fakeScript returns a root script that names the default uid.
+func fakeScript(defaultUID uint32) ([]byte, error) {
+	return []byte(scriptFor(defaultUID)), nil
+}
+
+// scriptFor returns the script that fakeScript builds for uid.
+func scriptFor(uid uint32) string {
+	return "provision with the default uid " + strconv.FormatUint(uint64(uid), 10) + "\n"
+}
+
+// ownScript returns the script that fakeScript builds for the user who runs
+// the test.
+func ownScript() string {
+	return scriptFor(uint32(os.Getuid()))
 }
 
 // requireSpelling stops the test when the file system does not accept path
@@ -146,9 +163,9 @@ func checkCreates(t *testing.T, entry *user.User, dir, project string) {
 	}
 }
 
-// createCalls returns the calls that create the machine name of the
+// checkedCreateCalls returns the calls that create the machine name of the
 // directory project and check its mounts.
-func createCalls(name, project string) []orbstacktest.Call {
+func checkedCreateCalls(name, project string) []orbstacktest.Call {
 	return []orbstacktest.Call{
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpCreate, Name: name, Dir: project},
@@ -157,14 +174,32 @@ func createCalls(name, project string) []orbstacktest.Call {
 	}
 }
 
-// keepCalls returns the calls that find the machine name and check its
-// mounts.
-func keepCalls(name string) []orbstacktest.Call {
+// checkedKeepCalls returns the calls that find the machine name and check
+// its mounts.
+func checkedKeepCalls(name string) []orbstacktest.Call {
 	return []orbstacktest.Call{
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpActiveMounts, Name: name},
 	}
+}
+
+// provisionCall is the call that provisions the machine name for the user
+// who runs the test.
+func provisionCall(name string) orbstacktest.Call {
+	return orbstacktest.Call{Op: orbstacktest.OpRunAsRoot, Name: name, Script: ownScript()}
+}
+
+// createCalls returns the calls that create, check, and provision the
+// machine name of the directory project.
+func createCalls(name, project string) []orbstacktest.Call {
+	return append(checkedCreateCalls(name, project), provisionCall(name))
+}
+
+// keepCalls returns the calls that find, check, and provision the machine
+// name.
+func keepCalls(name string) []orbstacktest.Call {
+	return append(checkedKeepCalls(name), provisionCall(name))
 }
 
 func TestHandleCreatesTheMachine(t *testing.T) {
@@ -212,7 +247,7 @@ func TestHandleRefusesNestedProjectDirectories(t *testing.T) {
 	home := newHome(t)
 	work := filepath.Join(home, "work")
 	project := filepath.Join(work, "api")
-	makeDirs(t, home, "work/api/sub", "work/ap", "other")
+	makeDirs(t, home, "work/api/sub")
 	tests := []struct {
 		name  string
 		mount string
@@ -310,7 +345,7 @@ func TestHandleDeletesACreatedMachineThatMountsAnotherDirectory(t *testing.T) {
 			if len(fake.Machines) != 0 {
 				t.Errorf("machines = %v, want the new machine deleted", fake.Machines)
 			}
-			wantCalls := append(createCalls(name, project), orbstacktest.Call{Op: orbstacktest.OpDelete, Name: name})
+			wantCalls := append(checkedCreateCalls(name, project), orbstacktest.Call{Op: orbstacktest.OpDelete, Name: name})
 			if !slices.Equal(fake.Calls, wantCalls) {
 				t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
 			}
@@ -356,7 +391,7 @@ func TestHandleRefusesAnExistingMachineThatMountsAnotherDirectory(t *testing.T) 
 			name:       "mounts .ssh after a swap",
 			configured: map[string]string{project: project},
 			active:     map[string]string{project: ssh},
-			wantCalls:  keepCalls(name),
+			wantCalls:  checkedKeepCalls(name),
 		},
 	}
 	for _, test := range tests {
@@ -694,7 +729,7 @@ func TestHandleReportsOrbStackFailures(t *testing.T) {
 		{
 			name:            "reading the mounts of the new machine fails",
 			activeMountsErr: boom,
-			wantCalls:       append(createCalls(name, project), orbstacktest.Call{Op: orbstacktest.OpDelete, Name: name}),
+			wantCalls:       append(checkedCreateCalls(name, project), orbstacktest.Call{Op: orbstacktest.OpDelete, Name: name}),
 		},
 	}
 	for _, test := range tests {
@@ -720,6 +755,138 @@ func TestHandleReportsOrbStackFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandleDeletesANewMachineWhenProvisioningFails(t *testing.T) {
+	boom := errors.New("orb: script failed")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.RunAsRootErr = boom
+
+	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "provision sandbox "+name) {
+		t.Errorf("Handle = %v, want the failed provisioning of %s", err, name)
+	}
+	if got != (Output{}) {
+		t.Errorf("Handle = %+v, want no output", got)
+	}
+	if len(fake.Machines) != 0 {
+		t.Errorf("machines = %v, want the new machine deleted", fake.Machines)
+	}
+	wantCalls := append(createCalls(name, project), orbstacktest.Call{Op: orbstacktest.OpDelete, Name: name})
+	if !slices.Equal(fake.Calls, wantCalls) {
+		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+	}
+}
+
+func TestHandleKeepsAnExistingMachineWhenProvisioningFails(t *testing.T) {
+	boom := errors.New("orb: script failed")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+	fake.RunAsRootErr = boom
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+	if !errors.Is(err, boom) {
+		t.Errorf("Handle = %v, want %v", err, boom)
+	}
+	if _, kept := fake.Machines[name]; !kept {
+		t.Errorf("machines = %v, want the existing machine kept", fake.Machines)
+	}
+	if !slices.Equal(fake.Calls, keepCalls(name)) {
+		t.Errorf("calls = %v, want %v", fake.Calls, keepCalls(name))
+	}
+}
+
+func TestHandleDeletesANewMachineWhenTheScriptCannotBeBuilt(t *testing.T) {
+	boom := errors.New("invalid provisioning input")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	handler := newHandler(fake, account(home))
+	handler.ProvisionScript = func(uint32) ([]byte, error) { return nil, boom }
+
+	_, err := handler.Handle(context.Background(), Input{Dir: project})
+
+	if !errors.Is(err, boom) {
+		t.Errorf("Handle = %v, want %v", err, boom)
+	}
+	wantCalls := append(checkedCreateCalls(name, project), orbstacktest.Call{Op: orbstacktest.OpDelete, Name: name})
+	if !slices.Equal(fake.Calls, wantCalls) {
+		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+	}
+}
+
+func TestHandleReportsBothErrorsWhenTheDeleteFails(t *testing.T) {
+	scriptErr := errors.New("orb: script failed")
+	deleteErr := errors.New("orb: delete failed")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.RunAsRootErr = scriptErr
+	fake.DeleteErr = deleteErr
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+	if !errors.Is(err, scriptErr) || !errors.Is(err, deleteErr) {
+		t.Errorf("Handle = %v, want both %v and %v", err, scriptErr, deleteErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), name) {
+		t.Errorf("Handle = %v, want the machine name in the error", err)
+	}
+}
+
+func TestHandleDeletesANewMachineAfterCancellation(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	ctx, cancel := context.WithCancel(context.Background())
+	fake.RunAsRootErr = context.Canceled
+	handler := newHandler(fake, account(home))
+	machines := deleteRecorder{Fake: fake, cancel: cancel}
+	handler.Machines = &machines
+
+	_, err := handler.Handle(ctx, Input{Dir: project})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Handle = %v, want %v", err, context.Canceled)
+	}
+	if machines.deleteCtxErr != nil {
+		t.Errorf("Delete got a cancelled context: %v", machines.deleteCtxErr)
+	}
+	if !machines.deleteHadDeadline {
+		t.Error("Delete got a context without a deadline")
+	}
+}
+
+// deleteRecorder cancels the context of the run when the script runs, and
+// records whether Delete got a context that was still usable.
+type deleteRecorder struct {
+	*orbstacktest.Fake
+	cancel            context.CancelFunc
+	deleteCtxErr      error
+	deleteHadDeadline bool
+}
+
+// RunAsRoot cancels the context of the run and then fails like the fake.
+func (r *deleteRecorder) RunAsRoot(ctx context.Context, name string, script []byte) error {
+	r.cancel()
+	return r.Fake.RunAsRoot(ctx, name, script)
+}
+
+// Delete records the error of ctx and deletes like the fake.
+func (r *deleteRecorder) Delete(ctx context.Context, name string) error {
+	r.deleteCtxErr = ctx.Err()
+	_, r.deleteHadDeadline = ctx.Deadline()
+	return r.Fake.Delete(ctx, name)
 }
 
 func TestHandleReportsAFailedDeletion(t *testing.T) {
