@@ -966,3 +966,128 @@ func TestRunAsAgentPutsNoCallerValueOnTheCommandLine(t *testing.T) {
 		})
 	}
 }
+
+func TestWithoutForwarding(t *testing.T) {
+	tests := []struct {
+		name    string
+		environ []string
+		want    []string
+	}{
+		{
+			name:    "no forwarding variable",
+			environ: []string{"HOME=/Users/dev", "PATH=/usr/bin"},
+			want:    []string{"HOME=/Users/dev", "PATH=/usr/bin"},
+		},
+		{
+			name:    "ORBENV naming a secret",
+			environ: []string{"HOME=/Users/dev", "ORBENV=TOKEN", "TOKEN=secret"},
+			want:    []string{"HOME=/Users/dev", "TOKEN=secret"},
+		},
+		{
+			name:    "WSLENV naming a secret with a flag",
+			environ: []string{"WSLENV=TOKEN/u:HOME", "TOKEN=secret"},
+			want:    []string{"TOKEN=secret"},
+		},
+		{
+			name:    "both, twice, and empty",
+			environ: []string{"ORBENV=", "ORBENV=TOKEN", "WSLENV=TOKEN", "TOKEN=secret", "WSLENV="},
+			want:    []string{"TOKEN=secret"},
+		},
+		{
+			name:    "entry without a value",
+			environ: []string{"ORBENV", "WSLENV", "TOKEN=secret"},
+			want:    []string{"TOKEN=secret"},
+		},
+		{
+			name:    "value that holds an equals sign",
+			environ: []string{"ORBENV=TOKEN=x", "TOKEN=secret"},
+			want:    []string{"TOKEN=secret"},
+		},
+		{
+			name:    "similar names that orb does not read",
+			environ: []string{"orbenv=TOKEN", "Wslenv=TOKEN", "ORBENV_X=TOKEN", "XORBENV=TOKEN", " ORBENV=TOKEN", "ORBENV =TOKEN"},
+			want:    []string{"orbenv=TOKEN", "Wslenv=TOKEN", "ORBENV_X=TOKEN", "XORBENV=TOKEN", " ORBENV=TOKEN", "ORBENV =TOKEN"},
+		},
+		{
+			name:    "forwarding name in a value",
+			environ: []string{"NOTE=ORBENV=TOKEN", "=ORBENV"},
+			want:    []string{"NOTE=ORBENV=TOKEN", "=ORBENV"},
+		},
+		{
+			name:    "empty environment",
+			environ: []string{},
+			want:    []string{},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			environ := slices.Clone(test.environ)
+			got := withoutForwarding(environ)
+			if !slices.Equal(got, test.want) {
+				t.Errorf("withoutForwarding(%q) = %q, want %q", test.environ, got, test.want)
+			}
+			if !slices.Equal(environ, test.environ) {
+				t.Errorf("withoutForwarding changed its argument to %q", environ)
+			}
+		})
+	}
+}
+
+// TestNoCommandCarriesAForwardingVariable sets ORBENV and WSLENV to name a
+// variable of the test process, runs every operation of the client against
+// a fake orb that records its environment, and checks that no command of
+// orb, orb status included, gets a forwarding variable, and that every
+// command keeps the rest of the environment.
+func TestNoCommandCarriesAForwardingVariable(t *testing.T) {
+	const machineName = "orbit-api-1d9b22c9"
+	dir := t.TempDir()
+	useBareFakeCLI(t, "/usr/bin/env > \"$(/usr/bin/mktemp '"+dir+"/env.XXXXXX')\"\n"+
+		reportsRunning+
+		"if [ \"$1\" = list ] && [ \"$2\" = --format ]; then echo '[]'; exit 0; fi\n"+
+		"if [ \"$5\" = cat ]; then echo '195 125 0:35 /p /p rw - virtiofs mac rw'; fi\n")
+	t.Setenv("ORBIT_TEST_SECRET", "forwarding-marker")
+	t.Setenv("ORBENV", "ORBIT_TEST_SECRET:HOME")
+	t.Setenv("WSLENV", "ORBIT_TEST_SECRET/u")
+	client := New(testPrefix)
+	ctx := context.Background()
+
+	_, existsErr := client.Exists(ctx, machineName)
+	_, mountsErr := client.Mounts(ctx)
+	_, activeMountsErr := client.ActiveMounts(ctx, machineName)
+	operations := map[string]error{
+		"Create":       client.Create(ctx, machineName, "/Users/dev/Project/api"),
+		"Exists":       existsErr,
+		"Mounts":       mountsErr,
+		"ActiveMounts": activeMountsErr,
+		"Delete":       client.Delete(ctx, machineName),
+		"RunAsRoot":    client.RunAsRoot(ctx, machineName, []byte("true\n")),
+		"RunAsAgent":   client.RunAsAgent(ctx, machineName, []byte("true\n")),
+	}
+	for operation, err := range operations {
+		if err != nil {
+			t.Errorf("%s = %v", operation, err)
+		}
+	}
+
+	records, err := filepath.Glob(filepath.Join(dir, "env.*"))
+	if err != nil || len(records) != 2*len(operations) {
+		t.Fatalf("recorded environments = %d, %v, want %d", len(records), err, 2*len(operations))
+	}
+	for _, record := range records {
+		content, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		environ := strings.Split(strings.TrimSpace(string(content)), "\n")
+		for _, entry := range environ {
+			if isForwarding(entry) {
+				t.Errorf("orb got %q", entry)
+			}
+		}
+		for _, kept := range []string{"ORBIT_TEST_SECRET=forwarding-marker", "HOME=" + os.Getenv("HOME")} {
+			if !slices.Contains(environ, kept) {
+				t.Errorf("orb did not get %q", kept)
+			}
+		}
+	}
+}

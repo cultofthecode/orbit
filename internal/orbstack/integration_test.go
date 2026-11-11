@@ -225,3 +225,45 @@ func TestAnotherHomeNamesHomeWhileOrbStackRuns(t *testing.T) {
 		t.Errorf("Exists with the account home again = %v, want OrbStack still running", err)
 	}
 }
+
+// TestNoHostVariableReachesTheMachine sets ORBENV and WSLENV to name a
+// variable of the test process. A script of RunAsRoot and one of RunAsAgent
+// find the variable unset in the machine. orb run directly with the same
+// environment does forward it, so the test fails when the client stops
+// removing the forwarding variables.
+func TestNoHostVariableReachesTheMachine(t *testing.T) {
+	const variable = "ORBIT_IT_FORWARDED"
+	marker := "marker-" + strings.ToLower(rand.Text()[:8])
+	client, name := newMachine(t, hostDir(t))
+	ctx := testContext(t)
+	if err := client.RunAsRoot(ctx, name, []byte("set -eu\nuseradd --create-home --shell /bin/bash --user-group "+AgentUser+"\n")); err != nil {
+		t.Fatalf("create the agent user: %v", err)
+	}
+	t.Setenv(variable, marker)
+	t.Setenv("ORBENV", variable)
+	t.Setenv("WSLENV", variable)
+	script := []byte("printf '%s' \"${" + variable + "-unset}\" > \"$HOME/forwarded\"\n")
+
+	if err := client.RunAsRoot(ctx, name, script); err != nil {
+		t.Fatalf("RunAsRoot = %v", err)
+	}
+	if err := client.RunAsAgent(ctx, name, script); err != nil {
+		t.Fatalf("RunAsAgent = %v", err)
+	}
+	for _, file := range []string{"/root/forwarded", "/home/" + AgentUser + "/forwarded"} {
+		if output, err := inMachine(ctx, name, "cat", file); err != nil || output != "unset" {
+			t.Errorf("%s in the machine = %q, %v, want %q", file, output, err, "unset")
+		}
+	}
+
+	for _, forwarding := range forwardingVariables {
+		t.Run("orb forwards with "+forwarding, func(t *testing.T) {
+			t.Setenv("ORBENV", "")
+			t.Setenv("WSLENV", "")
+			t.Setenv(forwarding, variable)
+			if output, err := inMachine(ctx, name, "printenv", variable); err != nil || output != marker {
+				t.Errorf("orb with %s=%s printed %q, %v, want %q: the test no longer proves the removal", forwarding, variable, output, err, marker)
+			}
+		})
+	}
+}
