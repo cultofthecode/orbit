@@ -96,7 +96,7 @@ type plan struct {
 // call created, it deletes that machine; it never deletes a machine that
 // existed before the call.
 func (h Handler) Handle(ctx context.Context, in Input) (Output, error) {
-	p, err := h.plan(in)
+	p, err := h.prepare(in)
 	if err != nil {
 		return Output{}, err
 	}
@@ -110,9 +110,9 @@ func (h Handler) Handle(ctx context.Context, in Input) (Output, error) {
 	return Output{Name: p.name, Dir: p.dir, Created: created}, nil
 }
 
-// plan resolves the agent, validates the project directory, and builds the
+// prepare resolves the agent, validates the project directory, and builds the
 // scripts, without asking OrbStack anything.
-func (h Handler) plan(in Input) (plan, error) {
+func (h Handler) prepare(in Input) (plan, error) {
 	agent, err := h.agent(in.Agent)
 	if err != nil {
 		return plan{}, err
