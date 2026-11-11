@@ -133,8 +133,10 @@ func ValidateProjectDir(dir ProjectDir) error {
 // project directories of the other sandboxes, sandboxDirs, are disjoint. It
 // refuses dir when it is one of them or lies inside one, with
 // ErrNestedProjectDir, and when it contains one, with ErrContainsProjectDir.
-// Every path must be absolute and clean, in a spelling that the system
-// reports.
+// Every path must be absolute and clean; it refuses one that is not with
+// ErrPathNotClean. It compares the paths by their components as they are, so
+// the caller passes every spelling that matters, also of a directory that no
+// longer exists.
 func ValidateNotNested(dir string, sandboxDirs []string) error {
 	if err := checkPaths(slices.Concat([]string{dir}, sandboxDirs)); err != nil {
 		return err

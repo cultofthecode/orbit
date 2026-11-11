@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"os/user"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"syscall"
@@ -26,8 +27,8 @@ type Machines interface {
 	// machine name, the host directory of each mount by its mount point.
 	Mounts(ctx context.Context) (map[string]map[string]string, error)
 	// ActiveMounts returns what the machine name mounts from the host, as
-	// its kernel reports it: the host directory of each mount by its mount
-	// point.
+	// its kernel reports it: the host path of each mounted directory by its
+	// mount point. It names the path, not the identity of the directory.
 	ActiveMounts(ctx context.Context, name string) (map[string]string, error)
 	// Create creates the isolated machine name with dir as its only mount,
 	// at the same absolute path as on the host.
@@ -127,14 +128,66 @@ func (h Handler) unnestedMachines(ctx context.Context, name, dir string) (map[st
 	if err != nil {
 		return nil, fmt.Errorf("list sandboxes: %w", err)
 	}
-	sandboxDirs, err := existingSpellings(mountedDirs(machines, name))
-	if err != nil {
-		return nil, fmt.Errorf("project directory of another sandbox: %w", err)
-	}
-	if err := sandbox.ValidateNotNested(dir, sandboxDirs); err != nil {
+	if err := validateNotNested(dir, mountedDirs(machines, name)); err != nil {
 		return nil, err
 	}
 	return machines, nil
+}
+
+// validateNotNested refuses dir when it is, lies inside, or contains one of
+// sandboxDirs, the directories that other machines mount, as OrbStack stores
+// them. OrbStack resolves the stored path again at every start, so it checks
+// each one as it is first, also when it does not exist, and refuses one that
+// is not absolute and clean before it reads the file system. Then it checks
+// every spelling that each one resolves to.
+func validateNotNested(dir string, sandboxDirs []string) error {
+	if err := sandbox.ValidateNotNested(dir, sandboxDirs); err != nil {
+		return err
+	}
+	spellings, err := pathSpellings(sandboxDirs)
+	if err != nil {
+		return fmt.Errorf("project directory of another sandbox: %w", err)
+	}
+	return sandbox.ValidateNotNested(dir, spellings)
+}
+
+// pathSpellings returns every spelling of each path in paths. For a path
+// that does not exist, it returns every spelling of its nearest existing
+// parent, joined with the rest of the path.
+func pathSpellings(paths []string) ([]string, error) {
+	var spellings []string
+	for _, path := range paths {
+		found, err := nearestSpellings(path)
+		if err != nil {
+			return nil, err
+		}
+		spellings = append(spellings, found...)
+	}
+	return distinct(spellings), nil
+}
+
+// nearestSpellings returns every spelling of the absolute path, or, when it
+// does not exist, every spelling of its parent joined with its base name.
+func nearestSpellings(path string) ([]string, error) {
+	spellings, err := dirSpellings(path)
+	parent := filepath.Dir(path)
+	if !errors.Is(err, fs.ErrNotExist) || parent == path {
+		return spellings, err
+	}
+	parentSpellings, err := nearestSpellings(parent)
+	if err != nil {
+		return nil, err
+	}
+	return joinAll(parentSpellings, filepath.Base(path)), nil
+}
+
+// joinAll returns each of dirs joined with name.
+func joinAll(dirs []string, name string) []string {
+	joined := make([]string, len(dirs))
+	for i, dir := range dirs {
+		joined[i] = filepath.Join(dir, name)
+	}
+	return joined
 }
 
 // ensureMachine creates the machine name with the mount dir when it is not
@@ -160,7 +213,9 @@ func (h Handler) verifyMounts(ctx context.Context, name, dir string, created boo
 }
 
 // checkMounts checks that both the configuration and the kernel of the
-// machine name report exactly dir, mounted at its own path.
+// machine name report exactly dir, mounted at its own path. It is defense in
+// depth: the kernel does not report a path that was swapped for a symlink
+// between two starts. The nesting refusal protects against that.
 func (h Handler) checkMounts(ctx context.Context, name, dir string) error {
 	machines, err := h.Machines.Mounts(ctx)
 	if err != nil {

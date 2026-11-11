@@ -257,6 +257,10 @@ func TestValidateNotNested(t *testing.T) {
 		{name: "parent of a sandbox with dot dot", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev/Project/orbit/.."}, want: ErrPathNotClean},
 		{name: "parent of a sandbox with a trailing slash", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev/Project/orbit/"}, want: ErrPathNotClean},
 		{name: "parent with a trailing slash", dir: "/Users/dev/Project/", sandboxes: sandboxes, want: ErrPathNotClean},
+		{name: "sandbox in home shorthand", dir: "/Users/dev/Project", sandboxes: []string{"~/Project/orbit"}, want: ErrPathNotClean},
+		{name: "sandbox with a dot segment", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev/./Project/orbit"}, want: ErrPathNotClean},
+		{name: "sandbox with a double slash", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev//Project/orbit"}, want: ErrPathNotClean},
+		{name: "unrelated directory beside a sandbox that is not clean", dir: "/srv/api", sandboxes: []string{"/Users/dev/Project/orbit", "Project/orbit"}, want: ErrPathNotClean},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

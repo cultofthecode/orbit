@@ -335,6 +335,91 @@ func TestHandleRefusesProjectDirectoriesThatContainAnotherSandbox(t *testing.T) 
 	})
 }
 
+// TestHandleRefusesProjectDirectoriesThatContainAMissingSandbox covers a
+// directory that another machine mounts and that no longer exists. OrbStack
+// resolves the stored path again at the next start of that machine, so the
+// new agent could put a symlink there. The stored path counts in every
+// spelling, also when it does not exist.
+func TestHandleRefusesProjectDirectoriesThatContainAMissingSandbox(t *testing.T) {
+	home := newHome(t)
+	work := filepath.Join(home, "work")
+	linkedWork := symlink(t, work)
+	leavingLink := filepath.Join(work, "elsewhere")
+	symlinkAt(t, newDir(t), leavingLink)
+	tests := []struct {
+		name   string
+		parent string
+		mount  string
+		dir    string
+	}{
+		{name: "child that does not exist", parent: work, mount: "gone", dir: work},
+		{name: "grandchild below a child that does not exist", parent: work, mount: "gone/deeper", dir: work},
+		{name: "grandchild that does not exist", parent: work, mount: "api/gone", dir: work},
+		{name: "child that does not exist, in upper case", parent: strings.ToUpper(work), mount: "gone", dir: work},
+		{name: "child that does not exist, on the data volume", parent: dataVolume + work, mount: "gone", dir: work},
+		{name: "child that does not exist, through a symlink", parent: linkedWork, mount: "gone", dir: work},
+		{name: "child that does not exist, parent reached through a symlink", parent: work, mount: "gone", dir: linkedWork},
+		{name: "child that does not exist, below a symlink that leaves the directory", parent: leavingLink, mount: "gone", dir: work},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			requireSpelling(t, test.parent)
+			mount := filepath.Join(test.parent, test.mount)
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.Machines["orbit-gone-0123456789abcdef"] = map[string]string{"/srv/gone": mount}
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: test.dir})
+
+			if !errors.Is(err, sandbox.ErrContainsProjectDir) || got != (Output{}) {
+				t.Errorf("Handle(%q) = %+v, %v, want %v", test.dir, got, err, sandbox.ErrContainsProjectDir)
+			}
+			if wantCalls := []orbstacktest.Call{{Op: orbstacktest.OpMounts}}; !slices.Equal(fake.Calls, wantCalls) {
+				t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+			}
+		})
+	}
+}
+
+// TestHandleRefusesStoredMountsThatAreNotClean covers a mount of another
+// machine that is not an absolute and clean path. OrbStack would resolve it
+// in a way that the nesting check cannot follow, so the handler refuses
+// every project directory while that machine exists.
+func TestHandleRefusesStoredMountsThatAreNotClean(t *testing.T) {
+	home := newHome(t)
+	work := filepath.Join(home, "work")
+	makeDirs(t, home, "other")
+	t.Chdir(home)
+	mounts := []struct {
+		name  string
+		mount string
+	}{
+		{name: "relative path of an existing directory", mount: "work/api"},
+		{name: "relative path that does not exist", mount: "work/gone"},
+		{name: "home shorthand", mount: "~/work/api"},
+		{name: "trailing slash", mount: work + "/gone/"},
+		{name: "dot dot", mount: work + "/x/../gone"},
+		{name: "dot segment", mount: work + "/./gone"},
+		{name: "empty", mount: ""},
+	}
+	for _, mount := range mounts {
+		for _, dir := range []string{work, filepath.Join(home, "other")} {
+			t.Run(mount.name+" with "+filepath.Base(dir), func(t *testing.T) {
+				fake := orbstacktest.New(sandbox.NamePrefix)
+				fake.Machines["orbit-odd-0123456789abcdef"] = map[string]string{"/srv/odd": mount.mount}
+
+				got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: dir})
+
+				if !errors.Is(err, sandbox.ErrPathNotClean) || got != (Output{}) {
+					t.Errorf("Handle(%q) = %+v, %v, want %v", dir, got, err, sandbox.ErrPathNotClean)
+				}
+				if wantCalls := []orbstacktest.Call{{Op: orbstacktest.OpMounts}}; !slices.Equal(fake.Calls, wantCalls) {
+					t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+				}
+			})
+		}
+	}
+}
+
 func TestHandleAcceptsDirectoriesOutsideOtherSandboxes(t *testing.T) {
 	home := newHome(t)
 	project := filepath.Join(home, "work", "api")
@@ -347,6 +432,9 @@ func TestHandleAcceptsDirectoriesOutsideOtherSandboxes(t *testing.T) {
 		{name: "prefix look-alike", mounts: map[string]string{"/srv/ap": filepath.Join(home, "work", "ap")}},
 		{name: "longer sibling", mounts: map[string]string{"/srv/old": filepath.Join(home, "work", "api-old")}},
 		{name: "directory that does not exist", mounts: map[string]string{"/srv/gone": filepath.Join(home, "gone")}},
+		{name: "sibling that does not exist", mounts: map[string]string{"/srv/gone": filepath.Join(home, "work", "gone")}},
+		{name: "prefix look-alike that does not exist", mounts: map[string]string{"/srv/apix": filepath.Join(home, "work", "apix")}},
+		{name: "directory below a missing look-alike", mounts: map[string]string{"/srv/apix": filepath.Join(home, "work", "apix", "api")}},
 		{name: "machine without mounts", mounts: map[string]string{}},
 	}
 	for _, test := range tests {

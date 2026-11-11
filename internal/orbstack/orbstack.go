@@ -108,8 +108,10 @@ func (c *Client) Mounts(ctx context.Context) (map[string]map[string]string, erro
 
 // ActiveMounts returns the host directory of each mount of the host file
 // system in the machine name, by its mount point, as the kernel of the
-// machine reports it. It starts the machine when it is stopped. It runs no
-// command when name lacks the prefix of the client.
+// machine reports it. The kernel reports the path of the mounted directory,
+// not its identity: a path swapped for a symlink between two starts of the
+// machine still shows as the stored path. It starts the machine when it is
+// stopped. It runs no command when name lacks the prefix of the client.
 func (c *Client) ActiveMounts(ctx context.Context, name string) (map[string]string, error) {
 	if err := c.checkOwned(name); err != nil {
 		return nil, err

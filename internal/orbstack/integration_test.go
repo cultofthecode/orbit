@@ -108,9 +108,10 @@ func TestCreateMountsOnlyTheDirectoryAtItsOwnPath(t *testing.T) {
 }
 
 // TestActiveMountsShowASwappedPath creates a machine for a path that an
-// agent swapped for a relative symlink to another directory after the check.
-// The configuration of OrbStack still names the checked path; only the
-// active mounts show the directory that the machine really mounts.
+// agent swapped for a relative symlink to another directory after the check
+// and before the mount. The configuration of OrbStack still names the
+// checked path; the active mounts show the target of the symlink. A path
+// swapped between two starts does not show there.
 func TestActiveMountsShowASwappedPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
 	t.Cleanup(cancel)
