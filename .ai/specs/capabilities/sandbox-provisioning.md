@@ -45,11 +45,23 @@ The system SHALL drop every connection to port 3128 that does not arrive on the 
 - THEN the connection fails
 
 ## Requirement: Proxy allowlist
-The system SHALL let the proxy open a `CONNECT` tunnel on port 443 only to a host of the base allowlist (D24) or of the `EgressDomains` of the agent of the last `init`, matched exactly and without case. Each `init` rebuilds the allowlist from its own `--agent`.
+The system SHALL let the proxy open a `CONNECT` tunnel on port 443 only, and forward a plain HTTP request, to a host of the base allowlist (D26: the hosts of D24, `dl-cdn.alpinelinux.org` included, plus `ghcr.io` and `pkg-containers.githubusercontent.com`, `deb.debian.org`, `archive.ubuntu.com`, `security.ubuntu.com`, and `ports.ubuntu.com`) or of the `EgressDomains` of the agent of the last `init`, matched exactly and without case. The proxy does not limit the port of a plain HTTP request; the firewall does (Requirement "Proxy refuses non-public destinations"): it reaches only ports 80 and 443. Each `init` rebuilds the allowlist from its own `--agent`.
 
 ### Scenario: Allowed and refused hosts
 - WHEN `agent` asks the proxy for `CONNECT github.com:443`, `CONNECT example.org:443`, and `CONNECT github.com:22`
 - THEN the first succeeds and the other two get 403
+
+### Scenario: GHCR hosts
+- WHEN the owner runs `orbit init` without `--agent`, and `agent` asks the proxy for `CONNECT ghcr.io:443`, `CONNECT pkg-containers.githubusercontent.com:443`, and `CONNECT quay.io:443`
+- THEN the first two succeed and the third gets 403
+
+### Scenario: Alpine mirror
+- WHEN the owner runs `orbit init` without `--agent`, and `agent` asks the proxy for `CONNECT dl-cdn.alpinelinux.org:443`
+- THEN it succeeds
+
+### Scenario: Plain HTTP to the package mirrors
+- WHEN `agent` asks the proxy for `GET http://deb.debian.org/debian/dists/trixie/InRelease`, `GET http://ports.ubuntu.com/ubuntu-ports/dists/resolute/InRelease`, `GET http://example.org/`, `CONNECT deb.debian.org:80`, and `GET http://deb.debian.org:8080/`, and connects to `deb.debian.org:80` without the proxy
+- THEN the first two succeed, the proxy answers 403 to the third and the fourth, the fifth fails because the firewall refuses the connection of the proxy to port 8080, and the direct connection fails
 
 ### Scenario: Hostile domain in a definition
 - WHEN a definition holds `*.anthropic.com`, `1.2.3.4`, `localhost`, `Claude.AI`, or `example.com:22`
@@ -66,11 +78,17 @@ The system SHALL let the proxy open a `CONNECT` tunnel on port 443 only to a hos
 Source: .ai/specs/2026-11-11-claude-code-agent-definition.md
 
 ## Requirement: Proxy refuses non-public destinations
-The system SHALL reject every connection of the proxy user to a loopback, private, link-local, shared, benchmark, multicast, or reserved address, except port 53 on its DNS resolvers, and every connection of the proxy user to a port other than 443 and 53.
+The system SHALL reject every connection of the proxy user to a loopback, private, link-local, shared, benchmark, multicast, or reserved address, except port 53 on its DNS resolvers, and every connection of the proxy user to a port other than 80, 443, and 53.
 
 ### Scenario: Proxy user to a private address
 - WHEN a process of the proxy user connects to `192.168.139.3`, `198.19.249.1`, `169.254.169.254`, `127.0.0.1:22`, or `fd07:b51a:cc66:f0::fe`
 - THEN the connection fails
+
+### Scenario: Proxy user to a refused port
+- WHEN a process of the proxy user connects to the public address of `deb.debian.org` on port 80, 443, 22, and 8080
+- THEN the connections to ports 80 and 443 succeed, and the connections to ports 22 and 8080 fail
+
+Source: .ai/specs/2026-11-11-rootless-docker.md
 
 ## Requirement: Enforcement survives a restart
 The system SHALL start the firewall, the proxy address, and the proxy as enabled units before `systemd-user-sessions.service`.

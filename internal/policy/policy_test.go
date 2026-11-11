@@ -11,6 +11,12 @@ func TestValidateHostAccepts(t *testing.T) {
 	hosts := []string{
 		"github.com",
 		"registry-1.docker.io",
+		"ghcr.io",
+		"pkg-containers.githubusercontent.com",
+		"deb.debian.org",
+		"archive.ubuntu.com",
+		"security.ubuntu.com",
+		"ports.ubuntu.com",
 		"http-intake.logs.us5.datadoghq.com",
 		"a.b",
 		strings.Repeat("a", 63) + ".com",
@@ -65,20 +71,23 @@ func TestValidateHostRefusesHostileInput(t *testing.T) {
 	}
 }
 
-// baseHostsOfD24 is the base list of D24, sorted.
-var baseHostsOfD24 = []string{
-	"auth.docker.io", "codeload.github.com", "dl-cdn.alpinelinux.org",
-	"files.pythonhosted.org", "github.com", "nodejs.org",
+// baseHostsOfD26 is the base list of D26, sorted.
+var baseHostsOfD26 = []string{
+	"archive.ubuntu.com", "auth.docker.io", "codeload.github.com",
+	"deb.debian.org", "dl-cdn.alpinelinux.org", "files.pythonhosted.org",
+	"ghcr.io", "github.com", "nodejs.org",
+	"pkg-containers.githubusercontent.com", "ports.ubuntu.com",
 	"production.cloudflare.docker.com", "production.cloudfront.docker.com",
 	"proxy.golang.org", "pypi.org", "raw.githubusercontent.com",
-	"registry-1.docker.io", "registry.npmjs.org", "ssh.github.com", "sum.golang.org",
+	"registry-1.docker.io", "registry.npmjs.org", "security.ubuntu.com",
+	"ssh.github.com", "sum.golang.org",
 }
 
-func TestAllowlistWithoutAgentIsTheBaseListOfD24(t *testing.T) {
+func TestAllowlistWithoutAgentIsTheBaseListOfD26(t *testing.T) {
 	for _, domains := range [][]string{nil, {}} {
 		got, err := Allowlist(domains)
-		if err != nil || !slices.Equal(got, baseHostsOfD24) {
-			t.Errorf("Allowlist(%q) = %q, %v, want %q", domains, got, err, baseHostsOfD24)
+		if err != nil || !slices.Equal(got, baseHostsOfD26) {
+			t.Errorf("Allowlist(%q) = %q, %v, want %q", domains, got, err, baseHostsOfD26)
 		}
 	}
 }
@@ -100,7 +109,7 @@ func TestAllowlistAddsTheAgentDomains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Allowlist = %v", err)
 	}
-	want := slices.Sorted(slices.Values(append(slices.Clone(baseHostsOfD24), "claude.ai", "downloads.claude.ai")))
+	want := slices.Sorted(slices.Values(append(slices.Clone(baseHostsOfD26), "claude.ai", "downloads.claude.ai")))
 	if !slices.Equal(got, want) {
 		t.Errorf("Allowlist = %q, want %q", got, want)
 	}
