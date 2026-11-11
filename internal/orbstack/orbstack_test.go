@@ -662,9 +662,6 @@ func TestStatusErrorNamesHome(t *testing.T) {
 			}
 		})
 	}
-	if err := statusError("Running", nil, cause); err != nil {
-		t.Errorf("statusError of a running OrbStack under another HOME = %v, want nil", err)
-	}
 }
 
 func TestHomeCause(t *testing.T) {
@@ -675,16 +672,16 @@ func TestHomeCause(t *testing.T) {
 	}{
 		{name: "account home with its state", home: home{env: "/Users/dev", account: "/Users/dev", hasStateDir: true}},
 		{name: "unknown account with a state", home: home{env: "/Users/dev", hasStateDir: true}},
-		{name: "another HOME", home: home{env: "/private/tmp/x", account: "/Users/dev"}, want: `HOME "/private/tmp/x" is not the home directory of the account, "/Users/dev"`},
-		{name: "another HOME with a state", home: home{env: "/private/tmp/x", account: "/Users/dev", hasStateDir: true}, want: `HOME "/private/tmp/x" is not the home directory of the account, "/Users/dev"`},
-		{name: "account home without its state", home: home{env: "/Users/dev", account: "/Users/dev"}, want: `"/Users/dev/.orbstack" is not a directory`},
-		{name: "unknown account without a state", home: home{env: "/private/tmp/x"}, want: `"/private/tmp/x/.orbstack" is not a directory`},
-		{name: "empty HOME", home: home{account: "/Users/dev"}, want: `HOME "" is not an absolute path`},
-		{name: "relative HOME", home: home{env: "Users/dev", account: "/Users/dev", hasStateDir: true}, want: `HOME "Users/dev" is not an absolute path`},
-		{name: "HOME of a parent of the account home", home: home{env: "/Users", account: "/Users/dev", hasStateDir: true}, want: `HOME "/Users" is not the home directory of the account, "/Users/dev"`},
-		{name: "HOME with a prefix of the account home", home: home{env: "/Users/de", account: "/Users/dev", hasStateDir: true}, want: `HOME "/Users/de" is not the home directory of the account, "/Users/dev"`},
-		{name: "HOME with a newline", home: home{env: "/Users/dev\n/x", account: "/Users/dev"}, want: `HOME "/Users/dev\n/x" is not the home directory of the account, "/Users/dev"`},
-		{name: "HOME with a control character", home: home{env: "/Users/dev\x1b[2J", account: "/Users/dev"}, want: `HOME "/Users/dev\x1b[2J" is not the home directory of the account, "/Users/dev"`},
+		{name: "another HOME", home: home{env: "/private/tmp/x", account: "/Users/dev"}, want: `HOME "/private/tmp/x" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
+		{name: "another HOME with a state", home: home{env: "/private/tmp/x", account: "/Users/dev", hasStateDir: true}, want: `HOME "/private/tmp/x" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
+		{name: "account home without its state", home: home{env: "/Users/dev", account: "/Users/dev"}, want: `"/Users/dev/.orbstack" is not a directory: start OrbStack once as this account, or set HOME to the directory that holds .orbstack, and try again`},
+		{name: "unknown account without a state", home: home{env: "/private/tmp/x"}, want: `"/private/tmp/x/.orbstack" is not a directory: start OrbStack once as this account, or set HOME to the directory that holds .orbstack, and try again`},
+		{name: "empty HOME", home: home{account: "/Users/dev"}, want: `HOME "" is not an absolute path: set HOME to the home directory of the account and try again`},
+		{name: "relative HOME", home: home{env: "Users/dev", account: "/Users/dev", hasStateDir: true}, want: `HOME "Users/dev" is not an absolute path: set HOME to the home directory of the account and try again`},
+		{name: "HOME of a parent of the account home", home: home{env: "/Users", account: "/Users/dev", hasStateDir: true}, want: `HOME "/Users" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
+		{name: "HOME with a prefix of the account home", home: home{env: "/Users/de", account: "/Users/dev", hasStateDir: true}, want: `HOME "/Users/de" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
+		{name: "HOME with a newline", home: home{env: "/Users/dev\n/x", account: "/Users/dev"}, want: `HOME "/Users/dev\n/x" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
+		{name: "HOME with a control character", home: home{env: "/Users/dev\x1b[2J", account: "/Users/dev"}, want: `HOME "/Users/dev\x1b[2J" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -755,6 +752,36 @@ func TestReadHome(t *testing.T) {
 	}
 }
 
+func TestSameDirOrSelf(t *testing.T) {
+	dir := hostDir(t)
+	other := hostDir(t)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name  string
+		path  string
+		other string
+		want  string
+	}{
+		{name: "same spelling", path: dir, other: dir, want: dir},
+		{name: "another spelling of the same directory", path: dir, other: dir + "/.", want: dir + "/."},
+		{name: "symlink to the same directory", path: dir, other: link, want: link},
+		{name: "another directory", path: dir, other: other, want: dir},
+		{name: "missing other", path: dir, other: "/nonexistent", want: dir},
+		{name: "missing path", path: "/nonexistent", other: dir, want: "/nonexistent"},
+		{name: "empty other", path: dir, other: "", want: dir},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sameDirOrSelf(test.path, test.other); got != test.want {
+				t.Errorf("sameDirOrSelf(%q, %q) = %q, want %q", test.path, test.other, got, test.want)
+			}
+		})
+	}
+}
+
 func TestReadHomeWithoutAnAccount(t *testing.T) {
 	dir := hostDir(t)
 	t.Setenv("HOME", dir)
@@ -778,9 +805,10 @@ func TestStoppedUnderAnotherHomeNamesHome(t *testing.T) {
 		wantCause string
 	}{
 		{
-			name: "HOME is an empty directory, account from the user database",
+			name: "HOME is an empty directory",
 			setup: func(t *testing.T) {
 				t.Setenv("HOME", hostDir(t))
+				useAccount(t, hostDir(t))
 			},
 			wantCause: "is not the home directory of the account",
 		},

@@ -85,7 +85,9 @@ var (
 )
 
 // currentUser returns the account of the process from the user database of
-// the system, which does not read HOME. Tests replace it.
+// the system, which does not read HOME on macOS. A build with the osusergo
+// tag falls back to HOME, and then only the .orbstack check can name HOME.
+// Tests replace it.
 var currentUser = user.Current
 
 // Client drives the orb CLI. It runs a command only after orb status reports
@@ -408,7 +410,7 @@ func checkRunning(ctx context.Context) error {
 func statusError(status string, err error, homeCause string) error {
 	switch {
 	case isNotRunning(status) && homeCause != "":
-		return fmt.Errorf("%w: %s, and orb finds OrbStack through $HOME/%s (orb status: %s); OrbStack may still be running: set HOME to the home directory of the account and try again", ErrHome, homeCause, stateDir, status)
+		return fmt.Errorf("%w (orb status: %s): orb finds OrbStack through $HOME/%s, so OrbStack may still be running; %s", ErrHome, status, stateDir, homeCause)
 	case isNotRunning(status):
 		return fmt.Errorf("%w (orb status: %s); start OrbStack, wait until orb status prints Running, and try again", ErrNotRunning, status)
 	case err != nil:
@@ -438,17 +440,29 @@ type home struct {
 }
 
 // readHome reads HOME, the home directory of the account, and whether
-// $HOME/.orbstack is a directory.
+// $HOME/.orbstack is a directory. An account home that is the same directory
+// as HOME counts as HOME.
 func readHome() home {
 	h := home{env: canonical(os.Getenv("HOME"))}
 	if account, err := currentUser(); err == nil && account.HomeDir != "" {
-		h.account = canonical(account.HomeDir)
+		h.account = sameDirOrSelf(canonical(account.HomeDir), h.env)
 	}
 	if filepath.IsAbs(h.env) {
 		info, err := os.Stat(filepath.Join(h.env, stateDir))
 		h.hasStateDir = err == nil && info.IsDir()
 	}
 	return h
+}
+
+// sameDirOrSelf returns other when path and other name the same directory,
+// also through a firmlink or another letter case, and path otherwise.
+func sameDirOrSelf(path, other string) string {
+	pathInfo, pathErr := os.Stat(path)
+	otherInfo, otherErr := os.Stat(other)
+	if pathErr == nil && otherErr == nil && os.SameFile(pathInfo, otherInfo) {
+		return other
+	}
+	return path
 }
 
 // canonical returns an absolute path with its symlinks resolved, or cleaned
@@ -468,11 +482,11 @@ func canonical(path string) string {
 func homeCause(h home) string {
 	switch {
 	case !filepath.IsAbs(h.env):
-		return fmt.Sprintf("HOME %q is not an absolute path", h.env)
+		return fmt.Sprintf("HOME %q is not an absolute path: set HOME to the home directory of the account and try again", h.env)
 	case h.account != "" && h.env != h.account:
-		return fmt.Sprintf("HOME %q is not the home directory of the account, %q", h.env, h.account)
+		return fmt.Sprintf("HOME %q is not the home directory of the account, %q: set HOME to that directory and try again", h.env, h.account)
 	case !h.hasStateDir:
-		return fmt.Sprintf("%q is not a directory", filepath.Join(h.env, stateDir))
+		return fmt.Sprintf("%q is not a directory: start OrbStack once as this account, or set HOME to the directory that holds .orbstack, and try again", filepath.Join(h.env, stateDir))
 	}
 	return ""
 }
