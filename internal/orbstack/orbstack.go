@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // cli is the command of OrbStack.
@@ -74,6 +75,13 @@ var (
 	// ErrMountTable reports a list of machines or a mount table that does not
 	// say for certain what is mounted where.
 	ErrMountTable = errors.New("mounts cannot be read")
+	// ErrMachineList reports a list of machines that does not say for
+	// certain in which state a machine is.
+	ErrMachineList = errors.New("machine list cannot be read")
+	// ErrMachineName reports a machine name with white space. A name that
+	// sandbox.MachineName computes has none, and Start and Stop pass only
+	// such a name to orb.
+	ErrMachineName = errors.New("machine name holds white space")
 	// ErrNotRunning reports that OrbStack is not running. The client then
 	// runs no other command, because orb starts a stopped OrbStack.
 	ErrNotRunning = errors.New("OrbStack is not running")
@@ -155,6 +163,48 @@ func (c *Client) ActiveMounts(ctx context.Context, name string) (map[string]stri
 	return parseMountTable(table)
 }
 
+// State returns the state of the machine name as orb list prints it, such
+// as "running" or "stopped", or "" when no machine has that name. It runs
+// only orb status and orb list, so it never starts a machine. It runs no
+// command when name lacks the prefix of the client.
+func (c *Client) State(ctx context.Context, name string) (string, error) {
+	if err := c.checkOwned(name); err != nil {
+		return "", err
+	}
+	list, err := run(ctx, mountsArgs(), nil)
+	if err != nil {
+		return "", fmt.Errorf("list machines: %w", err)
+	}
+	return parseState([]byte(list), name)
+}
+
+// Start starts the machine name, and only that machine: orb start without a
+// name starts every machine that ran when OrbStack last stopped. It runs no
+// command when name lacks the prefix of the client or holds white space.
+func (c *Client) Start(ctx context.Context, name string) error {
+	if err := c.checkNamed(name); err != nil {
+		return err
+	}
+	if _, err := run(ctx, startArgs(name), nil); err != nil {
+		return fmt.Errorf("start machine %s: %w", name, err)
+	}
+	return nil
+}
+
+// Stop stops the machine name, and only that machine: orb stop without a
+// name stops OrbStack with every machine. It keeps the disk of the machine.
+// It runs no command when name lacks the prefix of the client or holds
+// white space.
+func (c *Client) Stop(ctx context.Context, name string) error {
+	if err := c.checkNamed(name); err != nil {
+		return err
+	}
+	if _, err := run(ctx, stopArgs(name), nil); err != nil {
+		return fmt.Errorf("stop machine %s: %w", name, err)
+	}
+	return nil
+}
+
 // Delete deletes the machine name with everything stored in it. It runs no
 // command when name lacks the prefix of the client.
 func (c *Client) Delete(ctx context.Context, name string) error {
@@ -199,6 +249,18 @@ func (c *Client) RunAsAgent(ctx context.Context, name string, script []byte) err
 func (c *Client) checkOwned(name string) error {
 	if c.prefix == "" || !strings.HasPrefix(name, c.prefix) || name == c.prefix {
 		return fmt.Errorf("%w %q: %q", ErrForeignMachine, c.prefix, name)
+	}
+	return nil
+}
+
+// checkNamed refuses a name that checkOwned refuses and a name with white
+// space.
+func (c *Client) checkNamed(name string) error {
+	if err := c.checkOwned(name); err != nil {
+		return err
+	}
+	if strings.ContainsFunc(name, unicode.IsSpace) {
+		return fmt.Errorf("%w: %q", ErrMachineName, name)
 	}
 	return nil
 }
@@ -251,10 +313,21 @@ func activeMountsArgs(name string) []string {
 	return []string{"-m", name, "-u", "root", "cat", mountTable}
 }
 
+// startArgs returns the arguments of orb that start the machine name.
+func startArgs(name string) []string {
+	return []string{"start", name}
+}
+
+// stopArgs returns the arguments of orb that stop the machine name.
+func stopArgs(name string) []string {
+	return []string{"stop", name}
+}
+
 // machine is the part of an entry of "orb list --format json" that the
 // adapter reads.
 type machine struct {
 	Name   string `json:"name"`
+	State  string `json:"state"`
 	Config struct {
 		Mounts []struct {
 			Source      string `json:"source"`
@@ -284,6 +357,32 @@ func parseMounts(list []byte) (map[string]map[string]string, error) {
 		}
 	}
 	return mounts, nil
+}
+
+// parseState returns the state of the machine name in the output of "orb
+// list --format json", or "" when no entry has that name. It fails on output
+// that it cannot read, on a name that appears twice, and on an entry of name
+// without a state.
+func parseState(list []byte, name string) (string, error) {
+	var machines []machine
+	if err := json.Unmarshal(list, &machines); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrMachineList, err)
+	}
+	var states []string
+	for _, m := range machines {
+		if m.Name == name {
+			states = append(states, m.State)
+		}
+	}
+	switch {
+	case len(states) > 1:
+		return "", fmt.Errorf("%w: machine %q is listed twice", ErrMachineList, name)
+	case len(states) == 1 && states[0] == "":
+		return "", fmt.Errorf("%w: machine %q has no state", ErrMachineList, name)
+	case len(states) == 1:
+		return states[0], nil
+	}
+	return "", nil
 }
 
 // parseMountTable returns the mounts of the host file system in a mount table

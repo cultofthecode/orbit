@@ -249,11 +249,7 @@ func createAgent() []string {
 // selfCheck verifies, as root, what the boundary depends on. Any failure
 // stops the script before the marker is written.
 func selfCheck(defaultUID uint32) []string {
-	script := []string{
-		`nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`,
-		"for unit in " + strings.Join(append(boundaryUnits(), unitUserSessions), " ") + "; do",
-		`  systemctl is-active --quiet "$unit" || fail "$unit is not active"`,
-		"done",
+	script := slices.Concat(boundaryCheck(), []string{
 		"for unit in " + strings.Join(resolvedUnits, " ") + "; do",
 		`  [ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" = masked ] || fail "$unit is not masked"`,
 		`  if systemctl is-active --quiet "$unit"; then fail "$unit is active"; fi`,
@@ -271,8 +267,20 @@ func selfCheck(defaultUID uint32) []string {
 		fmt.Sprintf("for group in %s; do", strings.Join(privilegedGroups, " ")),
 		fmt.Sprintf(`  case " $(id -nG %s) " in *" $group "*) fail "%s is in the group $group";; esac`, AgentUser, AgentUser),
 		"done",
-	}
+	})
 	return script
+}
+
+// boundaryCheck fails, through the shell function fail, unless the firewall
+// table is loaded and every boundary unit and systemd-user-sessions.service
+// is active. An active nftables.service alone does not prove the table.
+func boundaryCheck() []string {
+	return []string{
+		`nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`,
+		"for unit in " + strings.Join(append(boundaryUnits(), unitUserSessions), " ") + "; do",
+		`  systemctl is-active --quiet "$unit" || fail "$unit is not active"`,
+		"done",
+	}
 }
 
 // writeMarker writes MarkerPath as the last action of the script.

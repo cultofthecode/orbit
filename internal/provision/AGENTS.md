@@ -7,6 +7,7 @@ What root sets up in a sandbox machine before any agent runs: the firewall, the 
 - `firewall.go` — `Firewall(FirewallInput)`: `/etc/nftables.conf`, one table `inet orbit_egress`. Golden file: `testdata/firewall.nft` (`go test -update` after a review of the change).
 - `units.go` — `Units(defaultUID)`: the systemd units and drop-ins, and the harden script.
 - `script.go` — `Script(defaultUID, agentDomains)`: the root script that `init` runs through `RunAsRoot`. The proxy allowlist is `policy.Allowlist(agentDomains)`; `nil` means no agent.
+- `check.go` — `BootCheckScript()` and `MarkerCheckScript()`: the root scripts that `start` runs after `orb start`. The boot check waits at most 120 s for the boot and then runs `boundaryCheck`, the same table and unit checks as the self-check of `Script`; the marker check fails unless `MarkerPath` holds exactly `Version`. They are two scripts because `start` stops the machine again when the boot check fails and leaves it running when only the marker check fails.
 
 ## Invariants
 
