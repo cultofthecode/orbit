@@ -4,7 +4,7 @@ The sandbox module: the lifecycle of the sandbox of a project directory. Read th
 
 ## Layout
 
-- `sandbox.go` — the root package: `NamePrefix`, `MachineName`, `ProjectDir`, `ProtectedDirs`, `ProtectedFiles`, `ValidateProjectDir`, `ValidateNotNested`, `ValidateMounts`. Pure functions, no I/O.
+- `sandbox.go` — the root package: `NamePrefix`, `MachineName`, `ProjectDir`, `ProtectedDirs`, `ProtectedFiles`, `RelocatedDirs`, `RelocatedFiles`, `ValidateProjectDir`, `ValidateNotNested`, `ValidateMounts`. Pure functions, no I/O.
 - `initialize/` — the slice of `orbit init`. The package is not named `init`, because Go refuses to import a package under that name. It creates the machine and provisions it as root with the script that `Handler.ProvisionScript` returns (`provision.Script`, injected by `cmd/orbit`). `NewCommand` is not registered in `cmd/orbit` until the agent is installed as well (story E01-S01).
 - `internal/realpath/` — private to the module: `Resolve` returns the canonical path of a directory, `ResolveWithOwner` that path and the owner from one open handle, and `ResolveNoFirmlink` its path on its own volume. Every slice resolves the project directory with `Resolve` or `ResolveWithOwner`.
 
@@ -25,6 +25,18 @@ The sandbox module: the lifecycle of the sandbox of a project directory. Read th
     | `.claude.json` | file | Claude Code configuration and state |
 
     A protected file refuses the directory that holds it and every directory that contains that one, not the directories inside it: those do not contain the file. For `.claude.json` in the home directory itself, the home rules already refuse these.
+  - Locations that the environment moves (#40). In the environment of the user who runs `orbit`, these variables move a protected location. `RelocatedDirs` and `RelocatedFiles` return the locations; the handler resolves them with the same rules as the paths in every home (symlinks and dangling targets followed, the nearest existing parent for a missing path, the walk of the symlinks in a protected directory) and adds them to `ProjectDir.Protected` and `ProjectDir.ProtectedFileDirs`. The paths in every home stay protected as well. A new variable needs the owner's yes.
+
+    | Variable | Protected location | Kind |
+    |---|---|---|
+    | `CLAUDE_CONFIG_DIR` | the directory (with its `.claude.json`) | directory |
+    | `GH_CONFIG_DIR` | the directory | directory |
+    | `GNUPGHOME` | the directory | directory |
+    | `XDG_CONFIG_HOME` | `$XDG_CONFIG_HOME/gh` | directory |
+    | `AWS_CONFIG_FILE` | the file | file |
+    | `AWS_SHARED_CREDENTIALS_FILE` | the file | file |
+
+    An unset variable adds nothing. A set variable fails closed (`ErrRelocatedPath`, naming the variable) when its value is empty, relative (also `~/…` or `$HOME/…` that the shell did not expand), or has a `..` segment: a tool can read an empty or relative value against its own working directory, and a lexical clean of `..` after a symlink protects the wrong directory. A trailing separator, a repeated separator, and `.` are cleaned. A location that cannot be resolved (a symlink loop, a dangling target with `..` after a name, a directory variable that names a file) stops `init` and names the variable. Orbit reads only the values of the variables, never a file that they name (D08).
   - Ownership: it refuses a directory that the user does not own. This covers system directories such as `/System`, `/.vol`, `/.nofollow`, and `/.resolve`.
 - The home directories are the one of `$HOME` and the one of the account database (`os/user`), each as its canonical path and as its path on its own volume. Both must exist. `$HOME` alone can name any directory, and on macOS the home directory `/Users/dev` is also `/System/Volumes/Data/Users/dev`, so `/System`, `/System/Volumes`, and `/System/Volumes/Data` contain it.
 - A protected directory can be a symlink, and so can a directory on its path (`.config`). The handler resolves every path of `ProtectedDirs` and passes every spelling of its target in `ProjectDir.Protected`; for a path that does not exist, every spelling of its nearest existing parent joined with the rest of the path, so a missing `.config/gh` under a linked `.config` is protected where the GitHub CLI would create it. A protected file can be a symlink too: the handler follows every path of `ProtectedFiles` with `filepath.EvalSymlinks`, without opening the file (D08), and passes every spelling of the directory that holds the final target in `ProjectDir.ProtectedFileDirs`.

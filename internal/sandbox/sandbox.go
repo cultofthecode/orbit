@@ -62,6 +62,10 @@ var (
 	// ErrMountMismatch reports a machine that does not mount exactly the
 	// project directory, once, at its own path.
 	ErrMountMismatch = errors.New("machine does not mount exactly the project directory at its own path")
+	// ErrRelocatedPath reports an environment variable that moves a
+	// protected location to a value that is empty, relative, or has a ".."
+	// segment. Orbit cannot know where the tool puts the location then.
+	ErrRelocatedPath = errors.New("environment variable that moves a protected location is not an absolute path without a .. segment")
 )
 
 // protectedNames are the directories of a home directory that never enter a
@@ -72,6 +76,31 @@ var protectedNames = []string{".aws", ".claude", filepath.Join(".config", "gh"),
 // protectedFileNames are the files of a home directory that never enter a
 // sandbox: the configuration and the state of the agent.
 var protectedFileNames = []string{".claude.json"}
+
+// relocation is an environment variable that moves a protected location of
+// the home directory, and the name of that location in the directory that
+// the variable names; an empty name means the directory itself.
+type relocation struct {
+	variable string
+	name     string
+}
+
+// dirRelocations are the variables that move a protected directory: the
+// configuration and the state of the agent with its .claude.json, the
+// configuration of the GitHub CLI, and the keys of GnuPG.
+var dirRelocations = []relocation{
+	{variable: "CLAUDE_CONFIG_DIR"},
+	{variable: "GH_CONFIG_DIR"},
+	{variable: "GNUPGHOME"},
+	{variable: "XDG_CONFIG_HOME", name: "gh"},
+}
+
+// fileRelocations are the variables that move a protected file: the
+// configuration and the credentials of AWS.
+var fileRelocations = []relocation{
+	{variable: "AWS_CONFIG_FILE"},
+	{variable: "AWS_SHARED_CREDENTIALS_FILE"},
+}
 
 // outsideSlug matches every run of characters that a slug cannot hold.
 var outsideSlug = regexp.MustCompile(`[^a-z0-9]+`)
@@ -92,16 +121,24 @@ type ProjectDir struct {
 	// its canonical path and as its path on its own volume.
 	Homes []string
 	// Protected holds every spelling of the directory that each path of
-	// ProtectedDirs resolves to, or of the path where its target would be
+	// ProtectedDirs and RelocatedDirs resolves to, or of the path where its target would be
 	// created when it does not exist, and of every directory that a
 	// symlink in one of those directories leads to or would create.
 	Protected []string
 	// ProtectedFileDirs holds every spelling of the directory that holds
-	// the file that each path of ProtectedFiles resolves to, or would be
-	// created in, of the directory that holds each file that a symlink in
-	// a protected directory leads to, and of each directory that holds a
-	// symlink on the chain of such a symlink.
+	// the file that each path of ProtectedFiles and RelocatedFiles resolves
+	// to, or would be created in, of the directory that holds each file
+	// that a symlink in a protected directory leads to, and of each
+	// directory that holds a symlink on the chain of such a symlink.
 	ProtectedFileDirs []string
+}
+
+// Relocated is a protected location that an environment variable moves.
+type Relocated struct {
+	// Variable is the name of the environment variable.
+	Variable string
+	// Path is the absolute, clean path of the location.
+	Path string
 }
 
 // MachineName returns the name of the machine of a project directory:
@@ -126,6 +163,23 @@ func ProtectedDirs(home string) []string {
 // protected file can be a symlink to a file in another directory.
 func ProtectedFiles(home string) []string {
 	return joinAll(home, protectedFileNames)
+}
+
+// RelocatedDirs returns the protected directories that the environment
+// moves. lookup returns the value of an environment variable and whether it
+// is set; a handler passes os.LookupEnv. An unset variable adds nothing. A
+// value that is empty, relative, or has a ".." segment fails with
+// ErrRelocatedPath and names the variable. A handler resolves each path, as
+// it resolves ProtectedDirs.
+func RelocatedDirs(lookup func(string) (string, bool)) ([]Relocated, error) {
+	return relocate(dirRelocations, lookup)
+}
+
+// RelocatedFiles returns the protected files that the environment moves, by
+// the rules of RelocatedDirs. A handler resolves each path, as it resolves
+// ProtectedFiles.
+func RelocatedFiles(lookup func(string) (string, bool)) ([]Relocated, error) {
+	return relocate(fileRelocations, lookup)
 }
 
 // ValidateProjectDir reports whether the project directory dir may be
@@ -247,6 +301,35 @@ func protectedFileDirs(dir ProjectDir) []string {
 		}
 	}
 	return dirs
+}
+
+// relocate returns the location of each of relocations whose variable is
+// set.
+func relocate(relocations []relocation, lookup func(string) (string, bool)) ([]Relocated, error) {
+	var found []Relocated
+	for _, moved := range relocations {
+		value, set := lookup(moved.variable)
+		if !set {
+			continue
+		}
+		path, err := relocatedPath(moved.variable, value)
+		if err != nil {
+			return nil, err
+		}
+		found = append(found, Relocated{Variable: moved.variable, Path: filepath.Join(path, moved.name)})
+	}
+	return found, nil
+}
+
+// relocatedPath returns the clean path of the value of variable. It refuses
+// a value that is not absolute or has a ".." segment: when the name before
+// ".." is a symlink, the kernel applies ".." to its target, so a lexical
+// clean would protect the wrong directory.
+func relocatedPath(variable, value string) (string, error) {
+	if !filepath.IsAbs(value) || slices.Contains(strings.Split(value, string(filepath.Separator)), "..") {
+		return "", fmt.Errorf("%w: %s=%q", ErrRelocatedPath, variable, value)
+	}
+	return filepath.Clean(value), nil
 }
 
 // joinAll returns dir joined with each of names.
