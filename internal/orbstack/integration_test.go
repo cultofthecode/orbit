@@ -5,11 +5,13 @@ package orbstack
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -26,6 +28,32 @@ const createTimeout = 5 * time.Minute
 // machine exists.
 const integrationTimeout = 3 * time.Minute
 
+// initLockPath is the file that serializes the integration runs on one
+// host. A test whose machine makes init refuse every directory holds an
+// exclusive lock on it; every test in cmd/orbit that runs init holds a
+// shared lock on the same path.
+const initLockPath = "/tmp/orbit-integration-init.lock"
+
+// blockInit holds the exclusive lock on initLockPath until the end of t, so
+// that no init test of any run on the host runs while the machine of t
+// exists. Call it before newMachine: the lock is released after the
+// machine is deleted.
+func blockInit(t *testing.T) {
+	t.Helper()
+	file, err := os.OpenFile(initLockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+		return
+	}
+	t.Logf("waiting for the integration tests of other runs that hold the init lock (%s)", initLockPath)
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatalf("lock %s: %v", initLockPath, err)
+	}
+}
+
 // testContext returns a context that ends after integrationTimeout.
 func testContext(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
@@ -39,16 +67,6 @@ func inMachine(ctx context.Context, name string, command ...string) (string, err
 	args := append([]string{"-m", name, "-u", "root"}, command...)
 	output, err := exec.CommandContext(ctx, cli, args...).CombinedOutput()
 	return strings.TrimSpace(string(output)), err
-}
-
-// hostDir returns the canonical path of a new directory on the host.
-func hostDir(t *testing.T) string {
-	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return dir
 }
 
 // newMachine creates a machine of the integration tests with the mount dir
@@ -125,8 +143,11 @@ func TestCreateMountsOnlyTheDirectoryAtItsOwnPath(t *testing.T) {
 // agent swapped for a relative symlink to another directory after the check
 // and before the mount. The configuration of OrbStack still names the
 // checked path; the active mounts show the target of the symlink. A path
-// swapped between two starts does not show there.
+// swapped between two starts does not show there. While the machine exists,
+// init refuses every directory, so the test blocks the init tests of every
+// run on the host.
 func TestActiveMountsShowASwappedPath(t *testing.T) {
+	blockInit(t)
 	base := hostDir(t)
 	checked := filepath.Join(base, "project", "sub")
 	secret := filepath.Join(base, "secret")
@@ -175,5 +196,32 @@ func TestRunAsAgentRunsTheScriptAsTheAgent(t *testing.T) {
 	}
 	if err := client.RunAsAgent(ctx, name, []byte("exit 7\n")); err == nil || !strings.Contains(err.Error(), "exit status 7") {
 		t.Errorf("RunAsAgent of a failing script = %v, want exit status 7", err)
+	}
+}
+
+// TestAnotherHomeNamesHomeWhileOrbStackRuns runs the client with HOME set to
+// an empty directory while OrbStack runs. orb then cannot reach OrbStack and
+// prints Stopped; the client names HOME as the cause and runs no other
+// command. With the account home, the same call works, so OrbStack still
+// runs. The test creates no machine and starts or stops nothing.
+func TestAnotherHomeNamesHomeWhileOrbStackRuns(t *testing.T) {
+	ctx := testContext(t)
+	name := integrationPrefix + strings.ToLower(rand.Text()[:8])
+	client := New(integrationPrefix)
+	if _, err := client.Exists(ctx, name); err != nil {
+		t.Fatalf("Exists with the account home = %v, want OrbStack running", err)
+	}
+
+	t.Run("empty HOME", func(t *testing.T) {
+		t.Setenv("HOME", hostDir(t))
+		_, err := client.Exists(ctx, name)
+		if !errors.Is(err, ErrHome) || errors.Is(err, ErrNotRunning) {
+			t.Fatalf("Exists with an empty HOME = %v, want %v and not %v", err, ErrHome, ErrNotRunning)
+		}
+		t.Logf("error: %v", err)
+	})
+
+	if _, err := client.Exists(ctx, name); err != nil {
+		t.Errorf("Exists with the account home again = %v, want OrbStack still running", err)
 	}
 }

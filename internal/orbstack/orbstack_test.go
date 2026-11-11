@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -541,7 +542,7 @@ func TestStatusError(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := statusError(test.status, test.err)
+			err := statusError(test.status, test.err, "")
 			if (err == nil) != test.wantRunning {
 				t.Errorf("statusError(%q, %v) = %v, want running %v", test.status, test.err, err, test.wantRunning)
 			}
@@ -572,6 +573,7 @@ func TestNoCallStartsAStoppedOrbStack(t *testing.T) {
 				"if [ \"$1\" = status ]; then echo "+test.status+"; exit "+strconv.Itoa(test.exit)+"; fi\n")
 			client := New(testPrefix)
 			ctx := context.Background()
+			useAccountHome(t)
 			_, existsErr := client.Exists(ctx, "orbit-api-1d9b22c9")
 			_, mountsErr := client.Mounts(ctx)
 			_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
@@ -595,6 +597,304 @@ func TestNoCallStartsAStoppedOrbStack(t *testing.T) {
 				t.Errorf("orb ran %q, %v, want only orb status, once for each operation", received, err)
 			}
 		})
+	}
+}
+
+// useAccountHome makes HOME a new directory with .orbstack in it, and the
+// home directory of the account the same directory. It returns that
+// directory.
+func useAccountHome(t *testing.T) string {
+	t.Helper()
+	dir := hostDir(t)
+	if err := os.Mkdir(filepath.Join(dir, stateDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", dir)
+	useAccount(t, dir)
+	return dir
+}
+
+// useAccount makes accountHome the home directory of the account for the
+// test.
+func useAccount(t *testing.T, accountHome string) {
+	t.Helper()
+	previous := currentUser
+	currentUser = func() (*user.User, error) { return &user.User{HomeDir: accountHome}, nil }
+	t.Cleanup(func() { currentUser = previous })
+}
+
+// hostDir returns the canonical path of a new directory on the host.
+func hostDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestStatusErrorNamesHome(t *testing.T) {
+	cause := `HOME "/tmp/x" is not the home directory of the account, "/Users/dev"`
+	failed := errors.New("orb status: exit status 1")
+	tests := []struct {
+		name     string
+		status   string
+		err      error
+		wantHome bool
+	}{
+		{name: "stopped", status: "Stopped", err: failed, wantHome: true},
+		{name: "starting", status: "Starting", err: failed, wantHome: true},
+		{name: "running", status: "Running"},
+		{name: "unknown state", status: "Paused"},
+		{name: "nothing printed and a failed command", status: "", err: failed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := statusError(test.status, test.err, cause)
+			if errors.Is(err, ErrHome) != test.wantHome {
+				t.Errorf("statusError(%q, %v, cause) = %v, want %v: %v", test.status, test.err, err, ErrHome, test.wantHome)
+			}
+			if errors.Is(err, ErrNotRunning) {
+				t.Errorf("statusError(%q, %v, cause) = %v, want no %v while HOME is the cause", test.status, test.err, err, ErrNotRunning)
+			}
+			if test.wantHome && !strings.Contains(err.Error(), cause) {
+				t.Errorf("statusError(%q, %v, cause) = %v, want the cause in the text", test.status, test.err, err)
+			}
+		})
+	}
+}
+
+func TestHomeCause(t *testing.T) {
+	tests := []struct {
+		name string
+		home home
+		want string
+	}{
+		{name: "account home with its state", home: home{env: "/Users/dev", account: "/Users/dev", hasStateDir: true}},
+		{name: "unknown account with a state", home: home{env: "/Users/dev", hasStateDir: true}},
+		{name: "another HOME", home: home{env: "/private/tmp/x", account: "/Users/dev"}, want: `HOME "/private/tmp/x" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
+		{name: "another HOME with a state", home: home{env: "/private/tmp/x", account: "/Users/dev", hasStateDir: true}, want: `HOME "/private/tmp/x" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
+		{name: "account home without its state", home: home{env: "/Users/dev", account: "/Users/dev"}, want: `"/Users/dev/.orbstack" is not a directory: start OrbStack once as this account, or set HOME to the directory that holds .orbstack, and try again`},
+		{name: "unknown account without a state", home: home{env: "/private/tmp/x"}, want: `"/private/tmp/x/.orbstack" is not a directory: start OrbStack once as this account, or set HOME to the directory that holds .orbstack, and try again`},
+		{name: "empty HOME", home: home{account: "/Users/dev"}, want: `HOME "" is not an absolute path: set HOME to the home directory of the account and try again`},
+		{name: "relative HOME", home: home{env: "Users/dev", account: "/Users/dev", hasStateDir: true}, want: `HOME "Users/dev" is not an absolute path: set HOME to the home directory of the account and try again`},
+		{name: "HOME of a parent of the account home", home: home{env: "/Users", account: "/Users/dev", hasStateDir: true}, want: `HOME "/Users" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
+		{name: "HOME with a prefix of the account home", home: home{env: "/Users/de", account: "/Users/dev", hasStateDir: true}, want: `HOME "/Users/de" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
+		{name: "HOME with a newline", home: home{env: "/Users/dev\n/x", account: "/Users/dev"}, want: `HOME "/Users/dev\n/x" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
+		{name: "HOME with a control character", home: home{env: "/Users/dev\x1b[2J", account: "/Users/dev"}, want: `HOME "/Users/dev\x1b[2J" is not the home directory of the account, "/Users/dev": set HOME to that directory and try again`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := homeCause(test.home); got != test.want {
+				t.Errorf("homeCause(%+v) = %q, want %q", test.home, got, test.want)
+			}
+		})
+	}
+}
+
+func TestCanonical(t *testing.T) {
+	dir := hostDir(t)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: dir, want: dir},
+		{path: dir + "/", want: dir},
+		{path: dir + "/./x/..", want: dir},
+		{path: link, want: dir},
+		{path: "/nonexistent/a/../b/", want: "/nonexistent/b"},
+		{path: "", want: ""},
+		{path: "relative/dir", want: "relative/dir"},
+		{path: "./", want: "./"},
+	}
+	for _, test := range tests {
+		if got := canonical(test.path); got != test.want {
+			t.Errorf("canonical(%q) = %q, want %q", test.path, got, test.want)
+		}
+	}
+}
+
+func TestReadHome(t *testing.T) {
+	account := useAccountHome(t)
+	link := filepath.Join(t.TempDir(), "home")
+	if err := os.Symlink(account, link); err != nil {
+		t.Fatal(err)
+	}
+	other := hostDir(t)
+	stateFile := hostDir(t)
+	if err := os.WriteFile(filepath.Join(stateFile, stateDir), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		env  string
+		want home
+	}{
+		{name: "account home", env: account, want: home{env: account, account: account, hasStateDir: true}},
+		{name: "symlink to the account home", env: link, want: home{env: account, account: account, hasStateDir: true}},
+		{name: "account home with a trailing slash", env: account + "/", want: home{env: account, account: account, hasStateDir: true}},
+		{name: "another directory", env: other, want: home{env: other, account: account}},
+		{name: ".orbstack is a file", env: stateFile, want: home{env: stateFile, account: account}},
+		{name: "empty HOME", env: "", want: home{account: account}},
+		{name: "relative HOME", env: ".", want: home{env: ".", account: account}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", test.env)
+			if got := readHome(); got != test.want {
+				t.Errorf("readHome() with HOME %q = %+v, want %+v", test.env, got, test.want)
+			}
+		})
+	}
+}
+
+func TestSameDirOrSelf(t *testing.T) {
+	dir := hostDir(t)
+	other := hostDir(t)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name  string
+		path  string
+		other string
+		want  string
+	}{
+		{name: "same spelling", path: dir, other: dir, want: dir},
+		{name: "another spelling of the same directory", path: dir, other: dir + "/.", want: dir + "/."},
+		{name: "symlink to the same directory", path: dir, other: link, want: link},
+		{name: "another directory", path: dir, other: other, want: dir},
+		{name: "missing other", path: dir, other: "/nonexistent", want: dir},
+		{name: "missing path", path: "/nonexistent", other: dir, want: "/nonexistent"},
+		{name: "empty other", path: dir, other: "", want: dir},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sameDirOrSelf(test.path, test.other); got != test.want {
+				t.Errorf("sameDirOrSelf(%q, %q) = %q, want %q", test.path, test.other, got, test.want)
+			}
+		})
+	}
+}
+
+func TestReadHomeWithoutAnAccount(t *testing.T) {
+	dir := hostDir(t)
+	t.Setenv("HOME", dir)
+	previous := currentUser
+	currentUser = func() (*user.User, error) { return nil, errors.New("no such user") }
+	t.Cleanup(func() { currentUser = previous })
+
+	if got, want := readHome(), (home{env: dir}); got != want {
+		t.Errorf("readHome() without an account = %+v, want %+v", got, want)
+	}
+}
+
+// TestStoppedUnderAnotherHomeNamesHome checks that every operation fails
+// with ErrHome, not ErrNotRunning, when orb status prints Stopped while HOME
+// does not lead orb to OrbStack, and that it runs no orb command other than
+// orb status.
+func TestStoppedUnderAnotherHomeNamesHome(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T)
+		wantCause string
+	}{
+		{
+			name: "HOME is an empty directory",
+			setup: func(t *testing.T) {
+				t.Setenv("HOME", hostDir(t))
+				useAccount(t, hostDir(t))
+			},
+			wantCause: "is not the home directory of the account",
+		},
+		{
+			name: "HOME is another directory with .orbstack",
+			setup: func(t *testing.T) {
+				useAccountHome(t)
+				useAccount(t, hostDir(t))
+			},
+			wantCause: "is not the home directory of the account",
+		},
+		{
+			name: "account home without .orbstack",
+			setup: func(t *testing.T) {
+				dir := hostDir(t)
+				t.Setenv("HOME", dir)
+				useAccount(t, dir)
+			},
+			wantCause: `.orbstack" is not a directory`,
+		},
+		{
+			name: "HOME is unset",
+			setup: func(t *testing.T) {
+				t.Setenv("HOME", "")
+				if err := os.Unsetenv("HOME"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantCause: `HOME "" is not an absolute path`,
+		},
+		{
+			name: "HOME is relative",
+			setup: func(t *testing.T) {
+				t.Setenv("HOME", ".")
+			},
+			wantCause: `HOME "." is not an absolute path`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := filepath.Join(t.TempDir(), "calls")
+			useBareFakeCLI(t, "printf '%s\\n' \"$1\" >> '"+calls+"'\n"+
+				"if [ \"$1\" = status ]; then echo Stopped; exit 1; fi\n")
+			test.setup(t)
+			client := New(testPrefix)
+			ctx := context.Background()
+			_, existsErr := client.Exists(ctx, "orbit-api-1d9b22c9")
+			_, mountsErr := client.Mounts(ctx)
+			_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
+			results := map[string]error{
+				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
+				"Exists":       existsErr,
+				"Mounts":       mountsErr,
+				"ActiveMounts": activeMountsErr,
+				"Delete":       client.Delete(ctx, "orbit-api-1d9b22c9"),
+				"RunAsRoot":    client.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
+				"RunAsAgent":   client.RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
+			}
+
+			for operation, err := range results {
+				if !errors.Is(err, ErrHome) || errors.Is(err, ErrNotRunning) {
+					t.Errorf("%s = %v, want %v and not %v", operation, err, ErrHome, ErrNotRunning)
+					continue
+				}
+				if strings.Contains(err.Error(), ErrNotRunning.Error()) || !strings.Contains(err.Error(), test.wantCause) {
+					t.Errorf("%s = %q, want %q in the text and not %q", operation, err, test.wantCause, ErrNotRunning)
+				}
+			}
+			received, err := os.ReadFile(calls)
+			if want := strings.Repeat("status\n", len(results)); err != nil || string(received) != want {
+				t.Errorf("orb ran %q, %v, want only orb status, once for each operation", received, err)
+			}
+		})
+	}
+}
+
+// TestRunningUnderAnotherHomeRuns checks that the client does not refuse a
+// HOME other than the account home when orb status reports a running
+// OrbStack through it.
+func TestRunningUnderAnotherHomeRuns(t *testing.T) {
+	useFakeCLI(t, "echo orbit-api-1d9b22c9\n")
+	t.Setenv("HOME", hostDir(t))
+	useAccount(t, hostDir(t))
+
+	if exists, err := New(testPrefix).Exists(context.Background(), "orbit-api-1d9b22c9"); err != nil || !exists {
+		t.Errorf("Exists under another HOME = %v, %v, want true, nil", exists, err)
 	}
 }
 
