@@ -423,7 +423,11 @@ func (h Handler) loadFacts(path string) (sandbox.ProjectDir, error) {
 	if err != nil {
 		return sandbox.ProjectDir{}, err
 	}
-	return sandbox.ProjectDir{Path: dir, OwnerUID: owner, UserUID: uid, Homes: homes, Protected: protected, ProtectedFileDirs: fileDirs}, nil
+	links, err := protectedFileLinks(homes)
+	if err != nil {
+		return sandbox.ProjectDir{}, fmt.Errorf("protected file: %w", err)
+	}
+	return sandbox.ProjectDir{Path: dir, OwnerUID: owner, UserUID: uid, Homes: homes, Protected: protected, ProtectedFileDirs: fileDirs, ProtectedFileLinks: links}, nil
 }
 
 // loadProtected returns every spelling of the protected directories of homes
@@ -616,6 +620,42 @@ func fileDirSpellings(path string) ([]string, error) {
 		return nil, err
 	}
 	return dirSpellings(filepath.Dir(target))
+}
+
+// protectedFileLinks returns the link count of the file that each protected
+// file path of homes resolves to, for each of those files that exists. It
+// reads only the metadata of the file and never opens it (D08).
+func protectedFileLinks(homes []string) ([]sandbox.FileLinks, error) {
+	var links []sandbox.FileLinks
+	for _, path := range protectedFilePaths(homes) {
+		target, err := filepath.EvalSymlinks(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		count, err := linkCount(target)
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, sandbox.FileLinks{Path: target, Count: count})
+	}
+	return links, nil
+}
+
+// linkCount returns the number of hard links of the file at path, from its
+// metadata.
+func linkCount(path string) (uint64, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("link count of %s is not known", path)
+	}
+	return uint64(stat.Nlink), nil
 }
 
 // missingFileDirSpellings returns every spelling of the directory in which

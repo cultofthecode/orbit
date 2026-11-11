@@ -388,6 +388,50 @@ func TestValidateProjectDir(t *testing.T) {
 	}
 }
 
+// TestValidateProjectDirRefusesHardLinkedFiles covers a protected file with
+// more than one hard link (#37): every project directory is refused, wherever
+// the other link is, and the error names the file.
+func TestValidateProjectDirRefusesHardLinkedFiles(t *testing.T) {
+	homes := []string{"/Users/dev", "/System/Volumes/Data/Users/dev"}
+	file := "/Users/dev/.claude.json"
+	dataFile := "/System/Volumes/Data/Users/dev/.claude.json"
+	tests := []struct {
+		name  string
+		path  string
+		links []FileLinks
+		want  error
+		names []string
+	}{
+		{name: "single link", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: file, Count: 1}}},
+		{name: "single link in both spellings", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: dataFile, Count: 1}, {Path: file, Count: 1}}},
+		{name: "no protected file", path: "/Users/dev/Project/orbit"},
+		{name: "other link in the project directory", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: file, Count: 2}}, want: ErrHardLinkedFile, names: []string{file}},
+		{name: "other link outside every project directory", path: "/private/tmp/work", links: []FileLinks{{Path: file, Count: 2}}, want: ErrHardLinkedFile, names: []string{file}},
+		{name: "many links", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: file, Count: 65535}}, want: ErrHardLinkedFile, names: []string{file}},
+		{name: "every spelling is named", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: dataFile, Count: 2}, {Path: file, Count: 2}}, want: ErrHardLinkedFile, names: []string{dataFile, file}},
+		{name: "target of a symlink", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: "/Users/dev/dotfiles/claude.json", Count: 3}}, want: ErrHardLinkedFile, names: []string{"/Users/dev/dotfiles/claude.json"}},
+		{name: "before the path rules", path: "/Users/dev", links: []FileLinks{{Path: file, Count: 2}}, want: ErrHardLinkedFile, names: []string{file}},
+		{name: "path rules still apply to a single link", path: "/Users/dev", links: []FileLinks{{Path: file, Count: 1}}, want: ErrHomeDir},
+		{name: "relative path of a file", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: ".claude.json", Count: 2}}, want: ErrPathNotClean},
+		{name: "path of a file with dot dot", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: "/Users/dev/Project/../.claude.json", Count: 1}}, want: ErrPathNotClean},
+		{name: "empty path of a file", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: "", Count: 1}}, want: ErrPathNotClean},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := ProjectDir{Path: test.path, OwnerUID: 501, UserUID: 501, Homes: homes, ProtectedFileLinks: test.links}
+			err := ValidateProjectDir(dir)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("ValidateProjectDir(%+v) = %v, want %v", dir, err, test.want)
+			}
+			for _, name := range test.names {
+				if !strings.Contains(err.Error(), name) {
+					t.Errorf("ValidateProjectDir(%+v) = %v, want it to name %s", dir, err, name)
+				}
+			}
+		})
+	}
+}
+
 // TestValidateProjectDirHasTwoIndependentRules checks that each rule refuses
 // on its own what both rules refuse together.
 func TestValidateProjectDirHasTwoIndependentRules(t *testing.T) {
