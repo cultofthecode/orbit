@@ -227,15 +227,17 @@ func TestAnotherHomeNamesHomeWhileOrbStackRuns(t *testing.T) {
 	}
 }
 
-// TestNoStrippedVariableReachesTheMachine sets every stripped variable: ORBENV
-// and WSLENV name a variable of the test process, and each other one holds a
-// proxy URL with a user name and a marker as the password. A script of
-// RunAsRoot and one of RunAsAgent find no variable that holds the marker in
-// the machine. orb run directly with the same environment does forward each
-// of them, so the test fails when the client stops removing one.
+// TestNoStrippedVariableReachesTheMachine sets every stripped variable and
+// variables with the DOCKER_ prefix: ORBENV and WSLENV name a variable of the
+// test process, and each other one holds a proxy URL with a user name and a
+// marker as the password. A script of RunAsRoot and one of RunAsAgent find no
+// variable that holds the marker in the machine. orb run directly with the
+// same environment does forward each of them, so the test fails when the
+// client stops removing one.
 func TestNoStrippedVariableReachesTheMachine(t *testing.T) {
 	const variable = "ORBIT_IT_FORWARDED"
 	namingVariables := []string{"ORBENV", "WSLENV"}
+	strippedNames := append([]string{"DOCKER_HOST", "DOCKER_AUTH_CONFIG", "DOCKER_CONFIG", "DOCKER_X"}, strippedVariables...)
 	marker := "marker-" + strings.ToLower(rand.Text()[:8])
 	value := "http://orbit:" + marker + "@proxy.invalid:3128"
 	client, name := newMachine(t, hostDir(t))
@@ -244,7 +246,7 @@ func TestNoStrippedVariableReachesTheMachine(t *testing.T) {
 		t.Fatalf("create the agent user: %v", err)
 	}
 	t.Setenv(variable, marker)
-	for _, stripped := range strippedVariables {
+	for _, stripped := range strippedNames {
 		t.Setenv(stripped, value)
 	}
 	for _, naming := range namingVariables {
@@ -270,7 +272,7 @@ func TestNoStrippedVariableReachesTheMachine(t *testing.T) {
 		t.Fatalf("orb env = %v", err)
 	}
 	direct := strings.Split(output, "\n")
-	for _, stripped := range strippedVariables {
+	for _, stripped := range strippedNames {
 		t.Run("orb forwards with "+stripped, func(t *testing.T) {
 			if !slices.Contains(namingVariables, stripped) {
 				if !slices.Contains(direct, stripped+"="+value) {

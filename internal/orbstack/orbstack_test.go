@@ -1008,6 +1008,15 @@ func TestWithoutStrippedVariables(t *testing.T) {
 			want:    []string{"HOME=/Users/dev"},
 		},
 		{
+			name: "every name with the DOCKER_ prefix",
+			environ: []string{
+				"DOCKER_AUTH_CONFIG={\"auths\":{\"r\":{\"auth\":\"dTpwdw==\"}}}", "DOCKER_CONFIG=/Users/dev/.docker",
+				"DOCKER_CONTEXT=remote", "DOCKER_CERT_PATH=/Users/dev/.docker/certs", "DOCKER_TLS_VERIFY=1",
+				"DOCKER_X=x", "DOCKER_=x", "DOCKER_ORBENV=TOKEN", "HOME=/Users/dev",
+			},
+			want: []string{"HOME=/Users/dev"},
+		},
+		{
 			name:    "a stripped variable twice with different values",
 			environ: []string{"HTTPS_PROXY=http://a@p:1", "HTTPS_PROXY=http://u:pw@p:1", "DOCKER_HOST=", "DOCKER_HOST=tcp://h:2375"},
 			want:    []string{},
@@ -1028,17 +1037,19 @@ func TestWithoutStrippedVariables(t *testing.T) {
 				"orbenv=TOKEN", "Wslenv=TOKEN", "ORBENV_X=TOKEN", "XORBENV=TOKEN", " ORBENV=TOKEN", "ORBENV =TOKEN",
 				"Http_Proxy=http://u:pw@p:1", "HTTP_proxy=http://u:pw@p:1", "XHTTP_PROXY=x", "HTTP_PROXY_X=x",
 				"NO_PROXY=localhost", "no_proxy=localhost", "docker_host=x", "electron_run_as_node=1",
+				"docker_config=x", "Docker_Auth_Config=x", "DOCKERX=x", "DOCKER=x", "XDOCKER_HOST=x", " DOCKER_HOST=x", "COMPOSE_PROJECT_NAME=x",
 			},
 			want: []string{
 				"orbenv=TOKEN", "Wslenv=TOKEN", "ORBENV_X=TOKEN", "XORBENV=TOKEN", " ORBENV=TOKEN", "ORBENV =TOKEN",
 				"Http_Proxy=http://u:pw@p:1", "HTTP_proxy=http://u:pw@p:1", "XHTTP_PROXY=x", "HTTP_PROXY_X=x",
 				"NO_PROXY=localhost", "no_proxy=localhost", "docker_host=x", "electron_run_as_node=1",
+				"docker_config=x", "Docker_Auth_Config=x", "DOCKERX=x", "DOCKER=x", "XDOCKER_HOST=x", " DOCKER_HOST=x", "COMPOSE_PROJECT_NAME=x",
 			},
 		},
 		{
 			name:    "stripped name in a value",
-			environ: []string{"NOTE=ORBENV=TOKEN", "=ORBENV", "NOTE2=HTTP_PROXY=http://u:pw@p:1", "=DOCKER_HOST"},
-			want:    []string{"NOTE=ORBENV=TOKEN", "=ORBENV", "NOTE2=HTTP_PROXY=http://u:pw@p:1", "=DOCKER_HOST"},
+			environ: []string{"NOTE=ORBENV=TOKEN", "=ORBENV", "NOTE2=HTTP_PROXY=http://u:pw@p:1", "=DOCKER_HOST", "NOTE3=DOCKER_X=x"},
+			want:    []string{"NOTE=ORBENV=TOKEN", "=ORBENV", "NOTE2=HTTP_PROXY=http://u:pw@p:1", "=DOCKER_HOST", "NOTE3=DOCKER_X=x"},
 		},
 		{
 			name:    "empty environment",
@@ -1060,8 +1071,9 @@ func TestWithoutStrippedVariables(t *testing.T) {
 	}
 }
 
-// TestNoCommandCarriesAStrippedVariable sets every stripped variable, with
-// ORBENV and WSLENV naming a variable of the test process, runs every
+// TestNoCommandCarriesAStrippedVariable sets every stripped variable and
+// variables with the DOCKER_ prefix, with ORBENV and WSLENV naming a
+// variable of the test process, runs every
 // operation of the client against a fake orb that records its environment,
 // and checks that no command of orb, orb status included, gets a stripped
 // variable, and that every command keeps the rest of the environment.
@@ -1072,13 +1084,15 @@ func TestNoCommandCarriesAStrippedVariable(t *testing.T) {
 		reportsRunning+
 		"if [ \"$1\" = list ] && [ \"$2\" = --format ]; then echo '[]'; exit 0; fi\n"+
 		"if [ \"$5\" = cat ]; then echo '195 125 0:35 /p /p rw - virtiofs mac rw'; fi\n")
-	for _, name := range strippedVariables {
+	strippedNames := append([]string{"DOCKER_HOST", "DOCKER_AUTH_CONFIG", "DOCKER_CONFIG", "DOCKER_X"}, strippedVariables...)
+	for _, name := range strippedNames {
 		t.Setenv(name, "http://orbit:forwarding-marker@proxy.invalid:3128")
 	}
 	t.Setenv("ORBIT_TEST_SECRET", "forwarding-marker")
 	t.Setenv("ORBENV", "ORBIT_TEST_SECRET:HOME")
 	t.Setenv("WSLENV", "ORBIT_TEST_SECRET/u")
 	t.Setenv("NO_PROXY", "localhost")
+	t.Setenv("docker_config", "kept")
 	client := New(testPrefix)
 	ctx := context.Background()
 
@@ -1111,11 +1125,11 @@ func TestNoCommandCarriesAStrippedVariable(t *testing.T) {
 		}
 		environ := strings.Split(strings.TrimSpace(string(content)), "\n")
 		for _, entry := range environ {
-			if isStripped(entry) {
+			if name, _, _ := strings.Cut(entry, "="); slices.Contains(strippedNames, name) {
 				t.Errorf("orb got %q", entry)
 			}
 		}
-		for _, kept := range []string{"ORBIT_TEST_SECRET=forwarding-marker", "NO_PROXY=localhost", "HOME=" + os.Getenv("HOME")} {
+		for _, kept := range []string{"ORBIT_TEST_SECRET=forwarding-marker", "NO_PROXY=localhost", "docker_config=kept", "HOME=" + os.Getenv("HOME")} {
 			if !slices.Contains(environ, kept) {
 				t.Errorf("orb did not get %q", kept)
 			}
