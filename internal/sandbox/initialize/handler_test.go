@@ -286,6 +286,55 @@ func TestHandleRefusesNestedProjectDirectories(t *testing.T) {
 	})
 }
 
+// TestHandleRefusesProjectDirectoriesThatContainAnotherSandbox covers the
+// roles of TestHandleRefusesNestedProjectDirectories swapped: another machine
+// mounts a directory inside the project directory, in any spelling. The new
+// agent would control the path of that mount and could swap it before the
+// next start of the other machine.
+func TestHandleRefusesProjectDirectoriesThatContainAnotherSandbox(t *testing.T) {
+	home := newHome(t)
+	work := filepath.Join(home, "work")
+	project := filepath.Join(work, "api")
+	makeDirs(t, home, "work/api/sub")
+	tests := []struct {
+		name  string
+		mount string
+		dir   string
+	}{
+		{name: "child mounted by another sandbox", mount: project, dir: work},
+		{name: "grandchild mounted by another sandbox", mount: filepath.Join(project, "sub"), dir: work},
+		{name: "child mounted through a symlink", mount: symlink(t, project), dir: work},
+		{name: "child mounted in upper case", mount: strings.ToUpper(project), dir: work},
+		{name: "child mounted on the data volume", mount: dataVolume + project, dir: work},
+		{name: "parent reached through a symlink", mount: project, dir: symlink(t, work)},
+		{name: "parent reached in upper case", mount: project, dir: strings.ToUpper(work)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			requireSpelling(t, test.mount)
+			requireSpelling(t, test.dir)
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.Machines["orbit-api-0123456789abcdef"] = map[string]string{"/srv/api": test.mount}
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: test.dir})
+
+			if !errors.Is(err, sandbox.ErrContainsProjectDir) || got != (Output{}) {
+				t.Errorf("Handle(%q) = %+v, %v, want %v", test.dir, got, err, sandbox.ErrContainsProjectDir)
+			}
+			if wantCalls := []orbstacktest.Call{{Op: orbstacktest.OpMounts}}; !slices.Equal(fake.Calls, wantCalls) {
+				t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+			}
+		})
+	}
+	t.Run("mount of a machine without the prefix", func(t *testing.T) {
+		fake := orbstacktest.New(sandbox.NamePrefix)
+		fake.Machines["ubuntu"] = map[string]string{project: project}
+		if _, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: work}); !errors.Is(err, sandbox.ErrContainsProjectDir) {
+			t.Errorf("Handle(%q) = %v, want %v", work, err, sandbox.ErrContainsProjectDir)
+		}
+	})
+}
+
 func TestHandleAcceptsDirectoriesOutsideOtherSandboxes(t *testing.T) {
 	home := newHome(t)
 	project := filepath.Join(home, "work", "api")

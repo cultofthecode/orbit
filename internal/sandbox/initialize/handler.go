@@ -57,10 +57,11 @@ type Handler struct {
 // already exists, checks that the machine mounts exactly that directory,
 // and then provisions it, also when it already existed. It refuses a
 // directory that the mount rules of the sandbox module do not accept before
-// it asks OrbStack anything, and a directory inside the project directory of
-// another machine before it creates one. When the mount check or
-// provisioning fails on a machine that this call created, it deletes that
-// machine; it never deletes a machine that existed before the call.
+// it asks OrbStack anything, and a directory that is, lies inside, or
+// contains the project directory of another machine before it creates one.
+// When the mount check or provisioning fails on a machine that this call
+// created, it deletes that machine; it never deletes a machine that existed
+// before the call.
 func (h Handler) Handle(ctx context.Context, in Input) (Output, error) {
 	facts, err := h.mountableDir(in.Dir)
 	if err != nil {
@@ -119,7 +120,8 @@ func (h Handler) discard(ctx context.Context, name string, cause error) error {
 }
 
 // unnestedMachines returns the configured mounts of every machine, when dir
-// lies outside the directories that the machines other than name mount.
+// neither is, lies inside, nor contains a directory that a machine other
+// than name mounts.
 func (h Handler) unnestedMachines(ctx context.Context, name, dir string) (map[string]map[string]string, error) {
 	machines, err := h.Machines.Mounts(ctx)
 	if err != nil {

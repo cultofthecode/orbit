@@ -52,6 +52,11 @@ var (
 	// of another sandbox. The agent of that sandbox controls the path of the
 	// directory and can swap it between the check and the mount.
 	ErrNestedProjectDir = errors.New("project directory is inside the project directory of another sandbox")
+	// ErrContainsProjectDir reports a directory that contains the project
+	// directory of another sandbox. The agent of the new sandbox would
+	// control the path of that directory and could swap it before the next
+	// start of the other sandbox.
+	ErrContainsProjectDir = errors.New("project directory contains the project directory of another sandbox")
 	// ErrMountMismatch reports a machine that does not mount exactly the
 	// project directory, once, at its own path.
 	ErrMountMismatch = errors.New("machine does not mount exactly the project directory at its own path")
@@ -124,16 +129,21 @@ func ValidateProjectDir(dir ProjectDir) error {
 	return nil
 }
 
-// ValidateNotNested reports whether the project directory dir lies outside
-// the project directories of the other sandboxes, sandboxDirs. It refuses dir
-// when it is one of them or lies inside one, with ErrNestedProjectDir. Every
-// path must be absolute and clean, in a spelling that the system reports.
+// ValidateNotNested reports whether the project directory dir and the
+// project directories of the other sandboxes, sandboxDirs, are disjoint. It
+// refuses dir when it is one of them or lies inside one, with
+// ErrNestedProjectDir, and when it contains one, with ErrContainsProjectDir.
+// Every path must be absolute and clean, in a spelling that the system
+// reports.
 func ValidateNotNested(dir string, sandboxDirs []string) error {
 	if err := checkPaths(slices.Concat([]string{dir}, sandboxDirs)); err != nil {
 		return err
 	}
-	if isWithinAny(dir, sandboxDirs) {
+	switch {
+	case isWithinAny(dir, sandboxDirs):
 		return fmt.Errorf("%w: %s", ErrNestedProjectDir, dir)
+	case containsAny(dir, sandboxDirs):
+		return fmt.Errorf("%w: %s", ErrContainsProjectDir, dir)
 	}
 	return nil
 }

@@ -223,8 +223,10 @@ func TestValidateNotNested(t *testing.T) {
 		{name: "sibling of a sandbox", dir: "/Users/dev/Project/api", sandboxes: sandboxes},
 		{name: "prefix look-alike of a sandbox", dir: "/Users/dev/Project/orbitx", sandboxes: sandboxes},
 		{name: "child of a prefix look-alike", dir: "/Users/dev/Project/orbit-2/sub", sandboxes: sandboxes},
-		{name: "parent of a sandbox", dir: "/Users/dev/Project", sandboxes: sandboxes},
 		{name: "name with two dots in a sibling", dir: "/Users/dev/Project/..orbit", sandboxes: sandboxes},
+		{name: "prefix of the name of a sandbox", dir: "/Users/dev/Project/orb", sandboxes: sandboxes},
+		{name: "prefix of a sandbox in a parent", dir: "/private/tm", sandboxes: sandboxes},
+		{name: "sibling of the parent of a sandbox", dir: "/Users/dev/Projects", sandboxes: sandboxes},
 
 		{name: "child of a sandbox", dir: "/Users/dev/Project/orbit/sub", sandboxes: sandboxes, want: ErrNestedProjectDir},
 		{name: "deep child of a sandbox", dir: "/Users/dev/Project/orbit/a/b/c/d", sandboxes: sandboxes, want: ErrNestedProjectDir},
@@ -232,6 +234,18 @@ func TestValidateNotNested(t *testing.T) {
 		{name: "child of a sandbox on the data volume", dir: "/System/Volumes/Data/Users/dev/Project/orbit/sub", sandboxes: sandboxes, want: ErrNestedProjectDir},
 		{name: "every directory when a sandbox mounts root", dir: "/Users/dev/Project/api", sandboxes: []string{"/"}, want: ErrNestedProjectDir},
 		{name: "child of a sandbox with a dot directory", dir: "/Users/dev/Project/orbit/.git", sandboxes: sandboxes, want: ErrNestedProjectDir},
+		{name: "root mounted by another sandbox", dir: "/", sandboxes: []string{"/"}, want: ErrNestedProjectDir},
+
+		{name: "parent of a sandbox", dir: "/Users/dev/Project", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "grandparent of a sandbox", dir: "/Users/dev", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "home-like ancestor of a sandbox", dir: "/Users", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "root above every sandbox", dir: "/", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "parent of a sandbox on the data volume", dir: "/System/Volumes/Data/Users/dev", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "data volume above a sandbox", dir: "/System/Volumes/Data", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "parent of a sandbox in a temporary directory", dir: "/private/tmp", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "parent of a sandbox with a dot directory", dir: "/Users/dev/Project/orbit", sandboxes: []string{"/Users/dev/Project/orbit/.git"}, want: ErrContainsProjectDir},
+		{name: "ancestor of a deep sandbox", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev/Project/a/b/c/d"}, want: ErrContainsProjectDir},
+		{name: "parent of one of several sandboxes", dir: "/srv", sandboxes: []string{"/Users/dev/Project/orbit", "/srv/work"}, want: ErrContainsProjectDir},
 
 		{name: "relative directory", dir: "Project/orbit/sub", sandboxes: sandboxes, want: ErrPathNotClean},
 		{name: "directory with dot dot", dir: "/Users/dev/Project/orbit/sub/..", sandboxes: sandboxes, want: ErrPathNotClean},
@@ -240,6 +254,9 @@ func TestValidateNotNested(t *testing.T) {
 		{name: "sandbox with dot dot", dir: "/Users/dev/Project/api", sandboxes: []string{"/Users/dev/Project/orbit/../api"}, want: ErrPathNotClean},
 		{name: "relative sandbox", dir: "/Users/dev/Project/api", sandboxes: []string{"Project"}, want: ErrPathNotClean},
 		{name: "empty sandbox", dir: "/Users/dev/Project/api", sandboxes: []string{""}, want: ErrPathNotClean},
+		{name: "parent of a sandbox with dot dot", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev/Project/orbit/.."}, want: ErrPathNotClean},
+		{name: "parent of a sandbox with a trailing slash", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev/Project/orbit/"}, want: ErrPathNotClean},
+		{name: "parent with a trailing slash", dir: "/Users/dev/Project/", sandboxes: sandboxes, want: ErrPathNotClean},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
