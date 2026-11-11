@@ -408,11 +408,15 @@ func TestFailedCommandCarriesStderr(t *testing.T) {
 	_, existsErr := client.Exists(ctx, "orbit-api-1d9b22c9")
 	_, mountsErr := client.Mounts(ctx)
 	_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
+	_, stateErr := client.State(ctx, "orbit-api-1d9b22c9")
 	failures := map[string]error{
 		"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
 		"Exists":       existsErr,
 		"Mounts":       mountsErr,
 		"ActiveMounts": activeMountsErr,
+		"State":        stateErr,
+		"Start":        client.Start(ctx, "orbit-api-1d9b22c9"),
+		"Stop":         client.Stop(ctx, "orbit-api-1d9b22c9"),
 		"Delete":       client.Delete(ctx, "orbit-api-1d9b22c9"),
 		"RunAsRoot":    client.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
 		"RunAsAgent":   client.RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
@@ -577,11 +581,15 @@ func TestNoCallStartsAStoppedOrbStack(t *testing.T) {
 			_, existsErr := client.Exists(ctx, "orbit-api-1d9b22c9")
 			_, mountsErr := client.Mounts(ctx)
 			_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
+			_, stateErr := client.State(ctx, "orbit-api-1d9b22c9")
 			results := map[string]error{
 				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
 				"Exists":       existsErr,
 				"Mounts":       mountsErr,
 				"ActiveMounts": activeMountsErr,
+				"State":        stateErr,
+				"Start":        client.Start(ctx, "orbit-api-1d9b22c9"),
+				"Stop":         client.Stop(ctx, "orbit-api-1d9b22c9"),
 				"Delete":       client.Delete(ctx, "orbit-api-1d9b22c9"),
 				"RunAsRoot":    client.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
 				"RunAsAgent":   client.RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
@@ -964,5 +972,143 @@ func TestRunAsAgentPutsNoCallerValueOnTheCommandLine(t *testing.T) {
 				t.Errorf("arguments of orb = %q, %v, want %q", args, err, want)
 			}
 		})
+	}
+}
+
+func TestStartArgs(t *testing.T) {
+	want := []string{"start", "orbit-api-1d9b22c9"}
+	if got := startArgs("orbit-api-1d9b22c9"); !slices.Equal(got, want) {
+		t.Errorf("startArgs() = %q, want %q", got, want)
+	}
+}
+
+func TestStopArgs(t *testing.T) {
+	want := []string{"stop", "orbit-api-1d9b22c9"}
+	if got := stopArgs("orbit-api-1d9b22c9"); !slices.Equal(got, want) {
+		t.Errorf("stopArgs() = %q, want %q", got, want)
+	}
+}
+
+// TestStartAndStopRefuseHostileNamesBeforeAnyCommand checks that Start and
+// Stop never reach orb with a name that is not one machine of the client:
+// orb stop without a machine stops OrbStack with every machine, and orb
+// start without one starts every machine that ran when OrbStack last
+// stopped.
+func TestStartAndStopRefuseHostileNamesBeforeAnyCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		prefix  string
+		machine string
+		want    error
+	}{
+		{name: "empty name", prefix: testPrefix, machine: "", want: ErrForeignMachine},
+		{name: "only the prefix", prefix: testPrefix, machine: "orbit-", want: ErrForeignMachine},
+		{name: "short flag", prefix: testPrefix, machine: "-a", want: ErrForeignMachine},
+		{name: "long flag", prefix: testPrefix, machine: "--all", want: ErrForeignMachine},
+		{name: "force flag", prefix: testPrefix, machine: "-f", want: ErrForeignMachine},
+		{name: "name and a flag", prefix: testPrefix, machine: "orbit-x --all", want: ErrMachineName},
+		{name: "name with a tab", prefix: testPrefix, machine: "orbit-x\t-a", want: ErrMachineName},
+		{name: "name with a newline", prefix: testPrefix, machine: "orbit-x\n", want: ErrMachineName},
+		{name: "foreign name", prefix: testPrefix, machine: "ubuntu", want: ErrForeignMachine},
+		{name: "empty client prefix", prefix: "", machine: "orbit-api-1d9b22c9", want: ErrForeignMachine},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := filepath.Join(t.TempDir(), "calls")
+			useFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\n")
+			client := New(test.prefix)
+			ctx := context.Background()
+			if err := client.Start(ctx, test.machine); !errors.Is(err, test.want) {
+				t.Errorf("Start(%q) = %v, want %v", test.machine, err, test.want)
+			}
+			if err := client.Stop(ctx, test.machine); !errors.Is(err, test.want) {
+				t.Errorf("Stop(%q) = %v, want %v", test.machine, err, test.want)
+			}
+			if received, err := os.ReadFile(calls); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("orb ran %q, %v, want no command", received, err)
+			}
+		})
+	}
+}
+
+func TestStartAndStopRunOrbWithTheName(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	useFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\n")
+	client := New(testPrefix)
+	ctx := context.Background()
+	if err := client.Stop(ctx, "orbit-api-1d9b22c9"); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	if err := client.Start(ctx, "orbit-api-1d9b22c9"); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	received, err := os.ReadFile(calls)
+	if want := "stop orbit-api-1d9b22c9\nstart orbit-api-1d9b22c9\n"; err != nil || string(received) != want {
+		t.Errorf("orb ran %q, %v, want %q", received, err, want)
+	}
+}
+
+func TestParseState(t *testing.T) {
+	list := `[
+		{"name":"ubuntu","state":"stopped","config":{}},
+		{"name":"orbit-api-1d9b22c9","state":"running","config":{}},
+		{"name":"orbit-web-00db83c9","state":"stopped","config":{}},
+		{"name":"orbit-new-11111111","state":"starting","config":{}}
+	]`
+	tests := []struct {
+		machine string
+		want    string
+	}{
+		{machine: "orbit-api-1d9b22c9", want: "running"},
+		{machine: "orbit-web-00db83c9", want: "stopped"},
+		{machine: "orbit-new-11111111", want: "starting"},
+		{machine: "orbit-gone-22222222", want: ""},
+	}
+	for _, test := range tests {
+		got, err := parseState([]byte(list), test.machine)
+		if err != nil || got != test.want {
+			t.Errorf("parseState(%q) = %q, %v, want %q", test.machine, got, err, test.want)
+		}
+	}
+}
+
+func TestParseStateRefusesWhatItCannotRead(t *testing.T) {
+	tests := []struct {
+		name string
+		list string
+	}{
+		{name: "not JSON", list: "orbit-api-1d9b22c9 running"},
+		{name: "not a list", list: `{"name":"orbit-api-1d9b22c9","state":"running"}`},
+		{name: "name twice", list: `[{"name":"orbit-api-1d9b22c9","state":"stopped"},{"name":"orbit-api-1d9b22c9","state":"running"}]`},
+		{name: "no state", list: `[{"name":"orbit-api-1d9b22c9"}]`},
+		{name: "state not a string", list: `[{"name":"orbit-api-1d9b22c9","state":1}]`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseState([]byte(test.list), "orbit-api-1d9b22c9")
+			if !errors.Is(err, ErrMachineList) {
+				t.Errorf("parseState(%s) = %q, %v, want %v", test.list, got, err, ErrMachineList)
+			}
+		})
+	}
+}
+
+func TestStateReadsTheListAndStartsNothing(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	useFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\n"+`echo '[{"name":"orbit-api-1d9b22c9","state":"stopped"}]'`+"\n")
+	got, err := New(testPrefix).State(context.Background(), "orbit-api-1d9b22c9")
+	if err != nil || got != "stopped" {
+		t.Errorf("State = %q, %v, want %q", got, err, "stopped")
+	}
+	received, err := os.ReadFile(calls)
+	if want := "list --format json\n"; err != nil || string(received) != want {
+		t.Errorf("orb ran %q, %v, want only %q", received, err, want)
+	}
+}
+
+func TestStateRefusesAForeignMachine(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if _, err := New(testPrefix).State(context.Background(), "ubuntu"); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("State of a foreign machine = %v, want %v", err, ErrForeignMachine)
 	}
 }

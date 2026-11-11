@@ -230,3 +230,108 @@ func TestFakeRefusesForeignNamesForEveryOperation(t *testing.T) {
 		t.Errorf("RunAsAgent in a machine named only by the prefix = %v, want %v", err, ErrForeignMachine)
 	}
 }
+
+func TestFakeStopsAndStartsMachines(t *testing.T) {
+	const name = "orbit-api-1d9b22c9"
+	fake := New("orbit-")
+	ctx := context.Background()
+	if state, err := fake.State(ctx, name); err != nil || state != "" {
+		t.Fatalf("State before Create = %q, %v, want no machine", state, err)
+	}
+	if err := fake.Create(ctx, name, "/work/api"); err != nil {
+		t.Fatalf("Create = %v", err)
+	}
+	steps := []struct {
+		change func(context.Context, string) error
+		want   string
+	}{
+		{change: fake.Stop, want: StateStopped},
+		{change: fake.Stop, want: StateStopped},
+		{change: fake.Start, want: StateRunning},
+		{change: fake.Start, want: StateRunning},
+	}
+	for i, step := range steps {
+		if err := step.change(ctx, name); err != nil {
+			t.Fatalf("step %d = %v", i, err)
+		}
+		if state, err := fake.State(ctx, name); err != nil || state != step.want {
+			t.Errorf("State after step %d = %q, %v, want %q", i, state, err, step.want)
+		}
+	}
+}
+
+func TestFakeRefusesCommandsInAStoppedMachine(t *testing.T) {
+	const name = "orbit-api-1d9b22c9"
+	fake := New("orbit-")
+	ctx := context.Background()
+	if err := fake.Create(ctx, name, "/work/api"); err != nil {
+		t.Fatalf("Create = %v", err)
+	}
+	fake.States[name] = "starting"
+	if _, err := fake.ActiveMounts(ctx, name); !errors.Is(err, ErrStopped) {
+		t.Errorf("ActiveMounts of a starting machine = %v, want %v", err, ErrStopped)
+	}
+	if err := fake.Stop(ctx, name); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	if _, err := fake.ActiveMounts(ctx, name); !errors.Is(err, ErrStopped) {
+		t.Errorf("ActiveMounts of a stopped machine = %v, want %v", err, ErrStopped)
+	}
+	if err := fake.RunAsRoot(ctx, name, []byte("true\n")); !errors.Is(err, ErrStopped) {
+		t.Errorf("RunAsRoot in a stopped machine = %v, want %v", err, ErrStopped)
+	}
+	if err := fake.RunAsAgent(ctx, name, []byte("true\n")); !errors.Is(err, ErrStopped) {
+		t.Errorf("RunAsAgent in a stopped machine = %v, want %v", err, ErrStopped)
+	}
+}
+
+func TestFakeRefusesToStartOrStopWhatTheAdapterRefuses(t *testing.T) {
+	fake := New("orbit-")
+	ctx := context.Background()
+	fake.Machines["orbit-x --all"] = map[string]string{}
+	tests := []struct {
+		machine string
+		want    error
+	}{
+		{machine: "", want: ErrForeignMachine},
+		{machine: "orbit-", want: ErrForeignMachine},
+		{machine: "--all", want: ErrForeignMachine},
+		{machine: "ubuntu", want: ErrForeignMachine},
+		{machine: "orbit-x --all", want: ErrMachineName},
+		{machine: "orbit-gone-22222222", want: ErrNoMachine},
+	}
+	for _, test := range tests {
+		if err := fake.Start(ctx, test.machine); !errors.Is(err, test.want) {
+			t.Errorf("Start(%q) = %v, want %v", test.machine, err, test.want)
+		}
+		if err := fake.Stop(ctx, test.machine); !errors.Is(err, test.want) {
+			t.Errorf("Stop(%q) = %v, want %v", test.machine, err, test.want)
+		}
+		if _, err := fake.State(ctx, test.machine); test.want == ErrForeignMachine && !errors.Is(err, test.want) {
+			t.Errorf("State(%q) = %v, want %v", test.machine, err, test.want)
+		}
+	}
+}
+
+func TestFakeStartAndStopFailWhenTold(t *testing.T) {
+	const name = "orbit-api-1d9b22c9"
+	fake := New("orbit-")
+	ctx := context.Background()
+	if err := fake.Create(ctx, name, "/work/api"); err != nil {
+		t.Fatalf("Create = %v", err)
+	}
+	failure := errors.New("orb failed")
+	fake.StopErr, fake.StartErr, fake.StateErr = failure, failure, failure
+	if err := fake.Stop(ctx, name); !errors.Is(err, failure) {
+		t.Errorf("Stop = %v, want %v", err, failure)
+	}
+	if err := fake.Start(ctx, name); !errors.Is(err, failure) {
+		t.Errorf("Start = %v, want %v", err, failure)
+	}
+	if _, err := fake.State(ctx, name); !errors.Is(err, failure) {
+		t.Errorf("State = %v, want %v", err, failure)
+	}
+	if fake.States[name] != StateRunning {
+		t.Errorf("state after failed calls = %q, want %q", fake.States[name], StateRunning)
+	}
+}
