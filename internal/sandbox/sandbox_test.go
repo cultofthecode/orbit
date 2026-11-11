@@ -73,12 +73,27 @@ func TestProtectedDirs(t *testing.T) {
 		home string
 		want []string
 	}{
-		{home: "/Users/dev", want: []string{"/Users/dev/.claude", "/Users/dev/.ssh"}},
-		{home: "/", want: []string{"/.claude", "/.ssh"}},
+		{home: "/Users/dev", want: []string{"/Users/dev/.aws", "/Users/dev/.claude", "/Users/dev/.config/gh", "/Users/dev/.gnupg", "/Users/dev/.ssh"}},
+		{home: "/", want: []string{"/.aws", "/.claude", "/.config/gh", "/.gnupg", "/.ssh"}},
 	}
 	for _, test := range tests {
 		if got := ProtectedDirs(test.home); !slices.Equal(got, test.want) {
 			t.Errorf("ProtectedDirs(%q) = %q, want %q", test.home, got, test.want)
+		}
+	}
+}
+
+func TestProtectedFiles(t *testing.T) {
+	tests := []struct {
+		home string
+		want []string
+	}{
+		{home: "/Users/dev", want: []string{"/Users/dev/.claude.json"}},
+		{home: "/", want: []string{"/.claude.json"}},
+	}
+	for _, test := range tests {
+		if got := ProtectedFiles(test.home); !slices.Equal(got, test.want) {
+			t.Errorf("ProtectedFiles(%q) = %q, want %q", test.home, got, test.want)
 		}
 	}
 }
@@ -93,6 +108,15 @@ func TestValidateProjectDir(t *testing.T) {
 		"/System/Volumes/Data/Users/dev/dotfiles/claude",
 	}
 	outside := []string{"/Volumes/keys/ssh"}
+	linkedCredentials := []string{
+		"/Users/dev/dotfiles/aws",
+		"/System/Volumes/Data/Users/dev/dotfiles/aws",
+		"/Users/dev/dotfiles/config/gh",
+		"/System/Volumes/Data/Users/dev/dotfiles/config/gh",
+		"/Volumes/keys/gnupg",
+	}
+	fileDirs := []string{"/Users/dev/dotfiles/state", "/System/Volumes/Data/Users/dev/dotfiles/state"}
+	fileDirsOutside := []string{"/Volumes/state/claude"}
 	tests := []struct {
 		name      string
 		path      string
@@ -100,6 +124,7 @@ func TestValidateProjectDir(t *testing.T) {
 		user      uint32
 		homes     []string
 		protected []string
+		fileDirs  []string
 		want      error
 	}{
 		{name: "project in home", path: "/Users/dev/Project/orbit", owner: user, user: user, homes: homes},
@@ -116,6 +141,19 @@ func TestValidateProjectDir(t *testing.T) {
 		{name: "prefix look-alike of the target of .ssh", path: "/Users/dev/dotfiles/sshx", owner: user, user: user, homes: homes, protected: linked},
 		{name: "prefix look-alike of the parent of the target", path: "/Users/dev/dotfilesx", owner: user, user: user, homes: homes, protected: linked},
 		{name: "project of root, owned by root", path: "/srv/work", owner: root, user: root, homes: []string{"/var/root"}},
+		{name: "prefix look-alike of .aws", path: "/Users/dev/.awsx", owner: user, user: user, homes: homes},
+		{name: "prefix look-alike of .gnupg", path: "/Users/dev/.gnupg-old", owner: user, user: user, homes: homes},
+		{name: "prefix look-alike of .config/gh", path: "/Users/dev/.config/ghx", owner: user, user: user, homes: homes},
+		{name: "sibling of .config/gh", path: "/Users/dev/.config/nvim", owner: user, user: user, homes: homes},
+		{name: "gh outside .config", path: "/Users/dev/gh", owner: user, user: user, homes: homes},
+		{name: ".aws in a project", path: "/Users/dev/Project/orbit/.aws", owner: user, user: user, homes: homes},
+		{name: ".gnupg outside home", path: "/private/tmp/.gnupg", owner: user, user: user, homes: homes},
+		{name: "sibling of the target of .aws", path: "/Users/dev/dotfiles/vim", owner: user, user: user, homes: homes, protected: linkedCredentials},
+		{name: "sibling of the target of .config/gh", path: "/Users/dev/dotfiles/config/nvim", owner: user, user: user, homes: homes, protected: linkedCredentials},
+		{name: "child of the directory that holds the target of .claude.json", path: "/Users/dev/dotfiles/state/projects", owner: user, user: user, homes: homes, fileDirs: fileDirs},
+		{name: "sibling of the directory that holds the target of .claude.json", path: "/Users/dev/dotfiles/vim", owner: user, user: user, homes: homes, fileDirs: fileDirs},
+		{name: "prefix look-alike of the directory that holds the target of .claude.json", path: "/Users/dev/dotfiles/statex", owner: user, user: user, homes: homes, fileDirs: fileDirs},
+		{name: "child of the directory outside home that holds the target of .claude.json", path: "/Volumes/state/claude/backup", owner: user, user: user, homes: homes, fileDirs: fileDirsOutside},
 
 		{name: "root", path: "/", owner: user, user: user, homes: homes, want: ErrRootDir},
 		{name: "root when a home is root", path: "/", owner: user, user: user, homes: []string{"/"}, want: ErrRootDir},
@@ -145,6 +183,37 @@ func TestValidateProjectDir(t *testing.T) {
 		{name: "parent of a target outside home", path: "/Volumes/keys", owner: user, user: user, homes: homes, protected: outside, want: ErrProtectedAncestor},
 		{name: "grandparent of a target outside home", path: "/Volumes", owner: user, user: user, homes: homes, protected: outside, want: ErrProtectedAncestor},
 		{name: "without the targets the directory passes", path: "/Users/dev/dotfiles", owner: user, user: user, homes: homes},
+
+		{name: ".aws", path: "/Users/dev/.aws", owner: user, user: user, homes: homes, want: ErrProtectedDir},
+		{name: "child of .aws", path: "/Users/dev/.aws/sso/cache", owner: user, user: user, homes: homes, want: ErrProtectedDir},
+		{name: ".aws on the data volume", path: "/System/Volumes/Data/Users/dev/.aws", owner: user, user: user, homes: homes, want: ErrProtectedDir},
+		{name: ".gnupg", path: "/Users/dev/.gnupg", owner: user, user: user, homes: homes, want: ErrProtectedDir},
+		{name: "child of .gnupg", path: "/Users/dev/.gnupg/private-keys-v1.d", owner: user, user: user, homes: homes, want: ErrProtectedDir},
+		{name: ".gnupg when a home is root", path: "/.gnupg", owner: user, user: user, homes: []string{"/"}, want: ErrProtectedDir},
+		{name: ".config/gh", path: "/Users/dev/.config/gh", owner: user, user: user, homes: homes, want: ErrProtectedDir},
+		{name: "child of .config/gh", path: "/Users/dev/.config/gh/extensions", owner: user, user: user, homes: homes, want: ErrProtectedDir},
+		{name: ".config/gh on the data volume", path: "/System/Volumes/Data/Users/dev/.config/gh", owner: user, user: user, homes: homes, want: ErrProtectedDir},
+		{name: ".config", path: "/Users/dev/.config", owner: user, user: user, homes: homes, want: ErrProtectedAncestor},
+		{name: ".config on the data volume", path: "/System/Volumes/Data/Users/dev/.config", owner: user, user: user, homes: homes, want: ErrProtectedAncestor},
+		{name: ".config of the account when the environment is root", path: "/Users/dev/.config", owner: user, user: user, homes: []string{"/", "/Users/dev"}, want: ErrProtectedAncestor},
+		{name: "target of .aws", path: "/Users/dev/dotfiles/aws", owner: user, user: user, homes: homes, protected: linkedCredentials, want: ErrProtectedDir},
+		{name: "child of the target of .aws", path: "/Users/dev/dotfiles/aws/sso", owner: user, user: user, homes: homes, protected: linkedCredentials, want: ErrProtectedDir},
+		{name: "target of .aws on the data volume", path: "/System/Volumes/Data/Users/dev/dotfiles/aws", owner: user, user: user, homes: homes, protected: linkedCredentials, want: ErrProtectedDir},
+		{name: "target of .config/gh", path: "/Users/dev/dotfiles/config/gh", owner: user, user: user, homes: homes, protected: linkedCredentials, want: ErrProtectedDir},
+		{name: "directory that holds the target of .config/gh", path: "/Users/dev/dotfiles/config", owner: user, user: user, homes: homes, protected: linkedCredentials, want: ErrProtectedAncestor},
+		{name: "target of .gnupg outside home", path: "/Volumes/keys/gnupg", owner: user, user: user, homes: homes, protected: linkedCredentials, want: ErrProtectedDir},
+		{name: "child of the target of .gnupg outside home", path: "/Volumes/keys/gnupg/private-keys-v1.d", owner: user, user: user, homes: homes, protected: linkedCredentials, want: ErrProtectedDir},
+		{name: "directory that holds the target of .gnupg", path: "/Volumes/keys", owner: user, user: user, homes: homes, protected: linkedCredentials, want: ErrProtectedAncestor},
+		{name: "directory that holds the targets of the credentials", path: "/Users/dev/dotfiles", owner: user, user: user, homes: homes, protected: linkedCredentials, want: ErrProtectedAncestor},
+
+		{name: "directory that holds the target of .claude.json", path: "/Users/dev/dotfiles/state", owner: user, user: user, homes: homes, fileDirs: fileDirs, want: ErrProtectedFile},
+		{name: "directory that holds the target of .claude.json on the data volume", path: "/System/Volumes/Data/Users/dev/dotfiles/state", owner: user, user: user, homes: homes, fileDirs: fileDirs, want: ErrProtectedFile},
+		{name: "ancestor of the target of .claude.json", path: "/Users/dev/dotfiles", owner: user, user: user, homes: homes, fileDirs: fileDirs, want: ErrProtectedFile},
+		{name: "directory outside home that holds the target of .claude.json", path: "/Volumes/state/claude", owner: user, user: user, homes: homes, fileDirs: fileDirsOutside, want: ErrProtectedFile},
+		{name: "ancestor outside home of the target of .claude.json", path: "/Volumes", owner: user, user: user, homes: homes, fileDirs: fileDirsOutside, want: ErrProtectedFile},
+		{name: "directory that holds .claude.json when a home is elsewhere", path: "/private/tmp/other", owner: user, user: user, homes: []string{"/Users/dev"}, fileDirs: []string{"/private/tmp/other"}, want: ErrProtectedFile},
+		{name: "home holds .claude.json", path: "/Users/dev", owner: user, user: user, homes: homes, fileDirs: []string{"/Users/dev"}, want: ErrHomeDir},
+		{name: "without the file targets the directory passes", path: "/Volumes/state/claude", owner: user, user: user, homes: homes},
 
 		{name: "home of the environment when it differs", path: "/private/tmp/other", owner: user, user: user, homes: []string{"/private/tmp/other", "/Users/dev"}, want: ErrHomeDir},
 		{name: "home of the account when the environment differs", path: "/Users/dev", owner: user, user: user, homes: []string{"/private/tmp/other", "/Users/dev"}, want: ErrHomeDir},
@@ -183,10 +252,13 @@ func TestValidateProjectDir(t *testing.T) {
 		{name: "home with dot dot", path: "/Users/dev", owner: user, user: user, homes: []string{"/Users/x/../dev"}, want: ErrPathNotClean},
 		{name: "relative protected path", path: "/Users/dev/Project", owner: user, user: user, homes: homes, protected: []string{"dotfiles/ssh"}, want: ErrPathNotClean},
 		{name: "protected path with dot dot", path: "/Users/dev/Project", owner: user, user: user, homes: homes, protected: []string{"/Users/dev/Project/../dotfiles/ssh"}, want: ErrPathNotClean},
+		{name: "relative directory of a protected file", path: "/Users/dev/Project", owner: user, user: user, homes: homes, fileDirs: []string{"dotfiles/state"}, want: ErrPathNotClean},
+		{name: "directory of a protected file with dot dot", path: "/Users/dev/Project", owner: user, user: user, homes: homes, fileDirs: []string{"/Users/dev/Project/../dotfiles/state"}, want: ErrPathNotClean},
+		{name: "empty directory of a protected file", path: "/Users/dev/Project", owner: user, user: user, homes: homes, fileDirs: []string{""}, want: ErrPathNotClean},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			dir := ProjectDir{Path: test.path, OwnerUID: test.owner, UserUID: test.user, Homes: test.homes, Protected: test.protected}
+			dir := ProjectDir{Path: test.path, OwnerUID: test.owner, UserUID: test.user, Homes: test.homes, Protected: test.protected, ProtectedFileDirs: test.fileDirs}
 			err := ValidateProjectDir(dir)
 			if !errors.Is(err, test.want) {
 				t.Errorf("ValidateProjectDir(%+v) = %v, want %v", dir, err, test.want)
