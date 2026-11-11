@@ -26,12 +26,16 @@ import (
 // Unnested refuses dir, the canonical project directory of the machine name,
 // when it is, lies inside, or contains a directory that a machine other than
 // name mounts, as machines lists the configured mounts of every machine, and
-// when a stored path of such a directory passes through a symlink.
-func Unnested(machines map[string]map[string]string, name, dir string) error {
+// when a stored path of such a directory passes through a symlink
+// (sandbox.ErrLinkedSandboxDir). The nesting comparison never counts the
+// machine name. With includeOwn, the symlink walk also covers the stored
+// paths of name (sandbox.ErrLinkedProjectDir): the paths that OrbStack
+// resolves when it starts that machine.
+func Unnested(machines map[string]map[string]string, name, dir string, includeOwn bool) error {
 	if err := validateNotNested(dir, mountedDirs(machines, name)); err != nil {
 		return err
 	}
-	return validateUnlinked(machines, name)
+	return validateUnlinked(machines, name, includeOwn)
 }
 
 // maxLinkHops is the most symlinks that the handler follows on the way to
@@ -45,17 +49,22 @@ const maxLinkHops = 32
 var ErrUnresolvableLink = errors.New("target of a dangling symlink has .. after a name")
 
 // validateUnlinked refuses the stored mount paths of the machines other than
-// name when a component of one of them that exists is a symlink. Orbit stores
-// canonical paths, so such a symlink means that the host layout changed after
-// the machine was created; OrbStack would follow it at the next start, also
-// when it dangles or when one of its hops lies in the new directory.
-func validateUnlinked(machines map[string]map[string]string, name string) error {
+// name, and with includeOwn also those of name, when a component of one of
+// them that exists is a symlink. Orbit stores canonical paths, so such a
+// symlink means that the host layout changed after the machine was created;
+// OrbStack would follow it at the next start, also when it dangles or when
+// one of its hops lies in the new directory.
+func validateUnlinked(machines map[string]map[string]string, name string, includeOwn bool) error {
 	for machine, mounts := range machines {
-		if machine == name {
+		if machine == name && !includeOwn {
 			continue
 		}
+		linked := sandbox.ErrLinkedSandboxDir
+		if machine == name {
+			linked = sandbox.ErrLinkedProjectDir
+		}
 		for _, dir := range mounts {
-			if err := checkUnlinked(dir); err != nil {
+			if err := checkUnlinked(dir, linked); err != nil {
 				return fmt.Errorf("project directory %s of sandbox %s: %w", dir, machine, err)
 			}
 		}
@@ -63,10 +72,10 @@ func validateUnlinked(machines map[string]map[string]string, name string) error 
 	return nil
 }
 
-// checkUnlinked fails with sandbox.ErrLinkedSandboxDir when a component of the
-// absolute path that exists is a symlink. It stops at the first component
-// that does not exist, and fails on every other error.
-func checkUnlinked(path string) error {
+// checkUnlinked fails with linked when a component of the absolute path that
+// exists is a symlink. It stops at the first component that does not exist,
+// and fails on every other error.
+func checkUnlinked(path string, linked error) error {
 	for _, prefix := range pathPrefixes(path) {
 		info, err := os.Lstat(prefix)
 		if errors.Is(err, fs.ErrNotExist) {
@@ -76,7 +85,7 @@ func checkUnlinked(path string) error {
 			return err
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("%w: %s", sandbox.ErrLinkedSandboxDir, prefix)
+			return fmt.Errorf("%w: %s", linked, prefix)
 		}
 	}
 	return nil

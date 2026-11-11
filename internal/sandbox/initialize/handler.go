@@ -208,7 +208,7 @@ func (h Handler) unnestedMachines(ctx context.Context, name, dir string) (map[st
 	if err != nil {
 		return nil, fmt.Errorf("list sandboxes: %w", err)
 	}
-	if err := hostcheck.Unnested(machines, name, dir); err != nil {
+	if err := hostcheck.Unnested(machines, name, dir, false); err != nil {
 		return nil, err
 	}
 	return machines, nil

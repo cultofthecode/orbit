@@ -94,6 +94,10 @@ var (
 	// the symlink at its next start. The slices refuse every project
 	// directory until the user fixes the path or deletes that machine.
 	ErrLinkedSandboxDir = errors.New("the project directory of another sandbox passes through a symlink")
+	// ErrLinkedProjectDir reports a stored mount path of the sandbox of the
+	// project directory that passes through a symlink. OrbStack would follow
+	// it when it starts that sandbox.
+	ErrLinkedProjectDir = errors.New("the project directory of this sandbox passes through a symlink")
 )
 
 // protectedNames are the directories of a home directory that never enter a
