@@ -157,22 +157,38 @@ func TestUnnestedRefusesNestingWithAnotherMachine(t *testing.T) {
 }
 
 func TestLoadUserQuotesAMissingHome(t *testing.T) {
-	account := func() (*user.User, error) {
-		return &user.User{Uid: "501", HomeDir: t.TempDir()}, nil
+	tests := []struct {
+		name          string
+		missing       string
+		inEnvironment bool
+	}{
+		{name: "environment home newline and escape", missing: "/missing\n\x1b[2J", inEnvironment: true},
+		{name: "environment home title sequence", missing: "/missing\x1b]0;title\x07", inEnvironment: true},
+		{name: "environment home carriage return and tab", missing: "/missing\r\t", inEnvironment: true},
+		{name: "account home newline and escape", missing: "/missing\n\x1b[2J"},
 	}
-	for _, home := range []string{"/missing\n\x1b[2J", "/missing\x1b]0;title\x07", "/missing\r\t"} {
-		t.Setenv("HOME", home)
-		_, _, err := loadUser(account)
-		if !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("loadUser with HOME %q = %v, want %v", home, err, fs.ErrNotExist)
-		}
-		if !strings.Contains(err.Error(), strconv.Quote(home)) {
-			t.Errorf("loadUser with HOME %q = %q, want the quoted HOME", home, err)
-		}
-		for _, raw := range []string{"\n", "\x1b", "\x07", "\r", "\t"} {
-			if strings.Contains(err.Error(), raw) {
-				t.Errorf("loadUser with HOME %q = %q, contains the raw character %q", home, err, raw)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			environmentHome, accountHome := t.TempDir(), test.missing
+			if test.inEnvironment {
+				environmentHome, accountHome = test.missing, t.TempDir()
 			}
-		}
+			t.Setenv("HOME", environmentHome)
+			account := func() (*user.User, error) {
+				return &user.User{Uid: "501", HomeDir: accountHome}, nil
+			}
+			_, _, err := loadUser(account)
+			if !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("loadUser = %v, want %v", err, fs.ErrNotExist)
+			}
+			if !strings.Contains(err.Error(), strconv.Quote(test.missing)) {
+				t.Errorf("loadUser = %q, want the quoted home", err)
+			}
+			for _, raw := range []string{"\n", "\x1b", "\x07", "\r", "\t"} {
+				if strings.Contains(err.Error(), raw) {
+					t.Errorf("loadUser = %q, contains the raw character %q", err, raw)
+				}
+			}
+		})
 	}
 }

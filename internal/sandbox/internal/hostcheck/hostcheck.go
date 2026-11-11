@@ -356,12 +356,11 @@ func homeSpellings(accountHome string) ([]string, error) {
 
 // quotedPathError reports err for path with path quoted, so that a path with
 // control characters never reaches the terminal raw. A *fs.PathError carries
-// the raw path in its message, so only its cause is kept.
+// the raw path in its message, so only its cause is kept. err must be, or
+// wrap, a *fs.PathError, which is all that dirSpellings returns.
 func quotedPathError(path string, err error) error {
 	var pathErr *fs.PathError
-	if !errors.As(err, &pathErr) {
-		return fmt.Errorf("%q: %w", path, err)
-	}
+	errors.As(err, &pathErr)
 	return fmt.Errorf("%q: %s: %w", path, pathErr.Op, pathErr.Err)
 }
 
