@@ -390,7 +390,7 @@ func checkRunning(ctx context.Context) error {
 func statusError(status string, err error) error {
 	switch {
 	case status == statusStopped || status == statusStarting:
-		return fmt.Errorf("%w (orb status: %s); start OrbStack and try again", ErrNotRunning, status)
+		return fmt.Errorf("%w (orb status: %s); start OrbStack, wait until orb status prints Running, and try again", ErrNotRunning, status)
 	case err != nil:
 		return err
 	case status != statusRunning:

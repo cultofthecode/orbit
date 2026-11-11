@@ -151,7 +151,7 @@ func TestOrbitInitRefusesAStoppedOrbStack(t *testing.T) {
 	if code != exitFailure {
 		t.Errorf("exit code = %d, want %d", code, exitFailure)
 	}
-	if !strings.HasPrefix(stderr.String(), "orbit: ") || !strings.Contains(stderr.String(), "OrbStack is not running (orb status: Stopped); start OrbStack and try again") {
+	if !strings.HasPrefix(stderr.String(), "orbit: ") || !strings.Contains(stderr.String(), "OrbStack is not running (orb status: Stopped); start OrbStack, wait until orb status prints Running, and try again") {
 		t.Errorf("stderr = %q, want the advice to start OrbStack", stderr.String())
 	}
 	if stdout.Len() != 0 {
