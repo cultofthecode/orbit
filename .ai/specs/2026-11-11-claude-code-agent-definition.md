@@ -7,15 +7,15 @@ Extends: .ai/specs/2026-11-10-sandbox-provisioning.md
 
 Today the `init` slice creates and provisions a sandbox, but it installs no agent, and `orbit init` is not a registered command. The allowlist of every sandbox is the fixed D21 list. This spec proposes the `internal/agent` module with one definition, `claude-code`, and an `--agent` flag on `orbit init` that installs the official client as the agent user through the proxy and adds the `EgressDomains` of the definition to the allowlist. With it, story E01-S01 is complete and `orbit init` is registered.
 
-## Resolved assumptions (autonomous defaults)
+## Resolved assumptions
 
-This spec was written unattended. Rows marked ⚠ are **owner decisions that are not made**. The spec reads as a design under the proposed default; the owner confirms or changes each one before this spec merges.
+This spec was written unattended. The owner, Jakub Tobiasz, decided Q1–Q3 on 2026-11-11 ([PR #34](https://github.com/cultofthecode/orbit/pull/34), [#17](https://github.com/cultofthecode/orbit/issues/17)). Q4–Q6 are the defaults of the unattended run, and the owner did not change them. No question is open.
 
-| # | Question | Proposed default | Why |
+| # | Question | Decision | Why |
 |---|---|---|---|
-| Q1 | Which fields does `Definition` have? Do `Start` and `LoginHint` (and `StatePaths`, `Image`) stay? | ⚠ NEEDS HUMAN CONFIRMATION. Only `Name`, `Install`, and `EgressDomains`. No `Start` and no `LoginHint`: Orbit does not start the agent (D19), and sign-in is `/login` in the client (D08). No `StatePaths` and no `Image` until a slice uses them. `ARCHITECTURE.md` is updated to match. | Least surface. A field without a reader is speculative. The Agent row in Components still says "image, start command"; that is drift. A later slice adds a field when it needs one (rule of Agent definitions). |
-| Q2 | Where do the eight Claude Code hosts of D21 live? | ⚠ NEEDS HUMAN CONFIRMATION. Move them from `policy.defaultAllowlist` into `claude.Definition.EgressDomains`, the same eight hosts, no new host. A sandbox with `--agent claude-code` gets exactly the D21 list. A sandbox without `--agent` no longer reaches the Claude Code hosts. | It is what `ARCHITECTURE.md` (Provisioning requirements) and the done-when of #17 describe: D21 plus the `EgressDomains` of the installed agent. It narrows the no-agent sandbox and widens nothing. The default allowlist is an Ask-first surface, and D21 groups the hosts by agent but does not say this, so the owner decides. Alternative: keep them in both lists (no behavior change, a duplicate that the merge removes). |
-| Q3 | What does `init` do on an existing sandbox when `--agent` differs from the last run? | ⚠ NEEDS HUMAN CONFIRMATION. Every `init` writes the allowlist from the `--agent` of that run. `orbit init` without `--agent` on a sandbox with Claude Code removes the Claude Code hosts; the installed client stays in the home and fails closed until `orbit init --agent claude-code` runs again. Orbit stores no record of the installed agent. | No new state (OrbStack is the state store). It fails closed. Alternative: record the agent in a root-owned file such as `/etc/orbit/agent` and keep or refuse on a mismatch: more state, more code. |
+| Q1 | Which fields does `Definition` have? Do `Start` and `LoginHint` (and `StatePaths`, `Image`) stay? | **Owner decision, 2026-11-11.** Only `Name`, `Install`, and `EgressDomains`. `Start` and `LoginHint` are dropped: Orbit does not start the agent (D19), and sign-in is `/login` in the client (D08). No `StatePaths` and no `Image` until a slice uses them. `ARCHITECTURE.md` is updated to match. | Least surface. A field without a reader is speculative. The Agent row in Components still says "image, start command"; that is drift. A later slice adds a field when it needs one (rule of Agent definitions). |
+| Q2 | Where do the eight Claude Code hosts of D21 live? | **Owner decision, 2026-11-11.** Move them from `policy.defaultAllowlist` into `claude.Definition.EgressDomains`: the same eight hosts, no new host. A sandbox with `--agent claude-code` gets exactly the D21 list. A sandbox without `--agent` no longer reaches the Claude Code hosts. | It is what `ARCHITECTURE.md` (Provisioning requirements) and the done-when of #17 describe: D21 plus the `EgressDomains` of the installed agent. It narrows the no-agent sandbox and widens nothing. The default allowlist is an Ask-first surface, so the owner decided it. |
+| Q3 | What does `init` do on an existing sandbox when `--agent` differs from the last run? | **Owner decision, 2026-11-11.** Every `init` rebuilds the allowlist from the `--agent` of that run. `orbit init` without `--agent` on a sandbox with Claude Code removes the Claude Code hosts; the installed client stays in the home and fails closed until `orbit init --agent claude-code` runs again. Orbit stores no record of the installed agent. | No new state (OrbStack is the state store). It fails closed. |
 | Q4 | Is the client version pinned? | No pin. `Install` runs the published installer (`curl -fsSL https://claude.ai/install.sh \| bash`), which installs the current release. The client's own updater stays as it is. | `ARCHITECTURE.md` names "the published Claude Code installer". R04: Orbit does not change the client, and a pin needs a version source that the owner did not ask for. The install runs as the agent user, not as root. |
 | Q5 | How does the install run as the agent user? | A new adapter method `RunAs(ctx, name, user, script)` that runs `orb -m <name> -u <user> bash -s`, as the spike did. The install script reads `/etc/environment` first, so it uses the proxy. | Root never writes into the home of the agent (provisioning invariant). `runuser` from the root script would mix the two phases in one script. |
 | Q6 | What happens when the install fails? | `init` fails. When the same call created the machine, it deletes it, as for a failed provisioning. An existing machine stays. | Same rule as provisioning Q4 of the prior spec: `init` leaves a complete sandbox or none. |
@@ -62,15 +62,19 @@ The system SHALL install the agent named by `--agent` with the `Install` of its 
 
 #### ADDED Requirement: The agent's egress domains are allow rules
 
-The system SHALL allow, through the proxy, exactly the base allowlist plus the `EgressDomains` of the agent of the last `init`.
+The system SHALL allow, through the proxy, exactly the base allowlist plus the `EgressDomains` of the agent of the last `init`. Each `init` rebuilds the allowlist from its own `--agent` (Q3).
 
 ##### Scenario: Hostile domain in a definition
 - WHEN a definition holds `*.anthropic.com`, `1.2.3.4`, `localhost`, `Claude.AI`, or `example.com:22`
 - THEN `policy.Allowlist` refuses the whole list and `init` fails before it runs a script
 
-##### Scenario: No agent (under Q2)
+##### Scenario: No agent (Q2)
 - WHEN the owner runs `orbit init` without `--agent`
 - THEN the proxy refuses `CONNECT api.anthropic.com:443` and allows `CONNECT github.com:443`
+
+##### Scenario: Init again without the agent (Q3)
+- WHEN the owner runs `orbit init --agent claude-code` and then `orbit init` without `--agent` on the same sandbox
+- THEN the proxy refuses `CONNECT api.anthropic.com:443`, and Orbit wrote no record of the installed agent
 
 #### ADDED Requirement: Claude Code definition follows R04
 
@@ -97,14 +101,14 @@ The handler order after this change: validate dir → nesting → create → ver
 
 ## 📝 Risks & Impact Review
 
-- `risk-high`: the default allowlist changes shape (Q2), and a new path runs remote code in the sandbox. The code runs as `agent`, behind the firewall, so it gets no more than the agent itself has.
+- `risk-high`: the default allowlist changes shape (Q2, decided by the owner), and a new path runs remote code in the sandbox. The code runs as `agent`, behind the firewall, so it gets no more than the agent itself has.
 - `curl | bash` trusts `claude.ai` over TLS. That is the provider's documented install; R04 forbids a modified one.
 - The escape suite (E01-S06) does not exist yet. The PR states that it did not run and runs `TestInitProvisionsTheSandbox` plus a new integration test for the install.
 - Rollback: revert the PR; the `init` command becomes unregistered again. Existing sandboxes keep the client in the home.
 
 ## 📝 Decisions in play
 
-D08, D16, D19, D21 (Q2 proposes a reading of it), D22, R03, R04. Q1 changes `ARCHITECTURE.md` (Agent definitions, Components). The owner, Jakub Tobiasz, approves Q1–Q3.
+D08, D16, D19, D21 (Q2 is the owner's reading of it: the Claude Code hosts apply to a sandbox of that agent), D22, R03, R04. Q1 changes `ARCHITECTURE.md` (Agent definitions, Components). The owner, Jakub Tobiasz, decided Q1–Q3 on 2026-11-11.
 
 ## 📋 Phasing
 
@@ -114,9 +118,9 @@ One phase, one PR: the definition is not useful without the install, and the com
 
 1. `internal/agent`: `Definition`, `Registry`, `Lookup`, `Names`, `ErrUnknownAgent`, table tests (empty name, duplicate, unknown). Package `AGENTS.md` and a Task routing row in the root `AGENTS.md`.
 2. `internal/agent/claude`: `Definition` and its R04 test.
-3. `policy.Allowlist` with hostile-input tests; under Q2, move the eight Claude Code hosts out of `defaultAllowlist`.
+3. `policy.Allowlist` with hostile-input tests; move the eight Claude Code hosts out of `defaultAllowlist` (Q2).
 4. `provision.Script(defaultUID, agentDomains)`; update its tests and the call sites.
 5. `orbstack.Client.RunAs` with its integration test; `orbstacktest` support.
-6. `initialize`: `Input.Agent`, `Handler.Agent`, the install step, handler tests (no agent, unknown agent, install fails on a new and on an existing machine, hostile domain).
+6. `initialize`: `Input.Agent`, `Handler.Agent`, the install step, handler tests (no agent, unknown agent, install fails on a new and on an existing machine, hostile domain, a second `init` without `--agent` drops the agent domains).
 7. `cmd/orbit`: build the registry, register `init` with `--agent`. Integration test: `orbit init --agent claude-code`, then `claude --version` as `agent` and the proxy probes of the Delta.
 8. Docs: `ARCHITECTURE.md` (Agent definitions, Components row, Key decisions), `internal/sandbox/AGENTS.md` (`init` registered), root `AGENTS.md` project overview.
