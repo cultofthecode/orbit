@@ -1056,6 +1056,24 @@ func TestHandleRefusesAHardLinkedProtectedFile(t *testing.T) {
 		symlinkAt(t, target, filepath.Join(home, ".claude.json"))
 		checkHardLinkRefusal(t, home, filepath.Join(home, "work", "api"), target)
 	})
+	t.Run("other link inside a walked protected directory names the one-link file", func(t *testing.T) {
+		home := newHome(t)
+		file := filepath.Join(home, ".claude.json")
+		writeFile(t, file)
+		walked := filepath.Join(home, ".claude", "claude.json.bak")
+		writeFile(t, filepath.Join(home, ".claude", "settings.json"))
+		hardLink(t, file, walked)
+		fake := orbstacktest.New(sandbox.NamePrefix)
+
+		_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: filepath.Join(home, "work", "api")})
+
+		if !errors.Is(err, sandbox.ErrHardLinkedFile) {
+			t.Fatalf("Handle() = %v, want %v", err, sandbox.ErrHardLinkedFile)
+		}
+		if !strings.Contains(err.Error(), file) || strings.Contains(err.Error(), walked) {
+			t.Errorf("Handle() = %v, want it to name %s and not %s", err, file, walked)
+		}
+	})
 	t.Run("single link", func(t *testing.T) {
 		home := newHome(t)
 		file := filepath.Join(home, ".claude.json")
