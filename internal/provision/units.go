@@ -127,13 +127,15 @@ func hardenUnit() string {
 }
 
 // userSessionsDropIn keeps logins disabled while a unit of the boundary has
-// not started.
+// not started. It has no start limit, because every restart of a unit that
+// it requires restarts it too.
 func userSessionsDropIn() string {
 	units := strings.Join(boundaryUnits(), " ")
 	return lines(
 		"[Unit]",
 		"Requires="+units,
 		"After="+units,
+		"StartLimitIntervalSec=0",
 	)
 }
 

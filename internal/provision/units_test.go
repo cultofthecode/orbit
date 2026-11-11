@@ -52,6 +52,13 @@ func TestHardenUnitHasNoStartLimit(t *testing.T) {
 	}
 }
 
+func TestUserSessionsHaveNoStartLimit(t *testing.T) {
+	file := unitFile(t, "/etc/systemd/system/systemd-user-sessions.service.d/orbit.conf")
+	if !hasDirective(file, "StartLimitIntervalSec", "0") {
+		t.Errorf("systemd-user-sessions.service keeps the start limit:\n%s", file.Content)
+	}
+}
+
 func TestOwnUnitsAreEnabledAtBoot(t *testing.T) {
 	for _, path := range []string{"/etc/systemd/system/orbit-proxy-address.service", "/etc/systemd/system/orbit-harden.service"} {
 		if !hasDirective(unitFile(t, path), "WantedBy", "multi-user.target") {

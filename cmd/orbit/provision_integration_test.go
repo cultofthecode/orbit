@@ -224,11 +224,15 @@ func TestInitProvisionsTheSandbox(t *testing.T) {
 
 // hardenRestarts restarts the harden unit as every run of init does, one
 // time more than the default start limit of systemd allows (5 starts in
-// 10 s). The burst does not depend on how fast apt-get runs in init.
+// 10 s). Each restart also restarts systemd-user-sessions.service, which
+// requires the harden unit. The burst does not depend on how fast apt-get
+// runs in init. Both units stay active, and logins stay enabled.
 const hardenRestarts = `
 set -eu
 for run in 1 2 3 4 5 6; do systemctl restart orbit-harden.service; done
 systemctl is-active --quiet orbit-harden.service
+systemctl is-active --quiet systemd-user-sessions.service
+! test -e /run/nologin
 `
 
 // TestInitRunsAgainAfterRepeatedRuns re-runs init on one sandbox right
