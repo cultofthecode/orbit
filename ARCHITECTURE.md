@@ -161,6 +161,7 @@ Orbit has no database.
   - Unit tests for the pure security functions, with table tests that include hostile input (symlinks out of the workspace, `..` paths, wildcard domains).
   - Handler tests against `orbstacktest`, with no OrbStack running.
   - Integration tests behind the `integration` build tag, against a real OrbStack.
+  - QA and integration runs of different agents are independent and run in parallel: no machine-wide lock across agents, and each test takes its deadline from `t.Deadline()`. Owner decision, 2026-11-11 10:21.
   - An escape suite: tests that run inside a real sandbox and must fail to read a host path outside the workspace, reach the host engine socket, reach the macOS host, reach a destination with no allow rule (from the agent user, from a rootless container, and over DNS), become root, or reach another sandbox. Every change to the sandbox boundary runs it (see `SDLC.md`).
 
 ## Key decisions
