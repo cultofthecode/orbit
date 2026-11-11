@@ -30,6 +30,14 @@ const AgentUser = "agent"
 // image is the distribution of every machine that the adapter creates.
 const image = "ubuntu:26.04"
 
+// States that "orb status" prints. It reports the state of OrbStack without
+// starting it.
+const (
+	statusRunning  = "Running"
+	statusStarting = "Starting"
+	statusStopped  = "Stopped"
+)
+
 // mountSeparator divides the source and the destination of a mount.
 const mountSeparator = ":"
 
@@ -61,9 +69,13 @@ var (
 	// ErrMountTable reports a list of machines or a mount table that does not
 	// say for certain what is mounted where.
 	ErrMountTable = errors.New("mounts cannot be read")
+	// ErrNotRunning reports that OrbStack is not running. The client then
+	// runs no other command, because orb starts a stopped OrbStack.
+	ErrNotRunning = errors.New("OrbStack is not running")
 )
 
-// Client drives the orb CLI.
+// Client drives the orb CLI. It runs a command only after orb status reports
+// a running OrbStack, so that no call starts a stopped OrbStack.
 type Client struct {
 	prefix string
 }
@@ -197,6 +209,12 @@ func createArgs(name, dir string) []string {
 		image,
 		name,
 	}
+}
+
+// statusArgs returns the arguments of orb that print the state of OrbStack
+// without starting it.
+func statusArgs() []string {
+	return []string{"status"}
 }
 
 // listArgs returns the arguments of orb that print the name of every machine,
@@ -350,16 +368,48 @@ func listsMachine(names, name string) bool {
 	return slices.Contains(strings.Fields(names), name)
 }
 
-// run runs orb with args and stdin and returns its standard output. The
+// run runs orb with args and stdin and returns its standard output, only
+// when OrbStack is running: orb starts a stopped OrbStack by itself. The
 // error of a failed command carries the standard error of orb.
 func run(ctx context.Context, args []string, stdin []byte) (string, error) {
+	if err := checkRunning(ctx); err != nil {
+		return "", err
+	}
+	return execute(ctx, args, stdin)
+}
+
+// checkRunning fails unless orb status reports a running OrbStack.
+func checkRunning(ctx context.Context) error {
+	status, err := execute(ctx, statusArgs(), nil)
+	return statusError(strings.TrimSpace(status), err)
+}
+
+// statusError returns the error for the state that orb status printed and
+// for its error: nil only for a running OrbStack, ErrNotRunning for a
+// stopped or starting one, and an error for anything else.
+func statusError(status string, err error) error {
+	switch {
+	case status == statusStopped || status == statusStarting:
+		return fmt.Errorf("%w (orb status: %s); start OrbStack and try again", ErrNotRunning, status)
+	case err != nil:
+		return err
+	case status != statusRunning:
+		return fmt.Errorf("%s %s printed %q, not %q", cli, statusArgs()[0], status, statusRunning)
+	}
+	return nil
+}
+
+// execute runs orb with args and stdin and returns its standard output, also
+// when the command fails. The error of a failed command carries the
+// standard error of orb.
+func execute(ctx context.Context, args []string, stdin []byte) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, cli, args...)
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", commandError(args[0], err, strings.TrimSpace(stderr.String()))
+		return stdout.String(), commandError(args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
 }
