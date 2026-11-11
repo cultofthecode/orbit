@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,7 +19,8 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/internal/realpath"
 )
 
-// discardTimeout bounds the deletion of a machine whose provisioning failed.
+// discardTimeout bounds the deletion of a machine whose provisioning or
+// install failed.
 const discardTimeout = 2 * time.Minute
 
 // Machines is what the handler needs from OrbStack.
@@ -36,81 +38,164 @@ type Machines interface {
 	// RunAsRoot runs script with bash as root in the machine name and
 	// fails when the script fails.
 	RunAsRoot(ctx context.Context, name string, script []byte) error
+	// RunAsAgent runs script with bash as the agent user in the machine
+	// name and fails when the script fails.
+	RunAsAgent(ctx context.Context, name string, script []byte) error
 	// Delete deletes the machine name with everything stored in it.
 	Delete(ctx context.Context, name string) error
 }
 
-// Handler creates and provisions the machine of a project directory. All
-// fields are required.
+// Handler creates and provisions the machine of a project directory and
+// installs its agent. All fields are required.
 type Handler struct {
 	Machines Machines
+	// Agent returns the agent named name, or an error when no agent has
+	// that name. cmd/orbit passes a lookup in the registry of agent
+	// definitions; the slice does not import another module.
+	Agent func(name string) (sandbox.Agent, error)
 	// ProvisionScript returns the root script that provisions a machine
-	// whose default user has the uid defaultUID. cmd/orbit passes
+	// whose default user has the uid defaultUID and whose proxy allows
+	// agentDomains in addition to the base list. cmd/orbit passes
 	// provision.Script; the slice does not import another module.
-	ProvisionScript func(defaultUID uint32) ([]byte, error)
+	ProvisionScript func(defaultUID uint32, agentDomains []string) ([]byte, error)
 	// CurrentUser returns the user who runs Orbit, from the account
 	// database of the system. cmd/orbit passes user.Current. The handler
 	// trusts its uid and its home directory more than the environment.
 	CurrentUser func() (*user.User, error)
 }
 
-// Handle creates the machine of the project directory in.Dir, unless it
-// already exists, checks that the machine mounts exactly that directory,
-// and then provisions it, also when it already existed. It refuses a
-// directory that the mount rules of the sandbox module do not accept before
-// it asks OrbStack anything, and a directory that is, lies inside, or
-// contains the project directory of another machine before it creates one.
-// When the mount check or provisioning fails on a machine that this call
-// created, it deletes that machine; it never deletes a machine that existed
-// before the call.
-func (h Handler) Handle(ctx context.Context, in Input) (Output, error) {
-	facts, err := h.mountableDir(in.Dir)
-	if err != nil {
-		return Output{}, err
-	}
-	name := sandbox.MachineName(facts.Path)
-	machines, err := h.unnestedMachines(ctx, name, facts.Path)
-	if err != nil {
-		return Output{}, err
-	}
-	created, err := h.ensureMachine(ctx, name, facts.Path, machines)
-	if err != nil {
-		return Output{}, err
-	}
-	if err := h.verifyMounts(ctx, name, facts.Path, created); err != nil {
-		return Output{}, err
-	}
-	if err := h.provision(ctx, name, facts.UserUID, created); err != nil {
-		return Output{}, err
-	}
-	return Output{Name: name, Dir: facts.Path, Created: created}, nil
+// installPrelude starts every install script: it stops at the first failed
+// command, also in a pipe, so that a failed download fails the install, and
+// it exports the proxy settings of /etc/environment, so that the install
+// goes through the proxy.
+var installPrelude = []string{"set -euo pipefail", "set -a", ". /etc/environment", "set +a"}
+
+// plan is what the handler decided before it asks OrbStack anything.
+type plan struct {
+	// name is the name of the machine.
+	name string
+	// dir is the canonical path of the project directory.
+	dir string
+	// provision is the root script.
+	provision []byte
+	// install is the install script of the agent, nil without an agent.
+	install []byte
 }
 
-// provision runs the root script in the machine name. The default user of
-// the machine has the uid of the user who runs Orbit. When the script fails
-// and created is true, it deletes the machine.
-func (h Handler) provision(ctx context.Context, name string, uid uint32, created bool) error {
-	err := h.runScript(ctx, name, uid)
+// Handle creates the machine of the project directory in.Dir, unless it
+// already exists, checks that the machine mounts exactly that directory,
+// provisions it, also when it already existed, and then installs the agent
+// in.Agent as the agent user, when in.Agent is set. The allowlist of the
+// proxy is the base list plus the egress domains of in.Agent, so a run
+// without an agent removes the domains of an earlier one. It refuses an
+// unknown agent, a directory that the mount rules of the sandbox module do
+// not accept, and a provisioning script that cannot be built before it asks
+// OrbStack anything, and a directory that is, lies inside, or contains the
+// project directory of another machine before it creates one. When the
+// mount check, provisioning, or the install fails on a machine that this
+// call created, it deletes that machine; it never deletes a machine that
+// existed before the call.
+func (h Handler) Handle(ctx context.Context, in Input) (Output, error) {
+	p, err := h.plan(in)
+	if err != nil {
+		return Output{}, err
+	}
+	created, err := h.checkedMachine(ctx, p.name, p.dir)
+	if err != nil {
+		return Output{}, err
+	}
+	if err := h.setUp(ctx, p, created); err != nil {
+		return Output{}, err
+	}
+	return Output{Name: p.name, Dir: p.dir, Created: created}, nil
+}
+
+// plan resolves the agent, validates the project directory, and builds the
+// scripts, without asking OrbStack anything.
+func (h Handler) plan(in Input) (plan, error) {
+	agent, err := h.agent(in.Agent)
+	if err != nil {
+		return plan{}, err
+	}
+	facts, err := h.mountableDir(in.Dir)
+	if err != nil {
+		return plan{}, err
+	}
+	script, err := h.ProvisionScript(facts.UserUID, agent.EgressDomains)
+	if err != nil {
+		return plan{}, fmt.Errorf("provisioning script: %w", err)
+	}
+	p := plan{name: sandbox.MachineName(facts.Path), dir: facts.Path, provision: script}
+	if in.Agent != "" {
+		p.install = installScript(agent.Install)
+	}
+	return p, nil
+}
+
+// agent returns the agent named name, or no agent when name is empty.
+func (h Handler) agent(name string) (sandbox.Agent, error) {
+	if name == "" {
+		return sandbox.Agent{}, nil
+	}
+	agent, err := h.Agent(name)
+	if err != nil {
+		return sandbox.Agent{}, fmt.Errorf("agent: %w", err)
+	}
+	return agent, nil
+}
+
+// installScript puts installPrelude and install into one braced group.
+// bash reads the script from standard input as it runs; with the group it
+// parses the whole script before it runs any of it, so a truncated script
+// fails to parse instead of exiting 0 early.
+func installScript(install string) []byte {
+	lines := slices.Concat([]string{"{"}, installPrelude, []string{install, "}"})
+	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
+// checkedMachine creates the machine name with the mount dir, unless it
+// exists, after it checked that dir is not nested with the directory of
+// another machine, and checks the mounts of the machine. It reports whether
+// it created the machine.
+func (h Handler) checkedMachine(ctx context.Context, name, dir string) (bool, error) {
+	machines, err := h.unnestedMachines(ctx, name, dir)
+	if err != nil {
+		return false, err
+	}
+	created, err := h.ensureMachine(ctx, name, dir, machines)
+	if err != nil {
+		return false, err
+	}
+	return created, h.verifyMounts(ctx, name, dir, created)
+}
+
+// setUp provisions the machine of p and installs its agent. When one of
+// them fails and created is true, it deletes the machine.
+func (h Handler) setUp(ctx context.Context, p plan, created bool) error {
+	err := h.runScripts(ctx, p)
 	if err == nil || !created {
 		return err
 	}
-	return h.discard(ctx, name, err)
+	return h.discard(ctx, p.name, err)
 }
 
-// runScript builds the root script and runs it in the machine name.
-func (h Handler) runScript(ctx context.Context, name string, uid uint32) error {
-	script, err := h.ProvisionScript(uid)
-	if err != nil {
-		return fmt.Errorf("provision sandbox %s: %w", name, err)
+// runScripts runs the root script of p and then, when p has an agent, its
+// install script as the agent user.
+func (h Handler) runScripts(ctx context.Context, p plan) error {
+	if err := h.Machines.RunAsRoot(ctx, p.name, p.provision); err != nil {
+		return fmt.Errorf("provision sandbox %s: %w", p.name, err)
 	}
-	if err := h.Machines.RunAsRoot(ctx, name, script); err != nil {
-		return fmt.Errorf("provision sandbox %s: %w", name, err)
+	if p.install == nil {
+		return nil
+	}
+	if err := h.Machines.RunAsAgent(ctx, p.name, p.install); err != nil {
+		return fmt.Errorf("install the agent in sandbox %s: %w", p.name, err)
 	}
 	return nil
 }
 
-// discard deletes the unprovisioned machine name after the failure cause,
-// also when ctx is cancelled, within discardTimeout, and reports both.
+// discard deletes the machine name that this call created after the failure
+// cause, also when ctx is cancelled, within discardTimeout, and reports both.
 func (h Handler) discard(ctx context.Context, name string, cause error) error {
 	deleteCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardTimeout)
 	defer cancel()

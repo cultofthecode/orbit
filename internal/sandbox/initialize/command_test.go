@@ -18,7 +18,7 @@ import (
 // stream and to its error stream.
 func execute(fake *orbstacktest.Fake, home string, args ...string) (stdout, stderr string, err error) {
 	var out, errOut bytes.Buffer
-	command := NewCommand(newHandler(fake, account(home)))
+	command := NewCommand(newHandler(fake, account(home)), []string{testAgentName})
 	command.SetArgs(args)
 	command.SetOut(&out)
 	command.SetErr(&errOut)
@@ -85,7 +85,8 @@ func TestCommandRefusesArguments(t *testing.T) {
 	}{
 		{name: "directory", args: []string{"elsewhere"}, want: `unknown command "elsewhere" for "init"`},
 		{name: "empty argument", args: []string{""}, want: `unknown command "" for "init"`},
-		{name: "flag of a later task", args: []string{"--agent", "claude-code"}, want: "unknown flag: --agent"},
+		{name: "flag of a later task", args: []string{"--no-ssh"}, want: "unknown flag: --no-ssh"},
+		{name: "agent without a name", args: []string{"--agent"}, want: "flag needs an argument: --agent"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -103,6 +104,59 @@ func TestCommandRefusesArguments(t *testing.T) {
 				t.Errorf("stdout = %q, want no result", stdout)
 			}
 		})
+	}
+}
+
+func TestCommandInstallsTheAgentOfTheFlag(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	t.Chdir(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	stdout, _, err := execute(fake, home, "--agent", testAgentName)
+
+	if err != nil {
+		t.Fatalf("command = %v", err)
+	}
+	if want := "Created sandbox " + name + " for " + project + "\n"; stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+	wantCalls := append(checkedCreateCalls(name, project), agentCalls(name)...)
+	if !slices.Equal(fake.Calls, wantCalls) {
+		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+	}
+}
+
+func TestCommandRefusesAnUnknownAgent(t *testing.T) {
+	home := newHome(t)
+	t.Chdir(filepath.Join(home, "work", "api"))
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	stdout, _, err := execute(fake, home, "--agent", "codex")
+
+	if !errors.Is(err, errUnknownAgent) {
+		t.Errorf("command = %v, want %v", err, errUnknownAgent)
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("calls = %v, want none", fake.Calls)
+	}
+	if printsResult(stdout) {
+		t.Errorf("stdout = %q, want no result", stdout)
+	}
+}
+
+func TestCommandHelpNamesTheAgents(t *testing.T) {
+	var out bytes.Buffer
+	command := NewCommand(Handler{}, []string{"first-agent", "second-agent"})
+	command.SetArgs([]string{"--help"})
+	command.SetOut(&out)
+
+	if err := command.Execute(); err != nil {
+		t.Fatalf("help = %v", err)
+	}
+	if !strings.Contains(out.String(), "--agent string") || !strings.Contains(out.String(), "first-agent, second-agent") {
+		t.Errorf("help = %q, want the flag --agent and the names of the agents", out.String())
 	}
 }
 
