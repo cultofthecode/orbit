@@ -22,16 +22,14 @@ import (
 // tests, so that the client under test can touch no other machine.
 const integrationPrefix = "orbit-it-"
 
-// createTimeout bounds the creation of one machine, from the moment the
-// test holds the capacity lock. On a cold OrbStack, orb create alone can
-// take most of three minutes.
+// createTimeout bounds the creation of one machine when the test binary
+// has no deadline. On a cold OrbStack, orb create alone can take most of
+// three minutes.
 const createTimeout = 5 * time.Minute
 
-// capacityLockPath is the file whose exclusive lock lets one test of any
-// run on the host provision or create a machine at a time, so that a
-// deadline measures its own work and not the load of other runs on one
-// OrbStack. The tests in cmd/orbit lock the same path.
-const capacityLockPath = "/tmp/orbit-integration-capacity.lock"
+// cleanupGrace is the time that createContext leaves before the deadline
+// of the test binary, so that t.Cleanup can delete the machine.
+const cleanupGrace = 3 * time.Minute
 
 // integrationTimeout bounds the steps of one integration test after its
 // machine exists.
@@ -63,22 +61,16 @@ func blockInit(t *testing.T) {
 	}
 }
 
-// lockCapacity waits for the exclusive lock on capacityLockPath and returns
-// the function that releases it.
-func lockCapacity(t *testing.T) (release func()) {
+// createContext returns a context that ends cleanupGrace before the
+// deadline of the test binary, so that the -timeout the caller chose
+// absorbs the load of other runs on one OrbStack and t.Cleanup still
+// deletes the machine. Without a deadline it ends after createTimeout.
+func createContext(t *testing.T) (context.Context, context.CancelFunc) {
 	t.Helper()
-	file, err := os.OpenFile(capacityLockPath, os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		t.Fatal(err)
+	if deadline, ok := t.Deadline(); ok {
+		return context.WithDeadline(context.Background(), deadline.Add(-cleanupGrace))
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		t.Logf("waiting for the provisioning of another run (%s)", capacityLockPath)
-		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-			_ = file.Close()
-			t.Fatalf("lock %s: %v", capacityLockPath, err)
-		}
-	}
-	return func() { _ = file.Close() }
+	return context.WithTimeout(context.Background(), createTimeout)
 }
 
 // testContext returns a context that ends after integrationTimeout.
@@ -97,7 +89,7 @@ func inMachine(ctx context.Context, name string, command ...string) (string, err
 }
 
 // newMachine creates a machine of the integration tests without SSH agent
-// forwarding, with the mount dir, under its own deadline, createTimeout,
+// forwarding, with the mount dir, under the deadline of createContext,
 // registers its deletion, and returns its client and its name.
 func newMachine(t *testing.T, dir string) (*Client, string) {
 	t.Helper()
@@ -108,8 +100,7 @@ func newMachine(t *testing.T, dir string) (*Client, string) {
 // forward names.
 func newForwardingMachine(t *testing.T, dir string, forward bool) (*Client, string) {
 	t.Helper()
-	defer lockCapacity(t)()
-	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
+	ctx, cancel := createContext(t)
 	defer cancel()
 	client := New(integrationPrefix)
 	name := integrationPrefix + strings.ToLower(rand.Text()[:8])

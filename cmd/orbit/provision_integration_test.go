@@ -27,15 +27,14 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
 )
 
-// provisionTimeout bounds the provisioning of one test, from the moment
-// the test holds the capacity lock: two runs of the root script, each with
-// a package install, and the probes.
+// provisionTimeout bounds the provisioning of one test when the test
+// binary has no deadline: two runs of the root script, each with a package
+// install, and the probes.
 const provisionTimeout = 10 * time.Minute
 
-// capacityLockPath is the file whose exclusive lock lets one test of any
-// run on the host provision at a time, so that the deadline of a test
-// measures its own work and not the load of other runs on one OrbStack.
-const capacityLockPath = "/tmp/orbit-integration-capacity.lock"
+// cleanupGrace is the time that provisionContext leaves before the
+// deadline of the test binary, so that t.Cleanup can delete the machine.
+const cleanupGrace = 3 * time.Minute
 
 // initLockPath is the file that serializes the integration runs on one
 // host: TestActiveMountsShowASwappedPath in internal/orbstack holds an
@@ -248,26 +247,24 @@ func waitToRunInit(t *testing.T) {
 	}
 }
 
-// provisionContext waits for the exclusive lock on capacityLockPath, holds
-// it until the end of t, and then returns a context that ends after
-// provisionTimeout. Call it after waitToRunInit, as the integration tests
-// of internal/orbstack lock in the same order.
+// provisionContext returns a context that ends cleanupGrace before the
+// deadline of the test binary, so that the -timeout the caller chose
+// absorbs the load of other runs on one OrbStack and t.Cleanup still
+// deletes the machine. Without a deadline it ends after provisionTimeout.
 func provisionContext(t *testing.T) context.Context {
 	t.Helper()
-	file, err := os.OpenFile(capacityLockPath, os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = file.Close() })
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		t.Logf("waiting for the provisioning of another run (%s)", capacityLockPath)
-		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-			t.Fatalf("lock %s: %v", capacityLockPath, err)
-		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
+	ctx, cancel := context.WithDeadline(context.Background(), provisionDeadline(t))
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// provisionDeadline returns the end of the context of provisionContext.
+func provisionDeadline(t *testing.T) time.Time {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		return deadline.Add(-cleanupGrace)
+	}
+	return time.Now().Add(provisionTimeout)
 }
 
 // otherMachines returns the names of the machines on the host besides
