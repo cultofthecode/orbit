@@ -142,6 +142,19 @@ var singleLinkRelocations = slices.Concat(fileRelocations, []relocation{{variabl
 // outsideSlug matches every run of characters that a slug cannot hold.
 var outsideSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
+// ExitStatus is the non-zero exit status of a command that Orbit ran in a
+// sandbox for the user, such as the shell of orbit shell. A slice returns it
+// as its error, and cmd/orbit exits with Code and prints nothing.
+type ExitStatus struct {
+	// Code is the exit status, never 0.
+	Code int
+}
+
+// Error returns a description of the status.
+func (e ExitStatus) Error() string {
+	return fmt.Sprintf("exited with status %d", e.Code)
+}
+
 // Agent is what a slice needs to know about the agent of a sandbox. cmd/orbit
 // builds it from the definition of the agent; a slice never compares the
 // name of an agent.
