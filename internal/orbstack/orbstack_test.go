@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"reflect"
@@ -1204,21 +1205,39 @@ func TestShellGivesOrbTheDefaultActionOfSIGINT(t *testing.T) {
 }
 
 // TestHoldingSignalsKeepsTheProcessAlive sends SIGINT and SIGQUIT to the
-// test process while holdingSignals runs. Without the hold, either signal
-// ends the test binary.
+// test process while holdingSignals runs, and waits until a second channel
+// notified of both signals receives them, so that both arrive before the
+// hold ends. Without the hold, either signal ends the test binary.
 func TestHoldingSignalsKeepsTheProcessAlive(t *testing.T) {
+	sent := []syscall.Signal{syscall.SIGINT, syscall.SIGQUIT}
 	err := holdingSignals(func() error {
-		for _, signal := range []syscall.Signal{syscall.SIGINT, syscall.SIGQUIT} {
-			if err := syscall.Kill(os.Getpid(), signal); err != nil {
+		received := make(chan os.Signal, len(sent))
+		signal.Notify(received, syscall.SIGINT, syscall.SIGQUIT)
+		defer signal.Stop(received)
+		for _, sig := range sent {
+			if err := syscall.Kill(os.Getpid(), sig); err != nil {
 				return err
 			}
 		}
-		time.Sleep(200 * time.Millisecond)
-		return nil
+		return awaitSignals(received, len(sent))
 	})
 	if err != nil {
 		t.Fatalf("holdingSignals = %v", err)
 	}
+}
+
+// awaitSignals waits until received delivers count signals, or fails after
+// a deadline that only a lost signal reaches.
+func awaitSignals(received <-chan os.Signal, count int) error {
+	deadline := time.After(10 * time.Second)
+	for range count {
+		select {
+		case <-received:
+		case <-deadline:
+			return errors.New("signals not delivered within 10s")
+		}
+	}
+	return nil
 }
 
 func TestExitStatus(t *testing.T) {
@@ -1255,5 +1274,67 @@ func TestShellFailsWhenOrbCannotRun(t *testing.T) {
 
 	if !errors.Is(err, exec.ErrNotFound) || status != 0 || !strings.Contains(err.Error(), "run a shell as agent in machine orbit-api-1d9b22c9") {
 		t.Errorf("Shell without orb = %d, %v, want 0 and %v", status, err, exec.ErrNotFound)
+	}
+}
+
+// TestEveryCommandRunsOrbWithTheSameEnvironment runs every operation of the
+// client, Shell included, against a fake orb that records its environment,
+// with ORBENV naming a secret of the test process. It checks that every
+// command of orb, orb status included, gets the same environment, so that a
+// filter of the environment covers Shell only when it sits where every
+// command is built: in executeStreams.
+func TestEveryCommandRunsOrbWithTheSameEnvironment(t *testing.T) {
+	const machineName = "orbit-api-1d9b22c9"
+	const projectDir = "/Users/dev/Project/api"
+	dir := t.TempDir()
+	useBareFakeCLI(t, "/usr/bin/env > \"$(/usr/bin/mktemp '"+dir+"/env.XXXXXX')\"\n"+
+		reportsRunning+
+		"if [ \"$1\" = list ] && [ \"$2\" = --format ]; then echo '[]'; exit 0; fi\n"+
+		"if [ \"$5\" = cat ]; then echo '195 125 0:35 /p /p rw - virtiofs mac rw'; fi\n")
+	t.Setenv("ORBIT_TEST_SECRET", "forwarding-marker")
+	t.Setenv("ORBENV", "ORBIT_TEST_SECRET")
+	client := New(testPrefix)
+	ctx := context.Background()
+
+	_, existsErr := client.Exists(ctx, machineName)
+	_, mountsErr := client.Mounts(ctx)
+	_, activeMountsErr := client.ActiveMounts(ctx, machineName)
+	_, stateErr := client.State(ctx, machineName)
+	_, shellErr := client.Shell(ctx, machineName, projectDir, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	operations := map[string]error{
+		"Create":       client.Create(ctx, machineName, projectDir),
+		"Exists":       existsErr,
+		"Mounts":       mountsErr,
+		"ActiveMounts": activeMountsErr,
+		"State":        stateErr,
+		"Start":        client.Start(ctx, machineName),
+		"Stop":         client.Stop(ctx, machineName),
+		"Delete":       client.Delete(ctx, machineName),
+		"RunAsRoot":    client.RunAsRoot(ctx, machineName, []byte("true\n")),
+		"RunAsAgent":   client.RunAsAgent(ctx, machineName, []byte("true\n")),
+		"Shell":        shellErr,
+	}
+	for operation, err := range operations {
+		if err != nil {
+			t.Errorf("%s = %v", operation, err)
+		}
+	}
+
+	records, err := filepath.Glob(filepath.Join(dir, "env.*"))
+	if err != nil || len(records) != 2*len(operations) {
+		t.Fatalf("recorded environments = %d, %v, want %d", len(records), err, 2*len(operations))
+	}
+	first, err := os.ReadFile(records[0])
+	if err != nil || len(first) == 0 {
+		t.Fatalf("first recorded environment = %q, %v", first, err)
+	}
+	for _, record := range records[1:] {
+		content, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(content, first) {
+			t.Errorf("environment of orb differs between commands:\n%s\n---\n%s", first, content)
+		}
 	}
 }
