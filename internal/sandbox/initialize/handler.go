@@ -122,7 +122,8 @@ func (h Handler) discard(ctx context.Context, name string, cause error) error {
 
 // unnestedMachines returns the configured mounts of every machine, when dir
 // neither is, lies inside, nor contains a directory that a machine other
-// than name mounts.
+// than name mounts, and no stored path of such a directory passes through a
+// symlink.
 func (h Handler) unnestedMachines(ctx context.Context, name, dir string) (map[string]map[string]string, error) {
 	machines, err := h.Machines.Mounts(ctx)
 	if err != nil {
@@ -131,7 +132,59 @@ func (h Handler) unnestedMachines(ctx context.Context, name, dir string) (map[st
 	if err := validateNotNested(dir, mountedDirs(machines, name)); err != nil {
 		return nil, err
 	}
+	if err := validateUnlinked(machines, name); err != nil {
+		return nil, err
+	}
 	return machines, nil
+}
+
+// validateUnlinked refuses the stored mount paths of the machines other than
+// name when a component of one of them that exists is a symlink. Orbit stores
+// canonical paths, so such a symlink means that the host layout changed after
+// the machine was created; OrbStack would follow it at the next start, also
+// when it dangles or when one of its hops lies in the new directory.
+func validateUnlinked(machines map[string]map[string]string, name string) error {
+	for machine, mounts := range machines {
+		if machine == name {
+			continue
+		}
+		for _, dir := range mounts {
+			if err := checkUnlinked(dir); err != nil {
+				return fmt.Errorf("project directory %s of sandbox %s: %w", dir, machine, err)
+			}
+		}
+	}
+	return nil
+}
+
+// checkUnlinked fails with ErrLinkedSandboxDir when a component of the
+// absolute path that exists is a symlink. It stops at the first component
+// that does not exist, and fails on every other error.
+func checkUnlinked(path string) error {
+	for _, prefix := range pathPrefixes(path) {
+		info, err := os.Lstat(prefix)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%w: %s", ErrLinkedSandboxDir, prefix)
+		}
+	}
+	return nil
+}
+
+// pathPrefixes returns every path from the first component of the absolute
+// path to the path itself, in that order.
+func pathPrefixes(path string) []string {
+	var prefixes []string
+	for prefix := path; prefix != filepath.Dir(prefix); prefix = filepath.Dir(prefix) {
+		prefixes = append(prefixes, prefix)
+	}
+	slices.Reverse(prefixes)
+	return prefixes
 }
 
 // validateNotNested refuses dir when it is, lies inside, or contains one of
@@ -215,7 +268,8 @@ func (h Handler) verifyMounts(ctx context.Context, name, dir string, created boo
 // checkMounts checks that both the configuration and the kernel of the
 // machine name report exactly dir, mounted at its own path. It is defense in
 // depth: the kernel does not report a path that was swapped for a symlink
-// between two starts. The nesting refusal protects against that.
+// between two starts. The nesting refusal covers only the folder layout when
+// init runs; a slice that starts a machine is required to run it again.
 func (h Handler) checkMounts(ctx context.Context, name, dir string) error {
 	machines, err := h.Machines.Mounts(ctx)
 	if err != nil {

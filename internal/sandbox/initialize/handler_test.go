@@ -380,6 +380,72 @@ func TestHandleRefusesProjectDirectoriesThatContainAMissingSandbox(t *testing.T)
 	}
 }
 
+// TestHandleRefusesStoredMountsThroughASymlink covers a mount of another
+// machine whose stored path passes through a symlink. Orbit stores canonical
+// paths, so the host layout changed after that machine was created, and
+// OrbStack follows the symlink at the next start of that machine. A dangling
+// symlink, or one whose hop lies in the new directory, would let the new agent
+// choose what the other machine mounts, so the handler refuses every project
+// directory while that machine exists.
+func TestHandleRefusesStoredMountsThroughASymlink(t *testing.T) {
+	tests := []struct {
+		name   string
+		layout func(t *testing.T, home string) (mount, dir string)
+	}{
+		{name: "dangling symlink at the stored path", layout: func(t *testing.T, home string) (string, string) {
+			makeDirs(t, home, "code")
+			symlinkAt(t, filepath.Join(home, "code", "proj"), filepath.Join(home, "proj"))
+			return filepath.Join(home, "proj"), filepath.Join(home, "code")
+		}},
+		{name: "dangling symlink at an ancestor, absolute target", layout: func(t *testing.T, home string) (string, string) {
+			makeDirs(t, home, "code")
+			symlinkAt(t, filepath.Join(home, "code", "proj"), filepath.Join(home, "proj"))
+			return filepath.Join(home, "proj", "api"), filepath.Join(home, "code")
+		}},
+		{name: "dangling symlink at an ancestor, relative target", layout: func(t *testing.T, home string) (string, string) {
+			makeDirs(t, home, "code")
+			symlinkAt(t, filepath.Join("code", "proj"), filepath.Join(home, "proj"))
+			return filepath.Join(home, "proj", "api"), filepath.Join(home, "code")
+		}},
+		{name: "hop inside the directory, existing target", layout: func(t *testing.T, home string) (string, string) {
+			makeDirs(t, home, "elsewhere/api")
+			symlinkAt(t, filepath.Join(home, "work", "q"), filepath.Join(home, "p"))
+			symlinkAt(t, filepath.Join(home, "elsewhere"), filepath.Join(home, "work", "q"))
+			return filepath.Join(home, "p", "api"), filepath.Join(home, "work")
+		}},
+		{name: "hop inside the directory, missing target", layout: func(t *testing.T, home string) (string, string) {
+			makeDirs(t, home, "elsewhere")
+			symlinkAt(t, filepath.Join(home, "work", "q"), filepath.Join(home, "p"))
+			symlinkAt(t, filepath.Join(home, "elsewhere"), filepath.Join(home, "work", "q"))
+			return filepath.Join(home, "p", "gone"), filepath.Join(home, "work")
+		}},
+		{name: "symlink that leaves the directory", layout: func(t *testing.T, home string) (string, string) {
+			symlinkAt(t, newDir(t), filepath.Join(home, "old"))
+			return filepath.Join(home, "old", "api"), filepath.Join(home, "work")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := newHome(t)
+			mount, dir := test.layout(t, home)
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.Machines["orbit-linked-0123456789abcdef"] = map[string]string{"/srv/linked": mount}
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: dir})
+
+			if !errors.Is(err, ErrLinkedSandboxDir) || got != (Output{}) {
+				t.Errorf("Handle(%q) = %+v, %v, want %v", dir, got, err, ErrLinkedSandboxDir)
+			}
+			if err != nil && !strings.Contains(err.Error(), "orbit-linked-0123456789abcdef") {
+				t.Errorf("Handle(%q) = %v, want the name of the other machine", dir, err)
+			}
+			if wantCalls := []orbstacktest.Call{{Op: orbstacktest.OpMounts}}; !slices.Equal(fake.Calls, wantCalls) {
+				t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+			}
+		})
+	}
+}
+
 // TestHandleRefusesStoredMountsThatAreNotClean covers a mount of another
 // machine that is not an absolute and clean path. OrbStack would resolve it
 // in a way that the nesting check cannot follow, so the handler refuses
@@ -425,8 +491,9 @@ func TestHandleAcceptsDirectoriesOutsideOtherSandboxes(t *testing.T) {
 	project := filepath.Join(home, "work", "api")
 	makeDirs(t, home, "work/ap", "work/api-old", "other")
 	tests := []struct {
-		name   string
-		mounts map[string]string
+		name     string
+		mounts   map[string]string
+		spelling bool
 	}{
 		{name: "sibling", mounts: map[string]string{filepath.Join(home, "other"): filepath.Join(home, "other")}},
 		{name: "prefix look-alike", mounts: map[string]string{"/srv/ap": filepath.Join(home, "work", "ap")}},
@@ -436,9 +503,16 @@ func TestHandleAcceptsDirectoriesOutsideOtherSandboxes(t *testing.T) {
 		{name: "prefix look-alike that does not exist", mounts: map[string]string{"/srv/apix": filepath.Join(home, "work", "apix")}},
 		{name: "directory below a missing look-alike", mounts: map[string]string{"/srv/apix": filepath.Join(home, "work", "apix", "api")}},
 		{name: "machine without mounts", mounts: map[string]string{}},
+		{name: "sibling in upper case", mounts: map[string]string{"/srv/other": strings.ToUpper(filepath.Join(home, "other"))}, spelling: true},
+		{name: "sibling on the data volume", mounts: map[string]string{"/srv/other": dataVolume + filepath.Join(home, "other")}, spelling: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			for _, mount := range test.mounts {
+				if test.spelling {
+					requireSpelling(t, mount)
+				}
+			}
 			fake := orbstacktest.New(sandbox.NamePrefix)
 			fake.Machines["orbit-other-0123456789abcdef"] = test.mounts
 			name := sandbox.MachineName(project)
