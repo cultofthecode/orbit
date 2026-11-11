@@ -116,11 +116,37 @@ func lookupAgent(name string) (sandbox.Agent, error) {
 // database, knows testAgent, and builds the root script with fakeScript.
 func newHandler(fake *orbstacktest.Fake, entry *user.User) Handler {
 	return Handler{
-		Machines:        fake,
-		Agent:           lookupAgent,
-		ProvisionScript: fakeScript,
-		CurrentUser:     func() (*user.User, error) { return entry, nil },
+		Machines:          fake,
+		Agent:             lookupAgent,
+		ProvisionScript:   fakeScript,
+		DockerSetupScript: func() []byte { return []byte(testDockerSetupScript) },
+		CurrentUser:       func() (*user.User, error) { return entry, nil },
 	}
+}
+
+// newHandlerOn is newHandler on any machines.
+func newHandlerOn(machines Machines, entry *user.User) Handler {
+	handler := newHandler(nil, entry)
+	handler.Machines = machines
+	return handler
+}
+
+// failingScript is a fake whose RunAsAgent fails for one script only.
+type failingScript struct {
+	*orbstacktest.Fake
+	script string
+	err    error
+}
+
+// RunAsAgent records script and fails when it is the failing script.
+func (f failingScript) RunAsAgent(ctx context.Context, name string, script []byte) error {
+	if err := f.Fake.RunAsAgent(ctx, name, script); err != nil {
+		return err
+	}
+	if string(script) == f.script {
+		return f.err
+	}
+	return nil
 }
 
 // fakeScript returns a root script that names the default uid, the agent
@@ -147,6 +173,9 @@ func ownAgentScript() string {
 	return scriptFor(uint32(os.Getuid()), testAgent.EgressDomains, true)
 }
 
+// testDockerSetupScript is the client setup script that newHandler passes.
+const testDockerSetupScript = "set up the Docker client of the agent user\n"
+
 // testInstallScript is the install script of testAgent that the handler
 // runs as the agent user.
 const testInstallScript = "{\nset -euo pipefail\nset -a\n. /etc/environment\nset +a\ncurl -fsSL https://agent.example/install.sh | bash\n}\n"
@@ -156,6 +185,7 @@ const testInstallScript = "{\nset -euo pipefail\nset -a\n. /etc/environment\nset
 func agentCalls(name string) []orbstacktest.Call {
 	return []orbstacktest.Call{
 		{Op: orbstacktest.OpRunAsRoot, Name: name, Script: ownAgentScript()},
+		{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testDockerSetupScript},
 		{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testInstallScript},
 	}
 }
@@ -245,22 +275,25 @@ func checkedKeepCalls(name string) []orbstacktest.Call {
 	}
 }
 
-// provisionCall is the call that provisions the machine name for the user
-// who runs the test.
-func provisionCall(name string) orbstacktest.Call {
-	return orbstacktest.Call{Op: orbstacktest.OpRunAsRoot, Name: name, Script: ownScript()}
+// provisionCalls are the calls that provision the machine name for the user
+// who runs the test and set up its Docker client.
+func provisionCalls(name string) []orbstacktest.Call {
+	return []orbstacktest.Call{
+		{Op: orbstacktest.OpRunAsRoot, Name: name, Script: ownScript()},
+		{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testDockerSetupScript},
+	}
 }
 
 // createCalls returns the calls that create, check, and provision the
 // machine name of the directory project.
 func createCalls(name, project string) []orbstacktest.Call {
-	return append(checkedCreateCalls(name, project), provisionCall(name))
+	return slices.Concat(checkedCreateCalls(name, project), provisionCalls(name))
 }
 
 // keepCalls returns the calls that find, check, and provision the machine
 // name.
 func keepCalls(name string) []orbstacktest.Call {
-	return append(checkedKeepCalls(name), provisionCall(name))
+	return slices.Concat(checkedKeepCalls(name), provisionCalls(name))
 }
 
 func TestHandleCreatesTheMachine(t *testing.T) {
@@ -2022,7 +2055,7 @@ func TestHandleDeletesANewMachineWhenProvisioningFails(t *testing.T) {
 	if len(fake.Machines) != 0 {
 		t.Errorf("machines = %v, want the new machine deleted", fake.Machines)
 	}
-	wantCalls := append(createCalls(name, project), orbstacktest.Call{Op: orbstacktest.OpDelete, Name: name})
+	wantCalls := slices.Concat(checkedCreateCalls(name, project), provisionCalls(name)[:1], []orbstacktest.Call{{Op: orbstacktest.OpDelete, Name: name}})
 	if !slices.Equal(fake.Calls, wantCalls) {
 		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
 	}
@@ -2046,8 +2079,8 @@ func TestHandleKeepsAnExistingMachineWhenProvisioningFails(t *testing.T) {
 	if _, kept := fake.Machines[name]; !kept {
 		t.Errorf("machines = %v, want the existing machine kept", fake.Machines)
 	}
-	if !slices.Equal(fake.Calls, keepCalls(name)) {
-		t.Errorf("calls = %v, want %v", fake.Calls, keepCalls(name))
+	if want := slices.Concat(checkedKeepCalls(name), provisionCalls(name)[:1]); !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v", fake.Calls, want)
 	}
 }
 
@@ -2247,9 +2280,9 @@ func TestHandleDeletesANewMachineWhenTheInstallFails(t *testing.T) {
 	project := filepath.Join(home, "work", "api")
 	name := sandbox.MachineName(project)
 	fake := orbstacktest.New(sandbox.NamePrefix)
-	fake.RunAsAgentErr = boom
+	failing := failingScript{Fake: fake, script: testInstallScript, err: boom}
 
-	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+	_, err := newHandlerOn(failing, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
 
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "was deleted") {
 		t.Errorf("Handle = %v, want %v and the deletion in the text", err, boom)
@@ -2271,9 +2304,9 @@ func TestHandleKeepsAnExistingMachineWhenTheInstallFails(t *testing.T) {
 	fake := orbstacktest.New(sandbox.NamePrefix)
 	fake.Machines[name] = map[string]string{project: project}
 	fake.Forwarded[name] = true
-	fake.RunAsAgentErr = boom
+	failing := failingScript{Fake: fake, script: testInstallScript, err: boom}
 
-	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+	_, err := newHandlerOn(failing, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
 
 	if !errors.Is(err, boom) {
 		t.Errorf("Handle = %v, want %v", err, boom)
@@ -2601,6 +2634,7 @@ func TestHandleCreatesWithoutForwardingWhenAsked(t *testing.T) {
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpActiveMounts, Name: name},
 		{Op: orbstacktest.OpRunAsRoot, Name: name, Script: scriptFor(uint32(os.Getuid()), nil, false)},
+		{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testDockerSetupScript},
 	}
 	if !slices.Equal(fake.Calls, want) {
 		t.Errorf("calls = %v, want %v", fake.Calls, want)
@@ -2619,7 +2653,9 @@ func TestHandleProvisionsAnExistingMachineThatMatchesTheFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle = %v", err)
 	}
-	want := append(checkedKeepCalls(name), orbstacktest.Call{Op: orbstacktest.OpRunAsRoot, Name: name, Script: scriptFor(uint32(os.Getuid()), nil, false)})
+	want := append(checkedKeepCalls(name),
+		orbstacktest.Call{Op: orbstacktest.OpRunAsRoot, Name: name, Script: scriptFor(uint32(os.Getuid()), nil, false)},
+		orbstacktest.Call{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testDockerSetupScript})
 	if !slices.Equal(fake.Calls, want) {
 		t.Errorf("calls = %v, want %v", fake.Calls, want)
 	}
@@ -2731,4 +2767,65 @@ func TestHandleStopsWhenTheForwardingCannotBeRead(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestHandleSetsUpTheDockerClientAfterProvisioningAndBeforeTheInstall(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	if _, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName}); err != nil {
+		t.Fatalf("Handle = %v", err)
+	}
+
+	want := slices.Concat(checkedCreateCalls(name, project), agentCalls(name))
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v", fake.Calls, want)
+	}
+	if fake.Calls[len(fake.Calls)-2].Script != testDockerSetupScript {
+		t.Error("the client setup does not come right before the install")
+	}
+}
+
+func TestHandleDeletesANewMachineWhenTheClientSetupFails(t *testing.T) {
+	boom := errors.New("orb: setup failed")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	failing := failingScript{Fake: fake, script: testDockerSetupScript, err: boom}
+
+	_, err := newHandlerOn(failing, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "set up the Docker client in sandbox "+name) || !strings.Contains(err.Error(), "was deleted") {
+		t.Errorf("Handle = %v, want the failed client setup and the deletion", err)
+	}
+	want := slices.Concat(checkedCreateCalls(name, project), agentCalls(name)[:2], []orbstacktest.Call{{Op: orbstacktest.OpDelete, Name: name}})
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v (no install)", fake.Calls, want)
+	}
+}
+
+func TestHandleKeepsAnExistingMachineWhenTheClientSetupFails(t *testing.T) {
+	boom := errors.New("orb: setup failed")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+	fake.Forwarded[name] = true
+	failing := failingScript{Fake: fake, script: testDockerSetupScript, err: boom}
+
+	_, err := newHandlerOn(failing, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+	if !errors.Is(err, boom) {
+		t.Errorf("Handle = %v, want %v", err, boom)
+	}
+	if _, kept := fake.Machines[name]; !kept {
+		t.Errorf("machines = %v, want the existing machine kept", fake.Machines)
+	}
+	if want := slices.Concat(checkedKeepCalls(name), agentCalls(name)[:2]); !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v (no install)", fake.Calls, want)
+	}
 }

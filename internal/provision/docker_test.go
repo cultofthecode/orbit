@@ -116,7 +116,7 @@ func TestScriptGuardsPackageInstallWithPolicyRCAndRemovesItOnEveryPath(t *testin
 	guard := lineIndex(t, lines, `printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d`)
 	install := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "install -y -q") && strings.Contains(l, "docker.io") })
 	removal := lineIndex(t, lines, "rm -f /usr/sbin/policy-rc.d")
-	if !(trap < guard && guard < install && install < removal) {
+	if !slices.IsSorted([]int{trap, guard, install, removal}) {
 		t.Errorf("order trap %d, guard %d, install %d, removal %d", trap, guard, install, removal)
 	}
 }
@@ -146,7 +146,7 @@ func TestScriptRepairsAndStartsInOrder(t *testing.T) {
 	manager := lineIndex(t, lines, `systemctl start "user@$agent_uid.service"`)
 	reload := lineIndex(t, lines, "runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user daemon-reload")
 	daemon := lineIndex(t, lines, "runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user start docker.service")
-	if !(enable < gate && gate < linger && linger < manager && manager < reload && reload < daemon) {
+	if !slices.IsSorted([]int{enable, gate, linger, manager, reload, daemon}) {
 		t.Errorf("order enable %d, gate %d, linger %d, manager %d, reload %d, daemon %d", enable, gate, linger, manager, reload, daemon)
 	}
 }

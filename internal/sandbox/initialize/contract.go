@@ -1,6 +1,7 @@
 // Package initialize is the slice of "orbit init": it creates the sandbox of
 // a project directory, provisions it as root with the agent user, the
-// firewall, the proxy, and the fixed toolchain, and installs the agent named
+// firewall, the proxy, the fixed toolchain, and the rootless Docker engine,
+// sets up the Docker client of the agent user, and installs the agent named
 // by --agent as the agent user.
 package initialize
 
