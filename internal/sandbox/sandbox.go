@@ -66,10 +66,10 @@ var (
 	// protected location to a value that is empty, relative, or has a ".."
 	// segment. Orbit cannot know where the tool puts the location then.
 	ErrRelocatedPath = errors.New("environment variable that moves a protected location is not an absolute path without a .. segment")
-	// ErrHardLinkedFile reports a protected file that has more than one hard
-	// link. Every link is the same file, and Orbit cannot find the other
-	// links without a scan of every volume, so a project directory could
-	// hold one.
+	// ErrHardLinkedFile reports a protected file that has more hard links
+	// than Orbit found in the protected locations. Every link is the same
+	// file, and Orbit cannot find the other links without a scan of every
+	// volume, so a project directory could hold one.
 	ErrHardLinkedFile = errors.New("protected file has more than one hard link")
 )
 
@@ -106,6 +106,11 @@ var fileRelocations = []relocation{
 	{variable: "AWS_CONFIG_FILE"},
 	{variable: "AWS_SHARED_CREDENTIALS_FILE"},
 }
+
+// singleLinkRelocations are the variables that move a file that must have
+// one hard link: the files of fileRelocations and the .claude.json of the
+// directory that CLAUDE_CONFIG_DIR moves.
+var singleLinkRelocations = slices.Concat(fileRelocations, []relocation{{variable: "CLAUDE_CONFIG_DIR", name: ".claude.json"}})
 
 // outsideSlug matches every run of characters that a slug cannot hold.
 var outsideSlug = regexp.MustCompile(`[^a-z0-9]+`)
@@ -150,17 +155,23 @@ type ProjectDir struct {
 	// directory that holds a symlink on the chain of such a symlink or on
 	// the path of RelocatedDirs and RelocatedFiles.
 	ProtectedFileDirs []string
-	// ProtectedFileLinks holds the link count of the file that each path of
-	// ProtectedFiles resolves to, for each of those files that exists.
+	// ProtectedFileLinks holds the link count of each protected file that
+	// has more than one hard link: the file that each path of ProtectedFiles
+	// and RelocatedSingleLinkFiles resolves to, and each regular file in a
+	// directory of Protected or that a symlink in one of them leads to.
 	ProtectedFileLinks []FileLinks
 }
 
-// FileLinks is the number of hard links of a file.
+// FileLinks is the number of hard links of a file and the number of them
+// that lie in the protected locations.
 type FileLinks struct {
 	// Path is the absolute, clean path of the file.
 	Path string
 	// Count is the link count that the system reports for the file.
 	Count uint64
+	// Found is the number of distinct paths of the file in the protected
+	// locations. A file that must have one hard link has 1.
+	Found uint64
 }
 
 // Relocated is a protected location that an environment variable moves.
@@ -212,11 +223,19 @@ func RelocatedFiles(lookup func(string) (string, bool)) ([]Relocated, error) {
 	return relocate(fileRelocations, lookup)
 }
 
+// RelocatedSingleLinkFiles returns the protected files that the environment
+// moves and that must have one hard link, by the rules of RelocatedDirs: the
+// files of RelocatedFiles and the .claude.json in the directory of
+// CLAUDE_CONFIG_DIR.
+func RelocatedSingleLinkFiles(lookup func(string) (string, bool)) ([]Relocated, error) {
+	return relocate(singleLinkRelocations, lookup)
+}
+
 // ValidateProjectDir reports whether the project directory dir may be
 // mounted into a sandbox. First it refuses every project directory while a
-// file in dir.ProtectedFileLinks has more than one hard link, with
-// ErrHardLinkedFile naming that file, because another link to it can lie
-// anywhere. Then two independent rules must both accept dir. The first
+// file in dir.ProtectedFileLinks has more hard links than were found in the
+// protected locations, with ErrHardLinkedFile naming each such file once,
+// because the other link can lie anywhere. Then two independent rules must both accept dir. The first
 // refuses the root of the file system; a home directory and every
 // directory that contains one; a protected directory, every directory inside
 // one, and every directory that contains one; and every directory that
@@ -293,19 +312,20 @@ func linkPaths(files []FileLinks) []string {
 	return paths
 }
 
-// checkHardLinks refuses the files that have more than one hard link and
-// names each of them.
+// checkHardLinks refuses the files that have more hard links than were found
+// in the protected locations and names each of them once.
 func checkHardLinks(files []FileLinks) error {
 	var linked []string
 	for _, file := range files {
-		if file.Count > 1 {
+		if file.Count > file.Found {
 			linked = append(linked, file.Path)
 		}
 	}
 	if len(linked) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: %s; remove the other hard links to it", ErrHardLinkedFile, strings.Join(linked, ", "))
+	slices.Sort(linked)
+	return fmt.Errorf("%w: %s; remove the other hard links to it", ErrHardLinkedFile, strings.Join(slices.Compact(linked), ", "))
 }
 
 // checkPaths refuses a path that is not absolute and clean.

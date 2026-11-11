@@ -1069,6 +1069,325 @@ func TestHandleRefusesAHardLinkedProtectedFile(t *testing.T) {
 	})
 }
 
+// credentialFile makes the empty file rel, relative to home, with its parent
+// directories, and returns its path.
+func credentialFile(t *testing.T, home, rel string) string {
+	t.Helper()
+	makeDirs(t, home, filepath.Dir(rel))
+	path := filepath.Join(home, rel)
+	writeFile(t, path)
+	return path
+}
+
+// linkedCredential makes the credential file rel in home with another hard
+// link at link, takes every permission from the file, and returns its path.
+func linkedCredential(t *testing.T, home, rel, link string) string {
+	t.Helper()
+	file := credentialFile(t, home, rel)
+	hardLink(t, file, link)
+	unreadable(t, file)
+	return file
+}
+
+// linkedIntoProject makes the credential file rel in home with another hard
+// link in the project directory work/api, and returns its path.
+func linkedIntoProject(t *testing.T, home, rel string) string {
+	t.Helper()
+	return linkedCredential(t, home, rel, filepath.Join(home, "work", "api", filepath.Base(rel)))
+}
+
+// linkedOutside makes the credential file rel in home with another hard link
+// outside every project directory, and returns its path.
+func linkedOutside(t *testing.T, home, rel string) string {
+	t.Helper()
+	return linkedCredential(t, home, rel, filepath.Join(newDir(t), filepath.Base(rel)))
+}
+
+// hardLinkLayout is a layout of files in a bare home directory and the
+// protected file with another hard link that the handler must name when it
+// refuses work/api; an empty file means that the handler accepts it.
+type hardLinkLayout struct {
+	name   string
+	layout func(t *testing.T, home string) (file string)
+}
+
+// checkHardLinkLayouts builds each layout in a new bare home directory and
+// runs the handler for work/api.
+func checkHardLinkLayouts(t *testing.T, layouts []hardLinkLayout) {
+	t.Helper()
+	for _, test := range layouts {
+		t.Run(test.name, func(t *testing.T) {
+			home := newBareHome(t)
+			file := test.layout(t, home)
+			project := filepath.Join(home, "work", "api")
+			if file == "" {
+				checkCreates(t, account(home), project, project)
+				return
+			}
+			checkHardLinkRefusal(t, home, project, file)
+		})
+	}
+}
+
+// TestHandleRefusesHardLinkedFilesInProtectedDirectories covers a regular
+// file in a protected directory with a hard link outside every protected
+// location (#69): the agent could read and rewrite it through a link in its
+// project directory. Every file is unreadable, so the test fails when the
+// handler opens one (D08).
+func TestHandleRefusesHardLinkedFilesInProtectedDirectories(t *testing.T) {
+	layouts := []hardLinkLayout{
+		{name: "settings of Claude Code in the project", layout: func(t *testing.T, home string) string {
+			return linkedIntoProject(t, home, ".claude/settings.json")
+		}},
+		{name: "SSH configuration in the project", layout: func(t *testing.T, home string) string {
+			return linkedIntoProject(t, home, ".ssh/config")
+		}},
+		{name: "AWS credentials in the project", layout: func(t *testing.T, home string) string {
+			return linkedIntoProject(t, home, ".aws/credentials")
+		}},
+		{name: "token of the GitHub CLI in the project", layout: func(t *testing.T, home string) string {
+			return linkedIntoProject(t, home, ".config/gh/hosts.yml")
+		}},
+		{name: "deep file in the project", layout: func(t *testing.T, home string) string {
+			return linkedIntoProject(t, home, ".gnupg/private-keys-v1.d/key.key")
+		}},
+		{name: "other link outside every project", layout: func(t *testing.T, home string) string {
+			return linkedOutside(t, home, ".claude/settings.json")
+		}},
+		{name: "one of two inside links and one outside", layout: func(t *testing.T, home string) string {
+			file := linkedOutside(t, home, ".claude/settings.json")
+			hardLink(t, file, filepath.Join(home, ".claude", "settings.json.bak"))
+			return file
+		}},
+		{name: "symlinked .ssh", layout: func(t *testing.T, home string) string {
+			linkDirInto(t, home, ".ssh", "dotfiles/ssh")
+			return linkedIntoProject(t, home, "dotfiles/ssh/config")
+		}},
+		{name: "per-file symlink in .ssh", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			file := linkedIntoProject(t, home, "dotfiles/ssh/config")
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "config"))
+			return file
+		}},
+		{name: "per-file symlink through a symlinked directory", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			file := linkedIntoProject(t, home, "dotfiles/ssh/config")
+			symlinkAt(t, filepath.Join(home, "dotfiles"), filepath.Join(home, "links"))
+			symlinkAt(t, filepath.Join(home, "links", "ssh", "config"), filepath.Join(home, ".ssh", "config"))
+			return file
+		}},
+	}
+	for _, moved := range movedLocations {
+		if moved.file {
+			continue
+		}
+		layouts = append(layouts, hardLinkLayout{name: "directory of " + moved.variable, layout: func(t *testing.T, home string) string {
+			moved.create(t, home)
+			moved.set(t, filepath.Join(home, moved.value))
+			return linkedIntoProject(t, home, filepath.Join(moved.location, "secret"))
+		}})
+	}
+	checkHardLinkLayouts(t, layouts)
+}
+
+// TestHandleCountsEachPathOfAHardLinkedFileOnce covers protected locations
+// that overlap, and symlinks that name a file in another spelling: each path
+// of a file counts once, so the link outside every protected location is
+// not hidden by a path that was counted twice.
+func TestHandleCountsEachPathOfAHardLinkedFileOnce(t *testing.T) {
+	layouts := []hardLinkLayout{
+		{name: "CLAUDE_CONFIG_DIR is .claude", layout: func(t *testing.T, home string) string {
+			t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+			return linkedOutside(t, home, ".claude/settings.json")
+		}},
+		{name: "XDG_CONFIG_HOME is .config", layout: func(t *testing.T, home string) string {
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+			return linkedOutside(t, home, ".config/gh/hosts.yml")
+		}},
+		{name: "GH_CONFIG_DIR is a symlink to .config/gh", layout: func(t *testing.T, home string) string {
+			file := linkedOutside(t, home, ".config/gh/hosts.yml")
+			symlinkAt(t, filepath.Join(home, ".config", "gh"), filepath.Join(home, "gh"))
+			t.Setenv("GH_CONFIG_DIR", filepath.Join(home, "gh"))
+			return file
+		}},
+		{name: "GNUPGHOME inside .gnupg", layout: func(t *testing.T, home string) string {
+			t.Setenv("GNUPGHOME", filepath.Join(home, ".gnupg", "sub"))
+			return linkedOutside(t, home, ".gnupg/sub/key.key")
+		}},
+		{name: "symlink in .claude to a file in .claude", layout: func(t *testing.T, home string) string {
+			file := linkedOutside(t, home, ".claude/settings.json")
+			symlinkAt(t, file, filepath.Join(home, ".claude", "link.json"))
+			return file
+		}},
+		{name: "two symlinks to one file outside", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh", ".claude")
+			file := linkedOutside(t, home, "dotfiles/ssh/config")
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "config"))
+			symlinkAt(t, file, filepath.Join(home, ".claude", "ssh-config"))
+			return file
+		}},
+		{name: "symlink on the data volume to a file in .claude", layout: func(t *testing.T, home string) string {
+			file := linkedOutside(t, home, ".claude/settings.json")
+			requireSpelling(t, dataVolume+file)
+			symlinkAt(t, dataVolume+file, filepath.Join(home, ".claude", "link.json"))
+			return file
+		}},
+		{name: "symlink in upper case to a file in .claude", layout: func(t *testing.T, home string) string {
+			file := linkedOutside(t, home, ".claude/settings.json")
+			requireSpelling(t, strings.ToUpper(file))
+			symlinkAt(t, strings.ToUpper(file), filepath.Join(home, ".claude", "link.json"))
+			return file
+		}},
+		{name: "symlink in upper case to a file outside", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh", ".claude")
+			file := linkedOutside(t, home, "dotfiles/ssh/config")
+			requireSpelling(t, strings.ToUpper(file))
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "config"))
+			symlinkAt(t, strings.ToUpper(file), filepath.Join(home, ".claude", "ssh-config"))
+			return file
+		}},
+	}
+	checkHardLinkLayouts(t, layouts)
+}
+
+// TestHandleAcceptsHardLinksInsideTheProtectedLocations covers files whose
+// every hard link lies in the protected locations, as Claude Code and GnuPG
+// make them, and a subdirectory, which always has more than one link.
+func TestHandleAcceptsHardLinksInsideTheProtectedLocations(t *testing.T) {
+	checkHardLinkLayouts(t, []hardLinkLayout{
+		{name: "snapshots of Claude Code", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".claude/file-history/two")
+			linkedCredential(t, home, ".claude/file-history/one/snapshot", filepath.Join(home, ".claude", "file-history", "two", "snapshot"))
+			return ""
+		}},
+		{name: "lock pair of GnuPG", layout: func(t *testing.T, home string) string {
+			linkedCredential(t, home, ".gnupg/public-keys.d/pubring.db.lock", filepath.Join(home, ".gnupg", "public-keys.d", ".#lk0x0000.host.123"))
+			return ""
+		}},
+		{name: "link between .claude and .ssh", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			linkedCredential(t, home, ".claude/shared", filepath.Join(home, ".ssh", "shared"))
+			return ""
+		}},
+		{name: "subdirectories", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".claude/projects/one/two", ".ssh/sockets")
+			return ""
+		}},
+		{name: "single link", layout: func(t *testing.T, home string) string {
+			unreadable(t, credentialFile(t, home, ".ssh/config"))
+			return ""
+		}},
+		{name: "snapshots with CLAUDE_CONFIG_DIR as .claude", layout: func(t *testing.T, home string) string {
+			t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+			makeDirs(t, home, ".claude/file-history/two")
+			linkedCredential(t, home, ".claude/file-history/one/snapshot", filepath.Join(home, ".claude", "file-history", "two", "snapshot"))
+			return ""
+		}},
+		{name: "per-file symlink to a file with a link in .ssh", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			file := linkedCredential(t, home, "dotfiles/ssh/config", filepath.Join(home, ".ssh", "config.bak"))
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "config"))
+			return ""
+		}},
+		{name: "hard link of a file outside the protected locations", layout: func(t *testing.T, home string) string {
+			linkedCredential(t, home, "dotfiles/vim/vimrc", filepath.Join(home, "work", "api", "vimrc"))
+			return ""
+		}},
+	})
+}
+
+// singleLinkFile is a file that the environment moves and that must have
+// one hard link: the variable, its value, and the file, relative to home.
+type singleLinkFile struct {
+	variable string
+	value    string
+	file     string
+}
+
+// singleLinkFiles are the files of every variable that moves one.
+var singleLinkFiles = []singleLinkFile{
+	{variable: "AWS_CONFIG_FILE", value: "dotfiles/aws/config", file: "dotfiles/aws/config"},
+	{variable: "AWS_SHARED_CREDENTIALS_FILE", value: "dotfiles/aws/credentials", file: "dotfiles/aws/credentials"},
+	{variable: "CLAUDE_CONFIG_DIR", value: "dotfiles/claude", file: "dotfiles/claude/.claude.json"},
+}
+
+// TestHandleRefusesHardLinkedFilesThatTheEnvironmentMoves covers the files
+// that the environment moves (#69): like .claude.json, each of them must
+// have one hard link, also when the other link lies in a protected location.
+func TestHandleRefusesHardLinkedFilesThatTheEnvironmentMoves(t *testing.T) {
+	for _, moved := range singleLinkFiles {
+		t.Run(moved.variable, func(t *testing.T) {
+			checkHardLinkLayouts(t, []hardLinkLayout{
+				{name: "other link in the project", layout: func(t *testing.T, home string) string {
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return linkedIntoProject(t, home, moved.file)
+				}},
+				{name: "other link outside every project", layout: func(t *testing.T, home string) string {
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return linkedOutside(t, home, moved.file)
+				}},
+				{name: "other link next to it", layout: func(t *testing.T, home string) string {
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return linkedCredential(t, home, moved.file, filepath.Join(home, moved.file+".bak"))
+				}},
+				{name: "other link of the target of a symlink", layout: func(t *testing.T, home string) string {
+					file := linkedIntoProject(t, home, "store/"+filepath.Base(moved.file))
+					makeDirs(t, home, filepath.Dir(moved.file))
+					symlinkAt(t, file, filepath.Join(home, moved.file))
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return file
+				}},
+				{name: "single link", layout: func(t *testing.T, home string) string {
+					unreadable(t, credentialFile(t, home, moved.file))
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return ""
+				}},
+				{name: "missing", layout: func(t *testing.T, home string) string {
+					makeDirs(t, home, filepath.Dir(moved.file))
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return ""
+				}},
+			})
+		})
+	}
+}
+
+// TestHandleRefusesEmptyVariablesOfFilesThatMustHaveOneLink covers a
+// variable of a file that must have one hard link that is set and empty:
+// init stops with ErrRelocatedPath before it asks OrbStack anything.
+func TestHandleRefusesEmptyVariablesOfFilesThatMustHaveOneLink(t *testing.T) {
+	for _, variable := range []string{"AWS_CONFIG_FILE", "CLAUDE_CONFIG_DIR"} {
+		t.Run(variable, func(t *testing.T) {
+			home := newBareHome(t)
+			t.Setenv(variable, "")
+			checkRefusals(t, account(home), []refusal{{name: "project", dir: filepath.Join(home, "work", "api"), want: sandbox.ErrRelocatedPath}})
+		})
+	}
+}
+
+// TestHandleStopsOnAProtectedDirectoryThatCannotBeRead covers a subdirectory
+// of a protected directory that the walk cannot read: the handler cannot
+// count the links of the files in it, so init stops.
+func TestHandleStopsOnAProtectedDirectoryThatCannotBeRead(t *testing.T) {
+	home := newBareHome(t)
+	locked := filepath.Join(home, ".claude", "locked")
+	makeDirs(t, home, ".claude/locked")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: filepath.Join(home, "work", "api")})
+
+	if !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), "file in a protected directory") {
+		t.Errorf("Handle = %v, want %v about a file in a protected directory", err, fs.ErrPermission)
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("calls = %v, want none", fake.Calls)
+	}
+}
+
 // TestHandleWithProtectedFilesThatLeadNowhere covers a .claude.json that is
 // a broken symlink, which protects only the directory where its target would
 // be created, and one that cannot be resolved, which stops init.
@@ -1349,7 +1668,7 @@ func TestHandleStopsOnSymlinksThatCannotBeFollowed(t *testing.T) {
 		layout func(t *testing.T, home string)
 		want   string
 	}{
-		{name: "symlink loop in .ssh", want: "symlink in a protected directory", layout: func(t *testing.T, home string) {
+		{name: "symlink loop in .ssh", want: "file in a protected directory", layout: func(t *testing.T, home string) {
 			makeDirs(t, home, ".ssh")
 			symlinkAt(t, "loop", filepath.Join(home, ".ssh", "loop"))
 		}},

@@ -419,34 +419,34 @@ func (h Handler) loadFacts(path string) (sandbox.ProjectDir, error) {
 	if err != nil {
 		return sandbox.ProjectDir{}, err
 	}
-	protected, fileDirs, err := loadProtected(homes)
+	protected, fileDirs, files, err := loadProtected(homes)
 	if err != nil {
 		return sandbox.ProjectDir{}, err
 	}
-	links, err := protectedFileLinks(homes)
-	if err != nil {
-		return sandbox.ProjectDir{}, fmt.Errorf("protected file: %w", err)
+	if err := addSingleLinkFiles(files, homes); err != nil {
+		return sandbox.ProjectDir{}, err
 	}
-	return sandbox.ProjectDir{Path: dir, OwnerUID: owner, UserUID: uid, Homes: homes, Protected: protected, ProtectedFileDirs: fileDirs, ProtectedFileLinks: links}, nil
+	return sandbox.ProjectDir{Path: dir, OwnerUID: owner, UserUID: uid, Homes: homes, Protected: protected, ProtectedFileDirs: fileDirs, ProtectedFileLinks: files.links()}, nil
 }
 
 // loadProtected returns every spelling of the protected directories of homes
 // and of the environment, and of the directories that hold a protected file,
-// together with what the symlinks in those protected directories lead to.
-func loadProtected(homes []string) ([]string, []string, error) {
+// together with what the symlinks in those protected directories lead to,
+// and the files with more than one hard link that it found in them.
+func loadProtected(homes []string) ([]string, []string, foundFiles, error) {
 	protected, err := allProtectedSpellings(homes)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	fileDirs, err := allFileDirSpellings(homes)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	linkedDirs, linkedFileDirs, err := linkedSpellings(protected)
+	linkedDirs, linkedFileDirs, files, err := linkedSpellings(protected)
 	if err != nil {
-		return nil, nil, fmt.Errorf("symlink in a protected directory: %w", err)
+		return nil, nil, nil, fmt.Errorf("file in a protected directory: %w", err)
 	}
-	return distinct(slices.Concat(protected, linkedDirs)), distinct(slices.Concat(fileDirs, linkedFileDirs)), nil
+	return distinct(slices.Concat(protected, linkedDirs)), distinct(slices.Concat(fileDirs, linkedFileDirs)), files, nil
 }
 
 // allProtectedSpellings returns every spelling of the directories that the
@@ -622,40 +622,197 @@ func fileDirSpellings(path string) ([]string, error) {
 	return dirSpellings(filepath.Dir(target))
 }
 
-// protectedFileLinks returns the link count of the file that each protected
-// file path of homes resolves to, for each of those files that exists. It
-// reads only the metadata of the file and never opens it (D08).
-func protectedFileLinks(homes []string) ([]sandbox.FileLinks, error) {
-	var links []sandbox.FileLinks
+// addSingleLinkFiles adds to files, as files that must have one hard link,
+// the file that each protected file path of homes resolves to, and the file
+// that each location of RelocatedSingleLinkFiles resolves to. A path that
+// leads nowhere adds nothing. It reads only metadata and never opens a file
+// (D08).
+func addSingleLinkFiles(files foundFiles, homes []string) error {
 	for _, path := range protectedFilePaths(homes) {
-		target, err := filepath.EvalSymlinks(path)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
+		if err := files.addResolved(path); err != nil {
+			return fmt.Errorf("protected file: %w", err)
 		}
-		if err != nil {
-			return nil, err
-		}
-		count, err := linkCount(target)
-		if err != nil {
-			return nil, err
-		}
-		links = append(links, sandbox.FileLinks{Path: target, Count: count})
 	}
-	return links, nil
+	relocated, err := sandbox.RelocatedSingleLinkFiles(os.LookupEnv)
+	if err != nil {
+		return err
+	}
+	for _, location := range relocated {
+		if err := files.addResolved(location.Path); err != nil {
+			return fmt.Errorf("protected location of %s: %w", location.Variable, err)
+		}
+	}
+	return nil
 }
 
-// linkCount returns the number of hard links of the file at path, from its
-// metadata.
-func linkCount(path string) (uint64, error) {
+// fileID identifies a file by its device and its inode.
+type fileID struct {
+	dev uint64
+	ino uint64
+}
+
+// foundFile is a protected file with more than one hard link.
+type foundFile struct {
+	// first is the first path of the file that the handler found.
+	first string
+	// paths are the distinct paths of the file that the handler found in
+	// the protected locations.
+	paths map[string]bool
+	// count is the link count of the file.
+	count uint64
+	// single reports a file that must have one hard link.
+	single bool
+}
+
+// foundFiles holds the protected files with more than one hard link by their
+// identity, so that each path of a file counts once, under every spelling
+// and from every protected location that reaches it.
+type foundFiles map[fileID]*foundFile
+
+// links returns the link count of each file and the number of its paths
+// that the handler found, 1 for a file that must have one hard link, sorted
+// by path.
+func (f foundFiles) links() []sandbox.FileLinks {
+	links := make([]sandbox.FileLinks, 0, len(f))
+	for _, file := range f {
+		found := uint64(len(file.paths))
+		if file.single {
+			found = 1
+		}
+		links = append(links, sandbox.FileLinks{Path: file.first, Count: file.count, Found: found})
+	}
+	slices.SortFunc(links, func(a, b sandbox.FileLinks) int { return strings.Compare(a.Path, b.Path) })
+	return links
+}
+
+// add records path as a path of the file id that has count hard links, when
+// it has more than one.
+func (f foundFiles) add(id fileID, count uint64, path string, single bool) {
+	if count < 2 {
+		return
+	}
+	file := f[id]
+	if file == nil {
+		file = &foundFile{first: path, paths: map[string]bool{}}
+		f[id] = file
+	}
+	file.paths[path] = true
+	file.count = max(file.count, count)
+	file.single = file.single || single
+}
+
+// addResolved records the file that path resolves to as a file that must
+// have one hard link. A path that leads nowhere adds nothing.
+func (f foundFiles) addResolved(path string) error {
+	target, err := filepath.EvalSymlinks(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return f.addFile(target, true)
+}
+
+// addFile records path, which is no symlink, when it is a regular file. A
+// file that no longer exists adds nothing.
+func (f foundFiles) addFile(path string, single bool) error {
+	id, count, regular, err := fileStat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !regular {
+		return err
+	}
+	f.add(id, count, path, single)
+	return nil
+}
+
+// addChainEnd records the file at path, where the chain of a symlink in a
+// protected directory ends, under its canonical path, when it is a regular
+// file with more than one hard link.
+func (f foundFiles) addChainEnd(path string) error {
+	id, count, regular, err := fileStat(path)
+	if err != nil || !regular || count < 2 {
+		return err
+	}
+	canonical, err := canonicalFile(path, id)
+	if err != nil {
+		return err
+	}
+	f.add(id, count, canonical, false)
+	return nil
+}
+
+// canonicalFile returns the canonical path of the file id that path names:
+// the canonical path of the directory that holds it, joined with the name
+// that the directory lists for it. A symlink can name the file in another
+// spelling, and each distinct path counts as one link.
+func canonicalFile(path string, id fileID) (string, error) {
+	dir, err := realpath.Resolve(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	name, err := listedName(dir, filepath.Base(path), id)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, name), nil
+}
+
+// listedName returns the name under which the directory dir lists the file
+// id that name names: name itself when dir lists it so, or else the only
+// name of the file in dir. It fails when it cannot tell which of several
+// names of the file name is.
+func listedName(dir, name string, id fileID) (string, error) {
+	names, err := namesOf(dir, id)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case slices.Contains(names, name):
+		return name, nil
+	case len(names) == 1:
+		return names[0], nil
+	}
+	return "", fmt.Errorf("%s names one of %d hard links in %s", name, len(names), dir)
+}
+
+// namesOf returns the names in the directory dir of the regular file id.
+func namesOf(dir string, id fileID) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		entryID, _, _, err := fileStat(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		if entryID == id {
+			names = append(names, entry.Name())
+		}
+	}
+	return names, nil
+}
+
+// fileStat returns the identity and the link count of the file at path, and
+// whether it is a regular file, from its metadata, without following a
+// symlink.
+func fileStat(path string) (fileID, uint64, bool, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return 0, err
+		return fileID{}, 0, false, err
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return 0, fmt.Errorf("link count of %s is not known", path)
+		return fileID{}, 0, false, fmt.Errorf("link count of %s is not known", path)
 	}
-	return uint64(stat.Nlink), nil
+	return fileID{dev: uint64(stat.Dev), ino: stat.Ino}, uint64(stat.Nlink), info.Mode().IsRegular(), nil
 }
 
 // missingFileDirSpellings returns every spelling of the directory in which
@@ -793,10 +950,14 @@ func hasParentAfterName(target string) bool {
 // of each directory, of the directory that holds each file, and of each
 // directory that holds a symlink on the way (linkSpellings). A symlink
 // that leads nowhere protects the path where its target would be created,
-// as a directory. It reads only metadata and never opens a file (D08). A
-// protected path that does not exist has nothing in it.
-func linkedSpellings(protected []string) ([]string, []string, error) {
+// as a directory. It also returns every regular file with more than one
+// hard link that it finds in those directories or at the end of a chain,
+// with each canonical path under which it finds the file. It reads only
+// metadata and never opens a file (D08). A protected path that does not
+// exist has nothing in it.
+func linkedSpellings(protected []string) ([]string, []string, foundFiles, error) {
 	var dirs, fileDirs []string
+	files := foundFiles{}
 	walked := map[string]bool{}
 	for queue := slices.Clone(protected); len(queue) > 0; queue = queue[1:] {
 		root, err := realpath.Resolve(queue[0])
@@ -804,37 +965,67 @@ func linkedSpellings(protected []string) ([]string, []string, error) {
 			continue
 		}
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if walked[root] {
 			continue
 		}
 		walked[root] = true
-		linkedDirs, linkedFileDirs, err := linksIn(root)
+		linkedDirs, linkedFileDirs, err := linksIn(root, files)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		dirs = append(dirs, linkedDirs...)
 		fileDirs = append(fileDirs, linkedFileDirs...)
 		queue = append(queue, linkedDirs...)
 	}
-	return dirs, fileDirs, nil
+	return dirs, fileDirs, files, nil
 }
 
-// linksIn returns what the symlinks in the directory root and below it lead
-// to, as linkSpellings returns it. It does not follow a symlink to walk it.
-func linksIn(root string) ([]string, []string, error) {
+// linksIn returns what the symlinks in the canonical directory root and
+// below it lead to, as linkSpellings returns it, and adds the regular files
+// in it and at the end of each chain to files. It does not follow a symlink
+// to walk it.
+func linksIn(root string, files foundFiles) ([]string, []string, error) {
 	var dirs, fileDirs []string
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.Type()&fs.ModeSymlink == 0 {
+		if err != nil {
 			return err
 		}
-		linkedDirs, linkedFileDirs, err := linkSpellings(path)
+		linkedDirs, linkedFileDirs, err := visitEntry(path, entry.Type(), files)
 		dirs = append(dirs, linkedDirs...)
 		fileDirs = append(fileDirs, linkedFileDirs...)
 		return err
 	})
 	return dirs, fileDirs, err
+}
+
+// visitEntry adds the regular file path to files, or returns what the chain
+// of the symlink path leads to and adds the regular file where it ends.
+func visitEntry(path string, mode fs.FileMode, files foundFiles) ([]string, []string, error) {
+	switch {
+	case mode.IsRegular():
+		return nil, nil, files.addFile(path, false)
+	case mode&fs.ModeSymlink != 0:
+		return followLink(path, files)
+	}
+	return nil, nil, nil
+}
+
+// followLink returns what linkSpellings returns for the symlink link, and
+// adds the regular file where its chain ends to files.
+func followLink(link string, files foundFiles) ([]string, []string, error) {
+	walk, missing, err := walkChain(link)
+	if err != nil {
+		return nil, nil, err
+	}
+	if missing {
+		return walk.missingSpellings()
+	}
+	if err := files.addChainEnd(walk.resolved); err != nil {
+		return nil, nil, err
+	}
+	return walk.endSpellings()
 }
 
 // linkSpellings returns what the chain of the symlink link leads to, as the
@@ -846,17 +1037,27 @@ func linksIn(root string) ([]string, []string, error) {
 // The agent could replace a hop in a mounted directory, so each of them is
 // protected as the holder of a protected file.
 func linkSpellings(link string) ([]string, []string, error) {
-	walk := chainWalk{resolved: string(filepath.Separator), rest: pathNames(link)}
-	for len(walk.rest) > 0 {
-		missing, err := walk.step()
-		if err != nil {
-			return nil, nil, err
-		}
-		if missing {
-			return walk.missingSpellings()
-		}
+	walk, missing, err := walkChain(link)
+	if err != nil {
+		return nil, nil, err
+	}
+	if missing {
+		return walk.missingSpellings()
 	}
 	return walk.endSpellings()
+}
+
+// walkChain resolves the chain of the symlink link one name at a time, as
+// the kernel does, and reports whether it leads nowhere.
+func walkChain(link string) (*chainWalk, bool, error) {
+	walk := &chainWalk{resolved: string(filepath.Separator), rest: pathNames(link)}
+	for len(walk.rest) > 0 {
+		missing, err := walk.step()
+		if err != nil || missing {
+			return walk, missing, err
+		}
+	}
+	return walk, false, nil
 }
 
 // chainWalk resolves a path one name at a time, as the kernel does, and keeps
