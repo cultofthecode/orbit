@@ -86,8 +86,39 @@ func TestScriptCreatesTheAgentOnceWithoutGroups(t *testing.T) {
 	}
 	lineIndex(t, lines, `[ "$(id -u agent)" -ge 1000 ] || fail "the uid of agent is below 1000"`)
 	for _, line := range lines {
-		if strings.Contains(line, "usermod") && strings.Contains(line, "agent") {
-			t.Errorf("script changes the groups of agent: %q", line)
+		if changesTheAgentUser(line) {
+			t.Errorf("script changes or removes the agent user: %q", line)
+		}
+	}
+}
+
+// changesTheAgentUser reports whether line removes the agent user or alters
+// it with usermod: the login of the agent lives in its home, which provisioning
+// never removes or recreates.
+func changesTheAgentUser(line string) bool {
+	if strings.Contains(line, "userdel") || strings.Contains(line, "deluser") {
+		return true
+	}
+	return strings.Contains(line, "usermod") && strings.Contains(line, "agent")
+}
+
+func TestChangesTheAgentUserRefusesHostileLines(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"userdel agent", true},
+		{"userdel --remove agent", true},
+		{"deluser agent", true},
+		{"deluser --remove-home agent", true},
+		{"usermod -d /x agent", true},
+		{"usermod -aG sudo agent", true},
+		{"id -u agent >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --user-group agent", false},
+		{`[ "$(id -u agent)" -ge 1000 ] || fail "the uid of agent is below 1000"`, false},
+	}
+	for _, c := range cases {
+		if got := changesTheAgentUser(c.line); got != c.want {
+			t.Errorf("changesTheAgentUser(%q) = %v, want %v", c.line, got, c.want)
 		}
 	}
 }

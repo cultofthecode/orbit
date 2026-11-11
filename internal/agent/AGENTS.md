@@ -14,7 +14,7 @@ The agent definitions (D16): what Orbit needs to install an agent in a sandbox. 
 - `NewRegistry` refuses an empty name and a duplicate name. `Lookup` fails with `ErrUnknownAgent` and names the known agents; it returns a copy of `EgressDomains`.
 - `Install` is a bash script that runs as the agent user. It holds no secret, no value of the user, and no prelude: the `init` handler wraps it in one braced group with `set -euo pipefail` and the proxy settings of `/etc/environment`.
 - `EgressDomains` of `claude-code` are exactly the eight Claude Code hosts of D24. A new domain needs the owner's yes and a superseding row in the product brief.
-- Orbit never reads, copies, stores, or forwards the credentials of an agent (D08, R04). A definition writes nothing into `~/.claude`.
+- Orbit never reads, copies, stores, or forwards the credentials of an agent (D08, R04). A definition writes nothing into `~/.claude`. No Go file of the module names `.credentials.json`, the Keychain entry or the `security` tool, or a provider credential variable, and no code reads that file by any path, also not through `RunAsAgent` or `RunAsRoot`; `cmd/orbit/credential_guard_test.go` fails on the names, and code review covers a name built at run time.
 
 ## Validation
 
