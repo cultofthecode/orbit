@@ -129,8 +129,7 @@ func checkForwarding(ctx context.Context, t *testing.T, client *orbstack.Client,
 // touches the machine.
 func TestInitForwardsTheSSHAgentByDefaultAndRefusesTheOtherSetting(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
@@ -173,8 +172,7 @@ func TestInitForwardsTheSSHAgentByDefaultAndRefusesTheOtherSetting(t *testing.T)
 // there, and that init without the flag then refuses it.
 func TestInitLeavesTheSSHAgentOutOnRequest(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))

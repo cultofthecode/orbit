@@ -46,7 +46,7 @@ go test ./...
 go build ./...
 ```
 
-Integration tests and the escape suite need a running OrbStack: `go test -tags integration -p 1 ./...`. They are not part of the default gate. Run the packages one at a time (`-p 1`): `init` refuses every directory while another machine's stored mount passes through a symlink, and `internal/orbstack` creates such a machine on purpose.
+Integration tests and the escape suite need a running OrbStack: `go test -tags integration -p 1 -timeout 60m ./...`. They are not part of the default gate. Run the packages one at a time (`-p 1`): `init` refuses every directory while another machine's stored mount passes through a symlink, and `internal/orbstack` creates such a machine on purpose.
 
 ## Always / Ask first / Never
 

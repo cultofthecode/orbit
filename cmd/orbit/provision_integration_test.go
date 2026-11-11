@@ -27,9 +27,14 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
 )
 
-// provisionTimeout bounds the provisioning test: two runs of the root
-// script, each with a package install, and the probes.
+// provisionTimeout bounds the provisioning of one test when the test
+// binary has no deadline: two runs of the root script, each with a package
+// install, and the probes.
 const provisionTimeout = 10 * time.Minute
+
+// cleanupGrace is the time that provisionContext leaves before the
+// deadline of the test binary, so that t.Cleanup can delete the machine.
+const cleanupGrace = 3 * time.Minute
 
 // initLockPath is the file that serializes the integration runs on one
 // host: TestActiveMountsShowASwappedPath in internal/orbstack holds an
@@ -197,8 +202,7 @@ blocked "agent direct to 1.1.1.1 after the attempts of the agent" as_agent curl 
 
 func TestInitProvisionsTheSandbox(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
@@ -243,6 +247,26 @@ func waitToRunInit(t *testing.T) {
 	}
 }
 
+// provisionContext returns a context that ends cleanupGrace before the
+// deadline of the test binary, so that the -timeout the caller chose
+// absorbs the load of other runs on one OrbStack and t.Cleanup still
+// deletes the machine. Without a deadline it ends after provisionTimeout.
+func provisionContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(context.Background(), provisionDeadline(t))
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// provisionDeadline returns the end of the context of provisionContext.
+func provisionDeadline(t *testing.T) time.Time {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		return deadline.Add(-cleanupGrace)
+	}
+	return time.Now().Add(provisionTimeout)
+}
+
 // otherMachines returns the names of the machines on the host besides
 // name, for the failure message of an init test: init checks the mounts of
 // every machine, so a machine that the test did not create can make it
@@ -279,8 +303,7 @@ systemctl is-active --quiet systemd-user-sessions.service
 // of systemd allows (#66).
 func TestInitRunsAgainAfterRepeatedRuns(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
