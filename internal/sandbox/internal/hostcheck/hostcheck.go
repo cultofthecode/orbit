@@ -347,11 +347,22 @@ func homeSpellings(accountHome string) ([]string, error) {
 	for _, home := range []string{environmentHome, accountHome} {
 		spellings, err := dirSpellings(home)
 		if err != nil {
-			return nil, err
+			return nil, quotedPathError(home, err)
 		}
 		homes = append(homes, spellings...)
 	}
 	return distinct(homes), nil
+}
+
+// quotedPathError reports err for path with path quoted, so that a path with
+// control characters never reaches the terminal raw. A *fs.PathError carries
+// the raw path in its message, so only its cause is kept.
+func quotedPathError(path string, err error) error {
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) {
+		return fmt.Errorf("%q: %w", path, err)
+	}
+	return fmt.Errorf("%q: %s: %w", path, pathErr.Op, pathErr.Err)
 }
 
 // protectedSpellings returns every spelling of the directories that the

@@ -2,8 +2,12 @@ package hostcheck
 
 import (
 	"errors"
+	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/cultofthecode/orbit/internal/sandbox"
@@ -149,5 +153,26 @@ func TestUnnestedRefusesNestingWithAnotherMachine(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoadUserQuotesAMissingHome(t *testing.T) {
+	account := func() (*user.User, error) {
+		return &user.User{Uid: "501", HomeDir: t.TempDir()}, nil
+	}
+	for _, home := range []string{"/missing\n\x1b[2J", "/missing\x1b]0;title\x07", "/missing\r\t"} {
+		t.Setenv("HOME", home)
+		_, _, err := loadUser(account)
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("loadUser with HOME %q = %v, want %v", home, err, fs.ErrNotExist)
+		}
+		if !strings.Contains(err.Error(), strconv.Quote(home)) {
+			t.Errorf("loadUser with HOME %q = %q, want the quoted HOME", home, err)
+		}
+		for _, raw := range []string{"\n", "\x1b", "\x07", "\r", "\t"} {
+			if strings.Contains(err.Error(), raw) {
+				t.Errorf("loadUser with HOME %q = %q, contains the raw character %q", home, err, raw)
+			}
+		}
 	}
 }
