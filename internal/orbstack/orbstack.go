@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -37,6 +39,9 @@ const (
 	statusStarting = "Starting"
 	statusStopped  = "Stopped"
 )
+
+// stateDir is the directory under $HOME through which orb finds OrbStack.
+const stateDir = ".orbstack"
 
 // mountSeparator divides the source and the destination of a mount.
 const mountSeparator = ":"
@@ -72,7 +77,16 @@ var (
 	// ErrNotRunning reports that OrbStack is not running. The client then
 	// runs no other command, because orb starts a stopped OrbStack.
 	ErrNotRunning = errors.New("OrbStack is not running")
+	// ErrHome reports that orb status printed a stopped OrbStack while HOME
+	// does not lead orb to the OrbStack of the account: orb finds OrbStack
+	// through $HOME/.orbstack, so OrbStack may be running. The client runs no
+	// other command, and it never runs orb with another HOME.
+	ErrHome = errors.New("orb cannot reach OrbStack through HOME")
 )
+
+// currentUser returns the account of the process from the user database of
+// the system, which does not read HOME. Tests replace it.
+var currentUser = user.Current
 
 // Client drives the orb CLI. It runs a command only after orb status reports
 // a running OrbStack, so that no call starts a stopped OrbStack.
@@ -378,18 +392,24 @@ func run(ctx context.Context, args []string, stdin []byte) (string, error) {
 	return execute(ctx, args, stdin)
 }
 
-// checkRunning fails unless orb status reports a running OrbStack.
+// checkRunning fails unless orb status reports a running OrbStack. It reads
+// HOME before orb runs, because orb creates $HOME/.orbstack.
 func checkRunning(ctx context.Context) error {
+	home := readHome()
 	status, err := execute(ctx, statusArgs(), nil)
-	return statusError(strings.TrimSpace(status), err)
+	return statusError(strings.TrimSpace(status), err, homeCause(home))
 }
 
-// statusError returns the error for the state that orb status printed and
-// for its error: nil only for a running OrbStack, ErrNotRunning for a
-// stopped or starting one, and an error for anything else.
-func statusError(status string, err error) error {
+// statusError returns the error for the state that orb status printed, for
+// its error, and for homeCause, the reason why HOME may not lead orb to
+// OrbStack: nil only for a running OrbStack, ErrHome for a stopped or
+// starting one when homeCause is not empty, ErrNotRunning for a stopped or
+// starting one otherwise, and an error for anything else.
+func statusError(status string, err error, homeCause string) error {
 	switch {
-	case status == statusStopped || status == statusStarting:
+	case isNotRunning(status) && homeCause != "":
+		return fmt.Errorf("%w: %s, and orb finds OrbStack through $HOME/%s (orb status: %s); OrbStack may still be running: set HOME to the home directory of the account and try again", ErrHome, homeCause, stateDir, status)
+	case isNotRunning(status):
 		return fmt.Errorf("%w (orb status: %s); start OrbStack, wait until orb status prints Running, and try again", ErrNotRunning, status)
 	case err != nil:
 		return err
@@ -397,6 +417,64 @@ func statusError(status string, err error) error {
 		return fmt.Errorf("%s %s printed %q, not %q", cli, statusArgs()[0], status, statusRunning)
 	}
 	return nil
+}
+
+// isNotRunning reports whether orb status printed a stopped or starting
+// OrbStack.
+func isNotRunning(status string) bool {
+	return status == statusStopped || status == statusStarting
+}
+
+// home is what decides whether HOME leads orb to the OrbStack of the
+// account.
+type home struct {
+	// env is HOME, canonical when it is absolute.
+	env string
+	// account is the canonical home directory of the account, or empty when
+	// the user database does not give it.
+	account string
+	// hasStateDir reports whether $HOME/.orbstack is a directory.
+	hasStateDir bool
+}
+
+// readHome reads HOME, the home directory of the account, and whether
+// $HOME/.orbstack is a directory.
+func readHome() home {
+	h := home{env: canonical(os.Getenv("HOME"))}
+	if account, err := currentUser(); err == nil && account.HomeDir != "" {
+		h.account = canonical(account.HomeDir)
+	}
+	if filepath.IsAbs(h.env) {
+		info, err := os.Stat(filepath.Join(h.env, stateDir))
+		h.hasStateDir = err == nil && info.IsDir()
+	}
+	return h
+}
+
+// canonical returns an absolute path with its symlinks resolved, or cleaned
+// when it cannot be resolved. It returns a relative path unchanged.
+func canonical(path string) string {
+	if !filepath.IsAbs(path) {
+		return path
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
+}
+
+// homeCause returns why HOME may not lead orb to the OrbStack of the
+// account, or an empty string when it leads there.
+func homeCause(h home) string {
+	switch {
+	case !filepath.IsAbs(h.env):
+		return fmt.Sprintf("HOME %q is not an absolute path", h.env)
+	case h.account != "" && h.env != h.account:
+		return fmt.Sprintf("HOME %q is not the home directory of the account, %q", h.env, h.account)
+	case !h.hasStateDir:
+		return fmt.Sprintf("%q is not a directory", filepath.Join(h.env, stateDir))
+	}
+	return ""
 }
 
 // execute runs orb with args and stdin and returns its standard output, also
