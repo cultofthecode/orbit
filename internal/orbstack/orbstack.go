@@ -10,13 +10,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode"
 )
 
@@ -242,6 +245,36 @@ func (c *Client) RunAsAgent(ctx context.Context, name string, script []byte) err
 		return fmt.Errorf("run a script as %s in machine %s: %w", AgentUser, name, err)
 	}
 	return nil
+}
+
+// Shell runs the login shell of AgentUser in the machine name, in the
+// directory dir, with in, out, and errOut attached directly to orb, so that
+// orb gives the shell a terminal when in is one. It returns the exit status
+// of orb, which is that of the shell, and an error only when orb could not
+// run. While orb runs, the process catches SIGINT and SIGQUIT, so that the
+// signal ends orb and not the caller. The user is fixed, and dir is the
+// only value of the caller besides name on the command line. It runs no
+// command when name lacks the prefix of the client or dir cannot be mounted.
+func (c *Client) Shell(ctx context.Context, name, dir string, in io.Reader, out, errOut io.Writer) (int, error) {
+	if err := c.checkOwned(name); err != nil {
+		return 0, err
+	}
+	if err := checkMountable(dir); err != nil {
+		return 0, err
+	}
+	if err := checkRunning(ctx); err != nil {
+		return 0, err
+	}
+	var status int
+	err := holdingSignals(func() error {
+		var err error
+		status, err = exitStatus(executeStreams(ctx, shellArgs(name, dir), in, out, errOut))
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("run a shell as %s in machine %s: %w", AgentUser, name, err)
+	}
+	return status, nil
 }
 
 // checkOwned refuses a name that does not consist of the prefix of the client
@@ -477,6 +510,14 @@ func runAsAgentArgs(name string) []string {
 	return []string{"-m", name, "-u", AgentUser, "bash", "-s"}
 }
 
+// shellArgs returns the arguments of orb that run the login shell of
+// AgentUser in the machine name with dir as its working directory. Without
+// a command, orb starts the shell of the user from /etc/passwd as a login
+// shell; without -w, it starts in the home directory of the user.
+func shellArgs(name, dir string) []string {
+	return []string{"-m", name, "-u", AgentUser, "-w", dir}
+}
+
 // listsMachine reports whether name is one of the machine names that orb
 // printed, one on each line.
 func listsMachine(names, name string) bool {
@@ -595,14 +636,49 @@ func homeCause(h home) string {
 // standard error of orb.
 func execute(ctx context.Context, args []string, stdin []byte) (string, error) {
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, cli, args...)
-	cmd.Stdin = bytes.NewReader(stdin)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := executeStreams(ctx, args, bytes.NewReader(stdin), &stdout, &stderr); err != nil {
 		return stdout.String(), commandError(args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+// executeStreams runs orb with args and the three streams attached as they
+// are. Every orb command of the client runs through it.
+func executeStreams(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) error {
+	cmd := exec.CommandContext(ctx, cli, args...)
+	cmd.Stdin = in
+	cmd.Stdout = out
+	cmd.Stderr = errOut
+	return cmd.Run()
+}
+
+// exitStatus returns the exit status of a command that ended with err: 0
+// for nil, the exit code for an exit, and 128 plus the number of the signal
+// for a command that a signal ended, as a shell reports it. Any other error
+// means that the command did not run, and exitStatus returns it.
+func exitStatus(err error) (int, error) {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return 0, err
+	}
+	if wait, ok := exit.Sys().(syscall.WaitStatus); ok && wait.Signaled() {
+		return 128 + int(wait.Signal()), nil
+	}
+	return exit.ExitCode(), nil
+}
+
+// heldSignals are the signals of the terminal that holdingSignals catches.
+var heldSignals = []os.Signal{os.Interrupt, syscall.SIGQUIT}
+
+// holdingSignals runs fn while the process catches heldSignals, so that
+// they do not end it, and restores their handling afterwards. A child that
+// fn starts gets them with their default action: a caught signal, unlike an
+// ignored one, does not pass to the child as ignored.
+func holdingSignals(fn func() error) error {
+	caught := make(chan os.Signal, 1)
+	signal.Notify(caught, heldSignals...)
+	defer signal.Stop(caught)
+	return fn()
 }
 
 // commandError wraps the error of the failed orb subcommand and appends what
