@@ -148,16 +148,34 @@ func (h Handler) startAndCheck(ctx context.Context, name, dir string) error {
 }
 
 // stopAgain stops the machine name after the failure cause, also when ctx is
-// cancelled, within stopTimeout, and reports ErrBoundaryDown with the cause,
-// and the failure of the stop when it fails too.
+// cancelled, within stopTimeout, and reports ErrBoundaryDown with the cause.
+// It says that the sandbox was stopped again only when the machine reads
+// back as stopped; otherwise it adds why the sandbox may still run.
 func (h Handler) stopAgain(ctx context.Context, name, dir string, cause error) error {
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopTimeout)
 	defer cancel()
 	down := fmt.Errorf("sandbox %s %w: %w", name, ErrBoundaryDown, cause)
-	if err := h.Machines.Stop(stopCtx, name); err != nil {
+	if err := h.stopAndConfirm(stopCtx, name); err != nil {
 		return errors.Join(down, fmt.Errorf(`stop sandbox %s again: %w; the sandbox may still run: run "orbit stop" in %s`, name, err, dir))
 	}
 	return fmt.Errorf("%w; the sandbox was stopped again", down)
+}
+
+// stopAndConfirm stops the machine name and reads its state back. It fails
+// when the stop fails, the state cannot be read, or the machine is not
+// stopped: OrbStack can still bring up a machine whose start was cancelled.
+func (h Handler) stopAndConfirm(ctx context.Context, name string) error {
+	if err := h.Machines.Stop(ctx, name); err != nil {
+		return err
+	}
+	state, err := h.Machines.State(ctx, name)
+	if err != nil {
+		return fmt.Errorf("state after the stop: %w", err)
+	}
+	if state != stateStopped {
+		return fmt.Errorf("the machine is %q after the stop", state)
+	}
+	return nil
 }
 
 // checkMarker fails with ErrNotProvisioned when the provisioning marker of

@@ -394,7 +394,7 @@ func TestHandleStopsTheSandboxAgainWhenACheckAfterTheStartFails(t *testing.T) {
 			if err == nil || !strings.HasSuffix(err.Error(), "; the sandbox was stopped again") || !strings.Contains(err.Error(), test.text) {
 				t.Errorf("Handle = %v, want %q and that the sandbox was stopped again", err, test.text)
 			}
-			want := append(startCalls(s.name, test.last), orbstacktest.Call{Op: orbstacktest.OpStop, Name: s.name})
+			want := append(startCalls(s.name, test.last), orbstacktest.Call{Op: orbstacktest.OpStop, Name: s.name}, orbstacktest.Call{Op: orbstacktest.OpState, Name: s.name})
 			if !slices.Equal(fake.Calls, want) {
 				t.Errorf("calls =\n%v, want\n%v", fake.Calls, want)
 			}
@@ -449,6 +449,38 @@ func TestHandleReportsBothErrorsWhenTheStopAgainFails(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "may still run") || !strings.Contains(err.Error(), `"orbit stop" in `+s.dir) {
 		t.Errorf("Handle = %v, want that the sandbox may still run and orbit stop named", err)
+	}
+}
+
+// stopLeavesRunning is a fake whose boot check fails and whose Stop succeeds
+// but leaves the machine running: a start that OrbStack completes after the
+// stop.
+type stopLeavesRunning struct {
+	failingBoot
+}
+
+func (f stopLeavesRunning) Stop(ctx context.Context, name string) error {
+	err := f.failingBoot.Stop(ctx, name)
+	f.States[name] = orbstacktest.StateRunning
+	return err
+}
+
+func TestHandleDoesNotSayStoppedAgainWhenTheSandboxStillRuns(t *testing.T) {
+	s := newSandboxHome(t)
+	fake := s.fake(orbstacktest.StateStopped)
+	unitDown := errors.New("tinyproxy.service is not active")
+
+	_, err := s.handler(stopLeavesRunning{failingBoot{Fake: fake, bootErr: unitDown}}).Handle(context.Background(), Input{Dir: s.dir})
+
+	if !errors.Is(err, ErrBoundaryDown) || !errors.Is(err, unitDown) {
+		t.Errorf("Handle = %v, want %v and %v", err, ErrBoundaryDown, unitDown)
+	}
+	if err == nil || strings.Contains(err.Error(), "stopped again") || !strings.Contains(err.Error(), "may still run") || !strings.Contains(err.Error(), `"orbit stop" in `+s.dir) {
+		t.Errorf("Handle = %v, want that the sandbox may still run and orbit stop named, and not that it was stopped again", err)
+	}
+	want := append(startCalls(s.name, bootScript), orbstacktest.Call{Op: orbstacktest.OpStop, Name: s.name}, orbstacktest.Call{Op: orbstacktest.OpState, Name: s.name})
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls =\n%v, want\n%v", fake.Calls, want)
 	}
 }
 
