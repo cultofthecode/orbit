@@ -18,8 +18,20 @@ import (
 // tests, so that the client under test can touch no other machine.
 const integrationPrefix = "orbit-it-"
 
-// integrationTimeout bounds one integration test.
+// createTimeout bounds the creation of one machine. On a cold OrbStack,
+// orb create alone can take most of three minutes.
+const createTimeout = 5 * time.Minute
+
+// integrationTimeout bounds the steps of one integration test after its
+// machine exists.
 const integrationTimeout = 3 * time.Minute
+
+// testContext returns a context that ends after integrationTimeout.
+func testContext(t *testing.T) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
+	t.Cleanup(cancel)
+	return ctx
+}
 
 // inMachine runs a command as root in the machine name and returns its
 // output and its error.
@@ -39,10 +51,13 @@ func hostDir(t *testing.T) string {
 	return dir
 }
 
-// newMachine creates a machine of the integration tests with the mount dir,
-// registers its deletion, and returns its client and its name.
-func newMachine(ctx context.Context, t *testing.T, dir string) (*Client, string) {
+// newMachine creates a machine of the integration tests with the mount dir
+// under its own deadline, createTimeout, registers its deletion, and returns
+// its client and its name.
+func newMachine(t *testing.T, dir string) (*Client, string) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
+	defer cancel()
 	client := New(integrationPrefix)
 	name := integrationPrefix + strings.ToLower(rand.Text()[:8])
 	if exists, err := client.Exists(ctx, name); err != nil || exists {
@@ -78,13 +93,12 @@ func checkMounts(ctx context.Context, t *testing.T, client *Client, name string,
 }
 
 func TestCreateMountsOnlyTheDirectoryAtItsOwnPath(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
-	t.Cleanup(cancel)
 	dir := hostDir(t)
 	if err := os.WriteFile(filepath.Join(dir, "from-host.txt"), []byte("written on the host"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	client, name := newMachine(ctx, t, dir)
+	client, name := newMachine(t, dir)
+	ctx := testContext(t)
 	if exists, err := client.Exists(ctx, name); err != nil || !exists {
 		t.Errorf("Exists(%q) after Create = %v, %v, want true", name, exists, err)
 	}
@@ -113,8 +127,6 @@ func TestCreateMountsOnlyTheDirectoryAtItsOwnPath(t *testing.T) {
 // checked path; the active mounts show the target of the symlink. A path
 // swapped between two starts does not show there.
 func TestActiveMountsShowASwappedPath(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
-	t.Cleanup(cancel)
 	base := hostDir(t)
 	checked := filepath.Join(base, "project", "sub")
 	secret := filepath.Join(base, "secret")
@@ -127,27 +139,15 @@ func TestActiveMountsShowASwappedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client, name := newMachine(ctx, t, checked)
+	client, name := newMachine(t, checked)
+	ctx := testContext(t)
 
 	checkMounts(ctx, t, client, name, map[string]string{checked: checked}, map[string]string{checked: secret})
 }
 
 func TestRunAsRootRunsTheScriptAsRoot(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
-	t.Cleanup(cancel)
-	client := New(integrationPrefix)
-	name := integrationPrefix + strings.ToLower(rand.Text()[:8])
-	if exists, err := client.Exists(ctx, name); err != nil || exists {
-		t.Fatalf("Exists(%q) before Create = %v, %v, want false", name, exists, err)
-	}
-	t.Cleanup(func() {
-		if err := client.Delete(context.WithoutCancel(ctx), name); err != nil {
-			t.Errorf("Delete(%q) = %v", name, err)
-		}
-	})
-	if err := client.Create(ctx, name, hostDir(t)); err != nil {
-		t.Fatalf("Create(%q) = %v", name, err)
-	}
+	client, name := newMachine(t, hostDir(t))
+	ctx := testContext(t)
 	if err := client.RunAsRoot(ctx, name, []byte("set -eu\n[ \"$(id -u)\" = 0 ]\necho done > /root/ran\n")); err != nil {
 		t.Fatalf("RunAsRoot = %v", err)
 	}
