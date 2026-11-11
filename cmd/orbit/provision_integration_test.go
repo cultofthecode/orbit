@@ -8,14 +8,12 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cultofthecode/orbit/internal/orbstack"
-	"github.com/cultofthecode/orbit/internal/provision"
 	"github.com/cultofthecode/orbit/internal/sandbox"
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
 )
@@ -116,7 +114,7 @@ func TestInitProvisionsTheSandbox(t *testing.T) {
 			t.Errorf("Delete(%q) = %v", name, err)
 		}
 	})
-	handler := initialize.Handler{Machines: client, ProvisionScript: provision.Script, CurrentUser: user.Current}
+	handler := initHandler(client, claudeRegistry(t))
 
 	first, err := handler.Handle(ctx, initialize.Input{Dir: dir})
 	if err != nil || !first.Created {
