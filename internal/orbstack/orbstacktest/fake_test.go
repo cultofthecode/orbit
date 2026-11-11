@@ -152,6 +152,7 @@ func TestFakeFailsWhenTold(t *testing.T) {
 	fake.ActiveMountsErr = boom
 	fake.DeleteErr = boom
 	fake.RunAsRootErr = boom
+	fake.RunAsAgentErr = boom
 	ctx := context.Background()
 
 	if _, err := fake.Exists(ctx, "orbit-api-1d9b22c9"); !errors.Is(err, boom) {
@@ -162,6 +163,9 @@ func TestFakeFailsWhenTold(t *testing.T) {
 	}
 	if err := fake.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true")); !errors.Is(err, boom) {
 		t.Errorf("RunAsRoot = %v, want %v", err, boom)
+	}
+	if err := fake.RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true")); !errors.Is(err, boom) {
+		t.Errorf("RunAsAgent = %v, want %v", err, boom)
 	}
 	if len(fake.Machines) != 0 {
 		t.Errorf("Machines = %v, want none", fake.Machines)
@@ -190,6 +194,9 @@ func TestFakeDeletesAndRunsScripts(t *testing.T) {
 	if err := fake.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("echo hi\n")); err != nil {
 		t.Fatalf("RunAsRoot = %v", err)
 	}
+	if err := fake.RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("id -un\n")); err != nil {
+		t.Fatalf("RunAsAgent = %v", err)
+	}
 	if err := fake.Delete(ctx, "orbit-api-1d9b22c9"); err != nil {
 		t.Fatalf("Delete = %v", err)
 	}
@@ -199,6 +206,7 @@ func TestFakeDeletesAndRunsScripts(t *testing.T) {
 	wantCalls := []Call{
 		{Op: OpCreate, Name: "orbit-api-1d9b22c9", Dir: "/work/api"},
 		{Op: OpRunAsRoot, Name: "orbit-api-1d9b22c9", Script: "echo hi\n"},
+		{Op: OpRunAsAgent, Name: "orbit-api-1d9b22c9", Script: "id -un\n"},
 		{Op: OpDelete, Name: "orbit-api-1d9b22c9"},
 	}
 	if !slices.Equal(fake.Calls, wantCalls) {
@@ -214,5 +222,11 @@ func TestFakeRefusesForeignNamesForEveryOperation(t *testing.T) {
 	}
 	if err := fake.RunAsRoot(ctx, "ubuntu", []byte("true")); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("RunAsRoot = %v, want %v", err, ErrForeignMachine)
+	}
+	if err := fake.RunAsAgent(ctx, "ubuntu", []byte("true")); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("RunAsAgent = %v, want %v", err, ErrForeignMachine)
+	}
+	if err := fake.RunAsAgent(ctx, "orbit-", []byte("true")); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("RunAsAgent in a machine named only by the prefix = %v, want %v", err, ErrForeignMachine)
 	}
 }

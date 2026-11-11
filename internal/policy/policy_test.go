@@ -65,36 +65,90 @@ func TestValidateHostRefusesHostileInput(t *testing.T) {
 	}
 }
 
-func TestDefaultAllowlistMatchesD21(t *testing.T) {
-	want := []string{
-		"api.anthropic.com", "auth.docker.io", "browser-intake-us5-datadoghq.com",
-		"claude.ai", "code.claude.com", "codeload.github.com", "dl-cdn.alpinelinux.org",
-		"downloads.claude.ai", "files.pythonhosted.org", "github.com",
-		"http-intake.logs.us5.datadoghq.com", "mcp-proxy.anthropic.com", "nodejs.org",
-		"platform.claude.com", "production.cloudflare.docker.com",
-		"production.cloudfront.docker.com", "proxy.golang.org", "pypi.org",
-		"raw.githubusercontent.com", "registry-1.docker.io", "registry.npmjs.org",
-		"ssh.github.com", "sum.golang.org",
-	}
-	got := DefaultAllowlist()
-	slices.Sort(got)
-	if !slices.Equal(got, want) {
-		t.Errorf("DefaultAllowlist() = %v, want %v", got, want)
-	}
+// baseHostsOfD24 is the base list of D24, sorted.
+var baseHostsOfD24 = []string{
+	"auth.docker.io", "codeload.github.com", "dl-cdn.alpinelinux.org",
+	"files.pythonhosted.org", "github.com", "nodejs.org",
+	"production.cloudflare.docker.com", "production.cloudfront.docker.com",
+	"proxy.golang.org", "pypi.org", "raw.githubusercontent.com",
+	"registry-1.docker.io", "registry.npmjs.org", "ssh.github.com", "sum.golang.org",
 }
 
-func TestDefaultAllowlistHostsAreValid(t *testing.T) {
-	for _, host := range DefaultAllowlist() {
-		if err := ValidateHost(host); err != nil {
-			t.Errorf("default host %q: %v", host, err)
+func TestAllowlistWithoutAgentIsTheBaseListOfD24(t *testing.T) {
+	for _, domains := range [][]string{nil, {}} {
+		got, err := Allowlist(domains)
+		if err != nil || !slices.Equal(got, baseHostsOfD24) {
+			t.Errorf("Allowlist(%q) = %q, %v, want %q", domains, got, err, baseHostsOfD24)
 		}
 	}
 }
 
-func TestDefaultAllowlistReturnsACopy(t *testing.T) {
-	first := DefaultAllowlist()
+func TestBaseListHoldsNoAgentHost(t *testing.T) {
+	got, err := Allowlist(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range got {
+		if strings.Contains(host, "claude") || strings.Contains(host, "anthropic") || strings.Contains(host, "datadoghq") {
+			t.Errorf("base list holds the agent host %q", host)
+		}
+	}
+}
+
+func TestAllowlistAddsTheAgentDomains(t *testing.T) {
+	got, err := Allowlist([]string{"downloads.claude.ai", "claude.ai", "github.com", "claude.ai"})
+	if err != nil {
+		t.Fatalf("Allowlist = %v", err)
+	}
+	want := slices.Sorted(slices.Values(append(slices.Clone(baseHostsOfD24), "claude.ai", "downloads.claude.ai")))
+	if !slices.Equal(got, want) {
+		t.Errorf("Allowlist = %q, want %q", got, want)
+	}
+}
+
+func TestAllowlistRefusesTheWholeListForOneHostileDomain(t *testing.T) {
+	tests := []struct {
+		name   string
+		domain string
+	}{
+		{name: "wildcard", domain: "*.anthropic.com"},
+		{name: "IPv4 literal", domain: "1.2.3.4"},
+		{name: "IPv6 literal", domain: "::1"},
+		{name: "single label", domain: "localhost"},
+		{name: "upper case", domain: "Claude.AI"},
+		{name: "port", domain: "example.com:22"},
+		{name: "empty", domain: ""},
+		{name: "newline", domain: "claude.ai\n.*"},
+		{name: "regular expression", domain: "claude.ai|.*"},
+		{name: "trailing dot", domain: "claude.ai."},
+		{name: "scheme", domain: "https://claude.ai"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := Allowlist([]string{"claude.ai", test.domain, "downloads.claude.ai"})
+			if !errors.Is(err, ErrInvalidHost) || got != nil {
+				t.Errorf("Allowlist with %q = %q, %v, want nil, %v", test.domain, got, err, ErrInvalidHost)
+			}
+		})
+	}
+}
+
+func TestBaseListHostsAreValid(t *testing.T) {
+	for _, host := range baseAllowlist {
+		if err := ValidateHost(host); err != nil {
+			t.Errorf("base host %q: %v", host, err)
+		}
+	}
+}
+
+func TestAllowlistReturnsACopy(t *testing.T) {
+	first, err := Allowlist(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	first[0] = "changed.example"
-	if DefaultAllowlist()[0] == "changed.example" {
-		t.Error("DefaultAllowlist returned its own slice")
+	second, err := Allowlist(nil)
+	if err != nil || second[0] == "changed.example" {
+		t.Error("Allowlist returned the base list itself")
 	}
 }

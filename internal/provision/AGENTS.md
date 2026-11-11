@@ -6,7 +6,7 @@ What root sets up in a sandbox machine before any agent runs: the firewall, the 
 
 - `firewall.go` — `Firewall(FirewallInput)`: `/etc/nftables.conf`, one table `inet orbit_egress`. Golden file: `testdata/firewall.nft` (`go test -update` after a review of the change).
 - `units.go` — `Units(defaultUID)`: the systemd units and drop-ins, and the harden script.
-- `script.go` — `Script(defaultUID)`: the root script that `init` runs through `RunAsRoot`.
+- `script.go` — `Script(defaultUID, agentDomains)`: the root script that `init` runs through `RunAsRoot`. The proxy allowlist is `policy.Allowlist(agentDomains)`; `nil` means no agent.
 
 ## Invariants
 

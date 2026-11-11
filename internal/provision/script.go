@@ -57,14 +57,16 @@ var ErrScriptInput = errors.New("invalid provisioning input")
 
 // Script returns the root script that provisions a sandbox machine.
 // defaultUID is the uid of the default user that OrbStack creates: the uid
-// of the Mac user. The script is idempotent, keeps the machine fail-closed
-// at each step, writes nothing into a home directory, and writes MarkerPath
-// as its last action. The same input yields the same bytes.
-func Script(defaultUID uint32) ([]byte, error) {
+// of the Mac user. agentDomains are the egress domains of the agent of the
+// sandbox, nil without an agent; the proxy allows them in addition to the
+// base list (policy.Allowlist). The script is idempotent, keeps the machine
+// fail-closed at each step, writes nothing into a home directory, and writes
+// MarkerPath as its last action. The same input yields the same bytes.
+func Script(defaultUID uint32, agentDomains []string) ([]byte, error) {
 	if defaultUID == 0 {
 		return nil, fmt.Errorf("%w: the default uid is 0", ErrScriptInput)
 	}
-	files, err := scriptFiles(defaultUID)
+	files, err := scriptFiles(defaultUID, agentDomains)
 	if err != nil {
 		return nil, err
 	}
@@ -83,12 +85,16 @@ func Script(defaultUID uint32) ([]byte, error) {
 
 // scriptFiles returns every file that the script writes, after the
 // configuration is validated.
-func scriptFiles(defaultUID uint32) ([]File, error) {
+func scriptFiles(defaultUID uint32, agentDomains []string) ([]File, error) {
 	firewall, err := Firewall(firewallInput(defaultUID))
 	if err != nil {
 		return nil, err
 	}
-	proxyFiles, err := proxy.Config(policy.DefaultAllowlist())
+	allowlist, err := policy.Allowlist(agentDomains)
+	if err != nil {
+		return nil, err
+	}
+	proxyFiles, err := proxy.Config(allowlist)
 	if err != nil {
 		return nil, err
 	}

@@ -39,11 +39,25 @@ The system SHALL drop every connection to port 3128 that does not arrive on the 
 - THEN the connection fails
 
 ## Requirement: Proxy allowlist
-The system SHALL let the proxy open a `CONNECT` tunnel on port 443 only to a host of the default allowlist (D21), matched exactly and without case.
+The system SHALL let the proxy open a `CONNECT` tunnel on port 443 only to a host of the base allowlist (D24) or of the `EgressDomains` of the agent of the last `init`, matched exactly and without case. Each `init` rebuilds the allowlist from its own `--agent`.
 
 ### Scenario: Allowed and refused hosts
 - WHEN `agent` asks the proxy for `CONNECT github.com:443`, `CONNECT example.org:443`, and `CONNECT github.com:22`
 - THEN the first succeeds and the other two get 403
+
+### Scenario: Hostile domain in a definition
+- WHEN a definition holds `*.anthropic.com`, `1.2.3.4`, `localhost`, `Claude.AI`, or `example.com:22`
+- THEN `policy.Allowlist` refuses the whole list and `init` fails before it asks OrbStack anything
+
+### Scenario: No agent
+- WHEN the owner runs `orbit init` without `--agent`
+- THEN the proxy refuses `CONNECT api.anthropic.com:443` and allows `CONNECT github.com:443`
+
+### Scenario: Init again without the agent
+- WHEN the owner runs `orbit init --agent claude-code` and then `orbit init` without `--agent` on the same sandbox
+- THEN the proxy refuses `CONNECT api.anthropic.com:443`, and Orbit wrote no record of the installed agent
+
+Source: .ai/specs/2026-11-11-claude-code-agent-definition.md
 
 ## Requirement: Proxy refuses non-public destinations
 The system SHALL reject every connection of the proxy user to a loopback, private, link-local, shared, benchmark, multicast, or reserved address, except port 53 on its DNS resolvers, and every connection of the proxy user to a port other than 443 and 53.

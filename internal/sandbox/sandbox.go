@@ -76,6 +76,18 @@ var protectedFileNames = []string{".claude.json"}
 // outsideSlug matches every run of characters that a slug cannot hold.
 var outsideSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
+// Agent is what a slice needs to know about the agent of a sandbox. cmd/orbit
+// builds it from the definition of the agent; a slice never compares the
+// name of an agent.
+type Agent struct {
+	// Install is the bash script that installs the client as the agent
+	// user, through the proxy.
+	Install string
+	// EgressDomains are the hosts that the proxy allows in addition to the
+	// base list.
+	EgressDomains []string
+}
+
 // ProjectDir holds the facts that decide whether a project directory may be
 // mounted into a sandbox. A handler loads them from the system; every path
 // is absolute and clean.

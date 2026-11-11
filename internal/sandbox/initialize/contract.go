@@ -1,7 +1,7 @@
 // Package initialize is the slice of "orbit init": it creates the sandbox of
-// a project directory and provisions it as root with the agent user, the
-// firewall, the proxy, and the fixed toolchain. The command is not
-// registered until the agent is installed as well (story E01-S01).
+// a project directory, provisions it as root with the agent user, the
+// firewall, the proxy, and the fixed toolchain, and installs the agent named
+// by --agent as the agent user.
 package initialize
 
 import "errors"
@@ -10,6 +10,9 @@ import "errors"
 type Input struct {
 	// Dir is the path of the project directory.
 	Dir string
+	// Agent is the name of the agent to install, or empty for none. The
+	// allowlist of the proxy holds the egress domains of this agent only.
+	Agent string
 }
 
 // Output is the sandbox of the project directory.
@@ -24,7 +27,8 @@ type Output struct {
 	Created bool
 }
 
-// ErrNotDirectory reports a project path that is not a directory. A refused
+// ErrNotDirectory reports a project path that is not a directory. An unknown
+// agent fails with the error of Handler.Agent. A refused
 // project directory fails with one of the errors of
 // sandbox.ValidateProjectDir, sandbox.ErrNestedProjectDir,
 // sandbox.ErrContainsProjectDir, or ErrLinkedSandboxDir, a missing one
