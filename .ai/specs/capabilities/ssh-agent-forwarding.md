@@ -34,9 +34,11 @@ The system SHALL route SSH from `agent` to `github.com` over `ssh.github.com:443
 - WHEN `agent` runs `ssh -T git@github.com` in a sandbox that forwards the agent
 - THEN the connection reaches GitHub without a host-key prompt (`Permission denied (publickey)` with no key, `successfully authenticated` with one)
 
-### Scenario: Authenticated push (manual, QA)
+### Scenario: Authenticated push (optional, not required for A06)
 - WHEN the Mac's SSH agent holds a key with push access and `agent` runs `git push` to a `git@github.com:` remote
 - THEN the push succeeds
+
+A06 is closed by the `ssh -T` scenario above (owner decision of 2026-11-11), not by this one.
 
 ## Requirement: No other SSH destination
 The system SHALL block SSH from `agent` to any host and port without an allow rule, also with the forwarded agent.
