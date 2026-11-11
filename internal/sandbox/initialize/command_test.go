@@ -85,7 +85,7 @@ func TestCommandRefusesArguments(t *testing.T) {
 	}{
 		{name: "directory", args: []string{"elsewhere"}, want: `unknown command "elsewhere" for "init"`},
 		{name: "empty argument", args: []string{""}, want: `unknown command "" for "init"`},
-		{name: "flag of a later task", args: []string{"--no-ssh"}, want: "unknown flag: --no-ssh"},
+		{name: "flag of a later task", args: []string{"--no-ssh-forwarding"}, want: "unknown flag: --no-ssh-forwarding"},
 		{name: "agent without a name", args: []string{"--agent"}, want: "flag needs an argument: --agent"},
 	}
 	for _, test := range tests {

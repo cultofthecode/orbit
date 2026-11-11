@@ -32,7 +32,7 @@ This spec was written unattended. The owner, Jakub Tobiasz, decided Q1–Q3 on 2
 2. `policy.Allowlist(agentDomains []string) ([]string, error)`: the base list of D24 plus the domains of the agent, without duplicates, in a stable order. It refuses the whole list when one domain fails `ValidateHost`. Pure, with hostile-input tests.
 3. `provision.Script(defaultUID uint32, agentDomains []string)` renders the proxy allowlist from `policy.Allowlist`. The rest of the script does not change.
 4. The `init` slice: `Input.Agent` (empty means no agent). New handler field `Agent func(name string) (sandbox.Agent, error)`, injected by `cmd/orbit` from the registry, so the slice imports no other module (dependency rule 2). `sandbox.Agent` holds `Install` and `EgressDomains`. The field `ProvisionScript` becomes `func(defaultUID uint32, agentDomains []string) ([]byte, error)`. After provisioning, when an agent is set, the handler wraps `Install` in the prelude of Q5 and runs it through `Machines.RunAsAgent`. The prelude is agent-agnostic and lives in the handler; a definition never repeats it.
-5. `cmd/orbit` builds the registry with `claude.Definition` and registers `initialize.NewCommand` with `--agent`. `--no-ssh` comes with E01-S04 (#8), when SSH forwarding exists.
+5. `cmd/orbit` builds the registry with `claude.Definition` and registers `initialize.NewCommand` with `--agent`. `--no-ssh-forwarding` comes with E01-S04 (#8), when SSH forwarding exists.
 
 Alternatives considered:
 
