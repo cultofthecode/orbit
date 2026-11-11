@@ -107,12 +107,14 @@ func proxyDropIn() string {
 }
 
 // hardenUnit runs the harden script at every boot, in case OrbStack
-// restores the sudo rule of its default user.
+// restores the sudo rule of its default user. It has no start limit,
+// because every run of the root script restarts it.
 func hardenUnit() string {
 	return lines(
 		"[Unit]",
 		"Description=Orbit: remove sudo from every account except root",
 		"Before="+unitUserSessions,
+		"StartLimitIntervalSec=0",
 		"",
 		"[Service]",
 		"Type=oneshot",
@@ -125,13 +127,15 @@ func hardenUnit() string {
 }
 
 // userSessionsDropIn keeps logins disabled while a unit of the boundary has
-// not started.
+// not started. It has no start limit, because every restart of a unit that
+// it requires restarts it too.
 func userSessionsDropIn() string {
 	units := strings.Join(boundaryUnits(), " ")
 	return lines(
 		"[Unit]",
 		"Requires="+units,
 		"After="+units,
+		"StartLimitIntervalSec=0",
 	)
 }
 
