@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/cultofthecode/orbit/internal/provision"
 	"github.com/cultofthecode/orbit/internal/sandbox"
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
+	"github.com/cultofthecode/orbit/internal/sandbox/shell"
 	"github.com/cultofthecode/orbit/internal/sandbox/start"
 	"github.com/cultofthecode/orbit/internal/sandbox/stop"
 )
@@ -48,7 +50,7 @@ func newOrbit() (*cobra.Command, error) {
 		return nil, err
 	}
 	machines := orbstack.New(sandbox.NamePrefix)
-	return newRoot(initCommand(machines, agents), startCommand(machines), stopCommand(machines)), nil
+	return newRoot(initCommand(machines, agents), shellCommand(machines), startCommand(machines), stopCommand(machines)), nil
 }
 
 // initCommand returns the command "orbit init" on machines, with the agents
@@ -66,6 +68,12 @@ func initHandler(machines initialize.Machines, agents *agent.Registry) initializ
 		ProvisionScript: provision.Script,
 		CurrentUser:     user.Current,
 	}
+}
+
+// shellCommand returns the command "orbit shell" on machines, with the
+// readiness check of provisioning.
+func shellCommand(machines shell.Machines) *cobra.Command {
+	return shell.NewCommand(shell.Handler{Machines: machines, ReadinessScript: provision.ReadinessScript})
 }
 
 // startCommand returns the command "orbit start" on machines.
@@ -115,16 +123,23 @@ func newRoot(commands ...*cobra.Command) *cobra.Command {
 	return root
 }
 
-// run executes root with args and returns the exit code: 0 on success and 1
-// for any error. It drops a failed write to stderr, because no other stream
-// is left to report it on.
+// run executes root with args and returns the exit code: 0 on success, the
+// code of a sandbox.ExitStatus without printing anything, because the
+// command in the sandbox already reported to the user, and 1 for any other
+// error. It drops a failed write to stderr, because no other stream is left
+// to report it on.
 func run(ctx context.Context, root *cobra.Command, args []string, stdout, stderr io.Writer) int {
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	if err := root.ExecuteContext(ctx); err != nil {
-		_, _ = fmt.Fprintf(stderr, "orbit: %v\n", err)
-		return exitFailure
+	err := root.ExecuteContext(ctx)
+	var status sandbox.ExitStatus
+	switch {
+	case err == nil:
+		return exitOK
+	case errors.As(err, &status):
+		return status.Code
 	}
-	return exitOK
+	_, _ = fmt.Fprintf(stderr, "orbit: %v\n", err)
+	return exitFailure
 }
