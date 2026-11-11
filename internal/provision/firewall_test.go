@@ -93,7 +93,7 @@ func TestFirewallRuleOrder(t *testing.T) {
 	}
 }
 
-func TestFirewallProxyUserReachesOnlyPublicPort443AndResolvers(t *testing.T) {
+func TestFirewallProxyUserReachesOnlyPublicPorts80And443AndResolvers(t *testing.T) {
 	rules := rulesOfUser(outputChain(t, validFirewallInput()), "tinyproxy")
 	accepts := 0
 	for _, rule := range rules {
@@ -103,7 +103,7 @@ func TestFirewallProxyUserReachesOnlyPublicPort443AndResolvers(t *testing.T) {
 		accepts++
 		allowed := strings.Contains(rule, `oif "lo" tcp sport 3128`) ||
 			strings.Contains(rule, "th dport 53 ip daddr { 0.250.250.200 }") ||
-			strings.HasSuffix(rule, " tcp dport 443 accept")
+			strings.HasSuffix(rule, " tcp dport { 80, 443 } accept")
 		if !allowed {
 			t.Errorf("unexpected proxy-user accept %q", rule)
 		}
@@ -112,9 +112,9 @@ func TestFirewallProxyUserReachesOnlyPublicPort443AndResolvers(t *testing.T) {
 		t.Errorf("proxy user has %d accept rules, want 3", accepts)
 	}
 	refusal := indexOf(t, rules, `meta skuid "tinyproxy" ip daddr @refused_ipv4 reject`)
-	port443 := indexOf(t, rules, `meta skuid "tinyproxy" tcp dport 443 accept`)
-	if refusal > port443 {
-		t.Error("the refusal of non-public addresses comes after the accept of port 443")
+	publicPorts := indexOf(t, rules, `meta skuid "tinyproxy" tcp dport { 80, 443 } accept`)
+	if refusal > publicPorts {
+		t.Error("the refusal of non-public addresses comes after the accept of ports 80 and 443")
 	}
 }
 

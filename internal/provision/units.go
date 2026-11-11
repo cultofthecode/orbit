@@ -46,14 +46,14 @@ const proxyInterface = "orbit0"
 // one of them has failed. defaultUID is the uid of the default user, whose
 // password the harden script locks.
 func Units(defaultUID uint32) []File {
-	return []File{
+	return append([]File{
 		{Path: systemdDir + unitProxyAddress, Mode: 0o644, Content: proxyAddressUnit()},
 		{Path: systemdDir + unitFirewall + ".d/orbit.conf", Mode: 0o644, Content: firewallDropIn()},
 		{Path: systemdDir + unitProxy + ".d/orbit.conf", Mode: 0o644, Content: proxyDropIn()},
 		{Path: systemdDir + unitHarden, Mode: 0o644, Content: hardenUnit()},
 		{Path: systemdDir + unitUserSessions + ".d/orbit.conf", Mode: 0o644, Content: userSessionsDropIn()},
 		{Path: hardenPath, Mode: 0o755, Content: hardenScript(defaultUID)},
-	}
+	}, dockerUnits()...)
 }
 
 // boundaryUnits returns the units that user sessions require.

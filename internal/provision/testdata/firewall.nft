@@ -18,7 +18,7 @@ table inet orbit_egress {
 		meta skuid "tinyproxy" meta l4proto { tcp, udp } th dport 53 ip daddr { 0.250.250.200 } accept
 		meta skuid "tinyproxy" ip daddr @refused_ipv4 reject
 		meta skuid "tinyproxy" ip6 daddr @refused_ipv6 reject
-		meta skuid "tinyproxy" tcp dport 443 accept
+		meta skuid "tinyproxy" tcp dport { 80, 443 } accept
 		meta skuid "tinyproxy" reject
 		meta skuid < 1000 meta skuid != 501 accept
 		ip daddr { 127.0.0.1, 172.31.255.1 } tcp dport 3128 accept

@@ -63,10 +63,11 @@ func initCommand(machines initialize.Machines, agents *agent.Registry) *cobra.Co
 // agents of the registry.
 func initHandler(machines initialize.Machines, agents *agent.Registry) initialize.Handler {
 	return initialize.Handler{
-		Machines:        machines,
-		Agent:           sandboxAgent(agents),
-		ProvisionScript: provisionScript,
-		CurrentUser:     user.Current,
+		Machines:          machines,
+		Agent:             sandboxAgent(agents),
+		ProvisionScript:   provisionScript,
+		DockerSetupScript: provision.DockerSetupScript,
+		CurrentUser:       user.Current,
 	}
 }
 

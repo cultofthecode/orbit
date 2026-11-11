@@ -114,6 +114,34 @@ func TestConfigSettings(t *testing.T) {
 	}
 }
 
+func TestConfigAllowsTheNewBaseHostsOfD26AndNoOtherHostOfTheirDomains(t *testing.T) {
+	hosts, err := policy.Allowlist(nil)
+	if err != nil {
+		t.Fatalf("Allowlist: %v", err)
+	}
+	files, err := Config(hosts)
+	if err != nil {
+		t.Fatalf("Config: %v", err)
+	}
+	entries := strings.Split(strings.TrimSpace(files.Allowlist), "\n")
+	for _, host := range []string{
+		"ghcr.io", "pkg-containers.githubusercontent.com", "deb.debian.org",
+		"archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com", "dl-cdn.alpinelinux.org",
+	} {
+		want := "^" + strings.ReplaceAll(host, ".", `\.`) + "$"
+		if !slices.Contains(entries, want) {
+			t.Errorf("allowlist lacks %q", want)
+		}
+	}
+	for _, host := range []string{"evil.ghcr.io", "ghcr.io.example.org", "de.archive.ubuntu.com", "security.debian.org", "quay.io"} {
+		for _, entry := range entries {
+			if regexp.MustCompile(entry).MatchString(host) {
+				t.Errorf("allowlist entry %q matches %q", entry, host)
+			}
+		}
+	}
+}
+
 func countPrefix(lines []string, prefix string) int {
 	count := 0
 	for _, line := range lines {

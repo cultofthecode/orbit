@@ -130,8 +130,7 @@ func writeHardLinkedFile(t *testing.T, path, link string) {
 // between the snapshots of Claude Code in .claude/file-history keep it
 // accepted.
 func TestInitRefusesAHardLinkedCredentialFile(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	home, accountHome := temporaryHome(t)

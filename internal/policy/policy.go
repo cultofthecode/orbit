@@ -1,5 +1,5 @@
 // Package policy holds the network policy of a sandbox: the default allowlist
-// of the first version, a base list plus the hosts of the agent (D24), and
+// of the first version, a base list plus the hosts of the agent (D26), and
 // the rule that decides whether a host name may stand in an allow rule. It
 // is pure and does no I/O.
 package policy
@@ -29,8 +29,8 @@ var hostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // numericLabel matches a label of digits only.
 var numericLabel = regexp.MustCompile(`^[0-9]+$`)
 
-// baseAllowlist holds the base list of D24: the hosts that every sandbox may
-// reach on port 443, whatever its agent.
+// baseAllowlist holds the base list of D26: the hosts that every sandbox may
+// reach through the proxy, whatever its agent.
 var baseAllowlist = []string{
 	"github.com",
 	"codeload.github.com",
@@ -46,11 +46,17 @@ var baseAllowlist = []string{
 	"auth.docker.io",
 	"production.cloudflare.docker.com",
 	"production.cloudfront.docker.com",
+	"ghcr.io",
+	"pkg-containers.githubusercontent.com",
+	"deb.debian.org",
+	"archive.ubuntu.com",
+	"security.ubuntu.com",
+	"ports.ubuntu.com",
 	"dl-cdn.alpinelinux.org",
 }
 
 // Allowlist returns the default allowlist of a sandbox whose agent needs
-// agentDomains (D24): the base list plus agentDomains, sorted and without
+// agentDomains (D26): the base list plus agentDomains, sorted and without
 // duplicates. Allowlist(nil) is exactly the base list. It refuses the whole
 // list when one of agentDomains fails ValidateHost. The caller owns the
 // returned slice.

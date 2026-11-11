@@ -340,8 +340,7 @@ func checkLinkedStoredPathRefusesTheStart(ctx context.Context, t *testing.T, s s
 // running, as the create leaves it.
 func TestStopAndStartRefuseAMachineInAnotherState(t *testing.T) {
 	lockInit(t, syscall.LOCK_SH)
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	created := make(chan error, 1)

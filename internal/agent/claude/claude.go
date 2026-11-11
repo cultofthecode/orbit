@@ -1,6 +1,6 @@
 // Package claude defines the Claude Code agent: the official client,
 // installed with the published native installer as the agent user, and the
-// hosts that the client and its sign-in need (D24). Orbit runs the client
+// hosts that the client and its sign-in need (D26). Orbit runs the client
 // unmodified and never handles its credentials (R04, D08).
 package claude
 

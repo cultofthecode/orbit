@@ -40,8 +40,9 @@ func TestScriptStopsAtTheFirstFailureAndRemovesTheMarkerFirst(t *testing.T) {
 func TestScriptInstallsExactlyTheToolchainAndInfrastructure(t *testing.T) {
 	lines := script(t)
 	i := lineIndex(t, lines, "apt-get -o DPkg::Lock::Timeout=120 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y -q --no-install-recommends git openssh-client curl ca-certificates jq ripgrep unzip nftables tinyproxy netcat-openbsd </dev/null")
+	j := lineIndex(t, lines, "apt-get -o DPkg::Lock::Timeout=120 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y -q --no-install-recommends docker.io docker-buildx docker-compose-v2 rootlesskit uidmap slirp4netns dbus-user-session </dev/null")
 	for _, line := range lines {
-		if strings.HasPrefix(line, "apt-get") && strings.Contains(line, " install") && line != lines[i] {
+		if strings.HasPrefix(line, "apt-get") && strings.Contains(line, " install") && line != lines[i] && line != lines[j] {
 			t.Errorf("unexpected install: %q", line)
 		}
 	}
@@ -275,7 +276,7 @@ func TestScriptWritesTheMarkerLast(t *testing.T) {
 	want := []string{
 		"mkdir -p /etc/orbit",
 		"put /etc/orbit/provisioned 0644 <<'ORBIT_EOF'",
-		"2",
+		"3",
 		"ORBIT_EOF",
 		"}",
 	}
