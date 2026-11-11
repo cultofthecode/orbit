@@ -852,6 +852,39 @@ func TestHandleRefusesLinkedCredentials(t *testing.T) {
 	}
 }
 
+// TestHandleRefusesALinkedParentOfAMissingCredentialDirectory covers a
+// .config that is a symlink into a project directory while .config/gh does
+// not exist yet: the GitHub CLI creates it there at its next sign-in.
+func TestHandleRefusesALinkedParentOfAMissingCredentialDirectory(t *testing.T) {
+	home := newDir(t)
+	makeDirs(t, home, "work/api", "dotfiles/config/nvim", "dotfiles/vim")
+	symlinkAt(t, filepath.Join(home, "dotfiles", "config"), filepath.Join(home, ".config"))
+	t.Setenv("HOME", home)
+	dotfiles := filepath.Join(home, "dotfiles")
+
+	checkRefusals(t, account(home), []refusal{
+		{name: "directory that holds the target of .config", dir: dotfiles, want: sandbox.ErrProtectedAncestor},
+		{name: "target of .config", dir: filepath.Join(dotfiles, "config"), want: sandbox.ErrProtectedAncestor},
+		{name: "linked .config", dir: filepath.Join(home, ".config"), want: sandbox.ErrProtectedAncestor},
+	})
+	t.Run("upper case", func(t *testing.T) {
+		requireSpelling(t, strings.ToUpper(dotfiles))
+		checkRefusals(t, account(home), []refusal{
+			{name: "directory that holds the target of .config", dir: strings.ToUpper(dotfiles), want: sandbox.ErrProtectedAncestor},
+		})
+	})
+	accepted := []string{
+		filepath.Join(dotfiles, "vim"),
+		filepath.Join(dotfiles, "config", "nvim"),
+		filepath.Join(home, "work", "api"),
+	}
+	for _, dir := range accepted {
+		t.Run("accepts "+dir, func(t *testing.T) {
+			checkCreates(t, account(home), dir, dir)
+		})
+	}
+}
+
 // TestHandleResolvesTheProtectedFile covers a .claude.json that reaches its
 // file through more than one symlink, and other spellings of the directory
 // that holds that file.

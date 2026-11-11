@@ -384,10 +384,11 @@ func homeSpellings(accountHome string) ([]string, error) {
 }
 
 // protectedSpellings returns every spelling of the directories that the
-// protected paths of homes resolve to. It leaves out a protected path that
-// does not exist.
+// protected paths of homes resolve to. For a protected path that does not
+// exist, it returns every spelling of its nearest existing parent, joined
+// with the rest of the path.
 func protectedSpellings(homes []string) ([]string, error) {
-	return existingSpellings(protectedPaths(homes))
+	return pathSpellings(protectedPaths(homes))
 }
 
 // protectedFileDirSpellings returns every spelling of the directories that
@@ -405,23 +406,6 @@ func protectedFileDirSpellings(homes []string) ([]string, error) {
 			return nil, err
 		}
 		spellings, err := dirSpellings(filepath.Dir(target))
-		if err != nil {
-			return nil, err
-		}
-		resolved = append(resolved, spellings...)
-	}
-	return distinct(resolved), nil
-}
-
-// existingSpellings returns every spelling of the directories that paths
-// resolve to. It leaves out a path that does not exist.
-func existingSpellings(paths []string) ([]string, error) {
-	var resolved []string
-	for _, path := range paths {
-		spellings, err := dirSpellings(path)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
 		if err != nil {
 			return nil, err
 		}
