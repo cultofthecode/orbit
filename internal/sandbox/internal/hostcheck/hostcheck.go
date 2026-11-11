@@ -441,7 +441,9 @@ type fileID struct {
 
 // foundFile is a protected file with more than one hard link.
 type foundFile struct {
-	// first is the first path of the file that the handler found.
+	// first is the path that the refusal names: the path of a file that
+	// must have one hard link, otherwise the first path that the handler
+	// found.
 	first string
 	// paths are the distinct paths of the file that the handler found in
 	// the protected locations.
@@ -486,6 +488,9 @@ func (f foundFiles) add(id fileID, count uint64, path string, single bool) {
 	}
 	file.paths[path] = true
 	file.count = max(file.count, count)
+	if single && !file.single {
+		file.first = path
+	}
 	file.single = file.single || single
 }
 
