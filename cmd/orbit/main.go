@@ -20,6 +20,7 @@ import (
 	"github.com/cultofthecode/orbit/internal/provision"
 	"github.com/cultofthecode/orbit/internal/sandbox"
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
+	"github.com/cultofthecode/orbit/internal/sandbox/stop"
 )
 
 // Exit codes of orbit.
@@ -45,7 +46,8 @@ func newOrbit() (*cobra.Command, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newRoot(initCommand(orbstack.New(sandbox.NamePrefix), agents)), nil
+	machines := orbstack.New(sandbox.NamePrefix)
+	return newRoot(initCommand(machines, agents), stopCommand(machines)), nil
 }
 
 // initCommand returns the command "orbit init" on machines, with the agents
@@ -63,6 +65,11 @@ func initHandler(machines initialize.Machines, agents *agent.Registry) initializ
 		ProvisionScript: provision.Script,
 		CurrentUser:     user.Current,
 	}
+}
+
+// stopCommand returns the command "orbit stop" on machines.
+func stopCommand(machines stop.Machines) *cobra.Command {
+	return stop.NewCommand(stop.Handler{Machines: machines})
 }
 
 // sandboxAgent returns a lookup of the agents of the registry that gives a

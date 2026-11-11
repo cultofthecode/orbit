@@ -40,6 +40,33 @@ func TestOrbitRegistersInitWithClaudeCode(t *testing.T) {
 	}
 }
 
+func TestOrbitRegistersStop(t *testing.T) {
+	root, err := newOrbit()
+	if err != nil {
+		t.Fatalf("newOrbit = %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), root, []string{"stop", "--help"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("orbit stop --help = %d, %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Stop the sandbox of the current directory") {
+		t.Errorf("orbit stop --help = %q, want the command", stdout.String())
+	}
+}
+
+func TestStopWithoutASandboxNamesInit(t *testing.T) {
+	project := projectInWorkingDir(t)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	var stdout, stderr bytes.Buffer
+
+	code := run(context.Background(), newRoot(stopCommand(fake)), []string{"stop"}, &stdout, &stderr)
+
+	want := "orbit: no sandbox for " + project + `: run "orbit init" here, or run this command in the directory where you ran "orbit init"` + "\n"
+	if code != exitFailure || stderr.String() != want {
+		t.Errorf("orbit stop = %d, %q, want %d, %q", code, stderr.String(), exitFailure, want)
+	}
+}
+
 // projectInWorkingDir returns the canonical path of a new project directory
 // that the mount rules accept, and makes it the working directory of the
 // test.

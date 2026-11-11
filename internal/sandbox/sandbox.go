@@ -73,6 +73,16 @@ var (
 	ErrHardLinkedFile = errors.New("protected file has more than one hard link")
 )
 
+// Errors that the slices of the sandbox lifecycle report alike.
+var (
+	// ErrNoSandbox reports a project directory without a sandbox: no machine
+	// has the name that MachineName computes for it.
+	ErrNoSandbox = errors.New("no sandbox")
+	// ErrUnexpectedState reports a sandbox in a state other than running or
+	// stopped, such as starting or stopping. Orbit acts on no other state.
+	ErrUnexpectedState = errors.New("wait and try again")
+)
+
 // protectedNames are the directories of a home directory that never enter a
 // sandbox, with everything inside them: the credentials and the
 // configuration of the agent, SSH, AWS, GnuPG, and the GitHub CLI.
