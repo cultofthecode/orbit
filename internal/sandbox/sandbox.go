@@ -235,11 +235,11 @@ func RelocatedSingleLinkFiles(lookup func(string) (string, bool)) ([]Relocated, 
 // mounted into a sandbox. First it refuses every project directory while a
 // file in dir.ProtectedFileLinks has more hard links than were found in the
 // protected locations, with ErrHardLinkedFile naming each such file once,
-// because the other link can lie anywhere. Then two independent rules must both accept dir. The first
-// refuses the root of the file system; a home directory and every
-// directory that contains one; a protected directory, every directory inside
-// one, and every directory that contains one; and every directory that
-// contains a protected file. The protected directories are ProtectedDirs of
+// because the other link can lie anywhere. Then two independent rules must
+// both accept dir. The first refuses the root of the file system; a home
+// directory and every directory that contains one; a protected directory,
+// every directory inside one, and every directory that contains one; and
+// every directory that contains a protected file. The protected directories are ProtectedDirs of
 // every home and the paths in dir.Protected. The directories that hold a
 // protected file are the homes and the paths in dir.ProtectedFileDirs; a
 // directory inside one of them does not contain the file, so it passes. The
