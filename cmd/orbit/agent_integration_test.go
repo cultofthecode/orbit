@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/cultofthecode/orbit/internal/agent"
@@ -86,6 +87,7 @@ func newSandboxDir(ctx context.Context, t *testing.T, client *orbstack.Client) (
 }
 
 func TestInitInstallsClaudeCodeAndDropsItsHostsWithoutAgent(t *testing.T) {
+	waitToRunInit(t)
 	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
 	t.Cleanup(cancel)
 	client := orbstack.New(sandbox.NamePrefix)
@@ -94,7 +96,7 @@ func TestInitInstallsClaudeCodeAndDropsItsHostsWithoutAgent(t *testing.T) {
 
 	first, err := handler.Handle(ctx, initialize.Input{Dir: dir, Agent: claude.Definition.Name})
 	if err != nil || !first.Created {
-		t.Fatalf("Handle with claude-code = %+v, %v, want a created sandbox", first, err)
+		t.Fatalf("Handle with claude-code = %+v, %v, want a created sandbox; machines that this test did not create: %s", first, err, otherMachines(ctx, client, name))
 	}
 	if err := client.RunAsRoot(ctx, name, []byte(withClaudeProbes)); err != nil {
 		t.Errorf("probes with Claude Code in %s:\n%v", name, err)
@@ -102,7 +104,7 @@ func TestInitInstallsClaudeCodeAndDropsItsHostsWithoutAgent(t *testing.T) {
 
 	second, err := handler.Handle(ctx, initialize.Input{Dir: dir})
 	if err != nil || second.Created {
-		t.Fatalf("Handle without agent = %+v, %v, want the existing sandbox provisioned again", second, err)
+		t.Fatalf("Handle without agent = %+v, %v, want the existing sandbox provisioned again; machines that this test did not create: %s", second, err, otherMachines(ctx, client, name))
 	}
 	if err := client.RunAsRoot(ctx, name, []byte(withoutAgentProbes)); err != nil {
 		t.Errorf("probes without agent in %s:\n%v", name, err)
@@ -111,8 +113,10 @@ func TestInitInstallsClaudeCodeAndDropsItsHostsWithoutAgent(t *testing.T) {
 
 // TestInitDeletesTheNewMachineWhenTheDownloadIsRefused installs an agent
 // whose installer lies on a host that the proxy refuses: curl fails, and
-// bash, which reads no script, exits 0.
+// bash, which reads no script, exits 0. Only the failure of the install
+// passes: a refusal of init fails the test.
 func TestInitDeletesTheNewMachineWhenTheDownloadIsRefused(t *testing.T) {
+	waitToRunInit(t)
 	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
 	t.Cleanup(cancel)
 	client := orbstack.New(sandbox.NamePrefix)
@@ -125,8 +129,8 @@ func TestInitDeletesTheNewMachineWhenTheDownloadIsRefused(t *testing.T) {
 
 	out, err := initHandler(client, agents).Handle(ctx, initialize.Input{Dir: dir, Agent: refused.Name})
 
-	if err == nil {
-		t.Fatalf("Handle = %+v, want the install to fail", out)
+	if err == nil || !strings.Contains(err.Error(), "install the agent in sandbox "+name) {
+		t.Fatalf("Handle = %+v, %v, want the install to fail; machines that this test did not create: %s", out, err, otherMachines(ctx, client, name))
 	}
 	t.Logf("Handle = %v", err)
 	if exists, err := client.Exists(ctx, name); err != nil || exists {
