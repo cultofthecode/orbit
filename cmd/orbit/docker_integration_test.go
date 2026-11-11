@@ -65,7 +65,7 @@ leak_probe() {
   if sub_uid curl -sS --noproxy '*' -m 5 -k -o /dev/null https://1.1.1.1 >/dev/null 2>&1; then fail "direct connection from the sub-uid process in the namespace of the machine succeeded"; fi
   [ "$(sub_uid curl -sS -m 20 -x http://172.31.255.1:3128 -o /dev/null -w '%{http_code}' https://github.com 2>/dev/null)" = 200 ] || fail "the sub-uid process in the namespace of the machine did not reach an allowed host through the proxy"
   echo "leak path exercised: the process runs as host uid $host in $ns, the namespace of the machine, and only the proxy is reachable"
-  echo "informational: docker run --network host: $(docker run --rm --network host $IMG true 2>&1 | tail -1)"
+  echo "informational: docker run --network host: $(docker run --rm --network host $IMG true 2>&1 | head -1)"
 }
 `
 
