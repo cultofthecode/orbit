@@ -14,10 +14,11 @@ What root sets up in a sandbox machine before any agent runs: the firewall, the 
 - `Firewall` refuses input that would weaken the rules: a default uid of 0, a proxy user that is `root` or not a plain name, a proxy port of 0 or 53, a proxy address that is neither loopback nor `proxy.ContainerAddr`, and an unspecified or multicast resolver. Keep these refusals and their hostile-input tests.
 - `systemd-user-sessions.service` requires and follows every unit of the boundary, so no login starts while one of them failed.
 - The script is idempotent and fail-closed: it removes the marker first and writes it last, loads rules with `nft -f` and never restarts `nftables.service` (its stop flushes the ruleset), writes every file through `put` (a temporary file and a rename), and creates the agent only after the boundary runs.
+- Every unit that the script restarts, directly or through `Requires=` (`tinyproxy.service`, `orbit-harden.service`, `systemd-user-sessions.service`), sets `StartLimitIntervalSec=0`, so that repeated `init` runs never hit the start limit of systemd (#66). The script starts `systemd-user-sessions.service` after the restarts, and the self-check requires it to be active.
 - Root never writes into a home directory, and the script never adds the agent to a group. E01-S04 adds `orbstack` for the SSH agent socket.
 - The script unsets the proxy variables: a login of root gets them from `/etc/environment`, and root installs packages directly.
 
 ## Validation
 
 - `go test ./internal/provision/...` needs no OrbStack.
-- `go test -tags integration -count=1 -run TestInitProvisionsTheSandbox -v ./cmd/orbit/` provisions a real machine twice and probes every scenario except the restart. Check the restart by hand: `orb restart <machine>`, then the probes of the restart scenario.
+- `go test -tags integration -count=1 -run TestInitProvisionsTheSandbox -v ./cmd/orbit/` provisions a real machine twice and probes every scenario except the restart. `TestInitRunsAgainAfterRepeatedRuns` re-runs `init` on one sandbox after a burst of restarts of the harden unit, and checks that user sessions stay active and `/run/nologin` is gone. Check the restart by hand: `orb restart <machine>`, then the probes of the restart scenario.
