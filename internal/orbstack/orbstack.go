@@ -1,6 +1,6 @@
 // Package orbstack is the adapter to OrbStack. Through the orb CLI it
 // creates, finds, and deletes isolated machines and runs scripts in them as
-// root. It is the only package with OrbStack-specific code, and it depends on
+// root or as the agent user. It is the only package with OrbStack-specific code, and it depends on
 // no other package of this repository.
 package orbstack
 
@@ -22,6 +22,10 @@ const cli = "orb"
 
 // rootUser is the user that RunAsRoot runs a script as.
 const rootUser = "root"
+
+// AgentUser is the user that RunAsAgent runs a script as: the unprivileged
+// user that provisioning creates for the agent.
+const AgentUser = "agent"
 
 // image is the distribution of every machine that the adapter creates.
 const image = "ubuntu:26.04"
@@ -144,6 +148,20 @@ func (c *Client) RunAsRoot(ctx context.Context, name string, script []byte) erro
 	}
 	if _, err := run(ctx, runAsRootArgs(name), script); err != nil {
 		return fmt.Errorf("run a script as root in machine %s: %w", name, err)
+	}
+	return nil
+}
+
+// RunAsAgent runs script with bash as AgentUser in the machine name, with
+// the script on standard input, and fails when the script exits non-zero.
+// The user is fixed; no argument of the caller reaches the command line. It
+// runs no command when name lacks the prefix of the client.
+func (c *Client) RunAsAgent(ctx context.Context, name string, script []byte) error {
+	if err := c.checkOwned(name); err != nil {
+		return err
+	}
+	if _, err := run(ctx, runAsAgentArgs(name), script); err != nil {
+		return fmt.Errorf("run a script as %s in machine %s: %w", AgentUser, name, err)
 	}
 	return nil
 }
@@ -318,6 +336,12 @@ func deleteArgs(name string) []string {
 // machine name, reading the script from standard input.
 func runAsRootArgs(name string) []string {
 	return []string{"-m", name, "-u", rootUser, "bash", "-s"}
+}
+
+// runAsAgentArgs returns the arguments of orb that run bash as AgentUser in
+// the machine name, reading the script from standard input.
+func runAsAgentArgs(name string) []string {
+	return []string{"-m", name, "-u", AgentUser, "bash", "-s"}
 }
 
 // listsMachine reports whether name is one of the machine names that orb

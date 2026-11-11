@@ -32,6 +32,7 @@ const (
 	OpActiveMounts = "active-mounts"
 	OpDelete       = "delete"
 	OpRunAsRoot    = "run-as-root"
+	OpRunAsAgent   = "run-as-agent"
 )
 
 // Call is one call that a Fake received.
@@ -64,6 +65,8 @@ type Fake struct {
 	DeleteErr error
 	// RunAsRootErr, when set, is the result of every RunAsRoot call.
 	RunAsRootErr error
+	// RunAsAgentErr, when set, is the result of every RunAsAgent call.
+	RunAsAgentErr error
 	// Calls holds the received calls, in order.
 	Calls []Call
 
@@ -178,4 +181,14 @@ func (f *Fake) RunAsRoot(_ context.Context, name string, script []byte) error {
 		return err
 	}
 	return f.RunAsRootErr
+}
+
+// RunAsAgent records script for the machine name. It refuses a name without
+// the prefix of the fake.
+func (f *Fake) RunAsAgent(_ context.Context, name string, script []byte) error {
+	f.Calls = append(f.Calls, Call{Op: OpRunAsAgent, Name: name, Script: string(script)})
+	if err := f.checkOwned(name); err != nil {
+		return err
+	}
+	return f.RunAsAgentErr
 }
