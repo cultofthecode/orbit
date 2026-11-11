@@ -222,6 +222,47 @@ func TestInitProvisionsTheSandbox(t *testing.T) {
 	checkProxyClosedFromTheMac(t, name)
 }
 
+// hardenRestarts restarts the harden unit as every run of init does, one
+// time more than the default start limit of systemd allows (5 starts in
+// 10 s). Each restart also restarts systemd-user-sessions.service, which
+// requires the harden unit. The burst does not depend on how fast apt-get
+// runs in init. Both units stay active, and logins stay enabled. The
+// restart of the harden unit returns before the restart of user sessions
+// ends, so the script waits until user sessions leave a transient state.
+const hardenRestarts = `
+set -eu
+for run in 1 2 3 4 5 6; do systemctl restart orbit-harden.service; done
+for wait in $(seq 300); do
+	case "$(systemctl is-active systemd-user-sessions.service)" in activating|deactivating|reloading) sleep 0.1;; *) break;; esac
+done
+systemctl is-active --quiet orbit-harden.service
+systemctl is-active --quiet systemd-user-sessions.service
+! test -e /run/nologin
+`
+
+// TestInitRunsAgainAfterRepeatedRuns re-runs init on one sandbox right
+// after the harden unit restarted more often than the default start limit
+// of systemd allows (#66).
+func TestInitRunsAgainAfterRepeatedRuns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
+	t.Cleanup(cancel)
+	client := orbstack.New(sandbox.NamePrefix)
+	dir, name := newSandboxDir(ctx, t, client)
+	handler := initHandler(client, claudeRegistry(t))
+
+	if _, err := handler.Handle(ctx, initialize.Input{Dir: dir}); err != nil {
+		t.Fatalf("first Handle = %v", err)
+	}
+	for run := 2; run <= 3; run++ {
+		if err := client.RunAsRoot(ctx, name, []byte(hardenRestarts)); err != nil {
+			t.Fatalf("restarts of orbit-harden.service before run %d in %s:\n%v", run, name, err)
+		}
+		if out, err := handler.Handle(ctx, initialize.Input{Dir: dir}); err != nil || out.Created {
+			t.Fatalf("Handle run %d = %+v, %v, want the existing sandbox provisioned again", run, out, err)
+		}
+	}
+}
+
 // rootOnlyPaths returns rootOnlyFiles and the units and the harden script of
 // the boundary.
 func rootOnlyPaths() []string {

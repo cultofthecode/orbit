@@ -221,6 +221,8 @@ func putFile(file File) []string {
 
 // startBoundary enables the units and starts them. It loads the rules with
 // nft and never restarts the nftables unit, whose stop flushes the ruleset.
+// It starts systemd-user-sessions.service last, because a restart that a
+// required unit propagates does not start it again after it failed.
 func startBoundary() []string {
 	return []string{
 		"systemctl daemon-reload",
@@ -230,6 +232,7 @@ func startBoundary() []string {
 		"systemctl start " + unitFirewall,
 		"systemctl restart " + unitProxy,
 		"systemctl restart " + unitHarden,
+		"systemctl start " + unitUserSessions,
 	}
 }
 
@@ -248,7 +251,7 @@ func createAgent() []string {
 func selfCheck(defaultUID uint32) []string {
 	script := []string{
 		`nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`,
-		"for unit in " + strings.Join(boundaryUnits(), " ") + "; do",
+		"for unit in " + strings.Join(append(boundaryUnits(), unitUserSessions), " ") + "; do",
 		`  systemctl is-active --quiet "$unit" || fail "$unit is not active"`,
 		"done",
 		"for unit in " + strings.Join(resolvedUnits, " ") + "; do",

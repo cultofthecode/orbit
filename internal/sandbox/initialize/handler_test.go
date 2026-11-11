@@ -983,6 +983,92 @@ func TestHandleResolvesTheProtectedFile(t *testing.T) {
 	})
 }
 
+// hardLink makes the hard link link to the file target.
+func hardLink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Link(target, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// unreadable takes every permission from the file at path, so a test fails
+// when the handler opens the file instead of reading its metadata (D08).
+func unreadable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+}
+
+// checkHardLinkRefusal checks that the handler refuses the project
+// directory dir before it asks OrbStack anything, because the protected
+// file file has another hard link, and that the error names file.
+func checkHardLinkRefusal(t *testing.T, home, dir, file string) {
+	t.Helper()
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: dir})
+
+	if !errors.Is(err, sandbox.ErrHardLinkedFile) {
+		t.Fatalf("Handle(%q) = %v, want %v", dir, err, sandbox.ErrHardLinkedFile)
+	}
+	if !strings.Contains(err.Error(), file) {
+		t.Errorf("Handle(%q) = %v, want it to name %s", dir, err, file)
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("calls = %v, want none", fake.Calls)
+	}
+}
+
+// TestHandleRefusesAHardLinkedProtectedFile covers a .claude.json with
+// another hard link (#37). A hard link is the same file under another name,
+// so the agent could read and rewrite it through a link in its project
+// directory. Orbit cannot find the other link, so it refuses every project
+// directory while one exists, and it reads only the metadata of the file.
+func TestHandleRefusesAHardLinkedProtectedFile(t *testing.T) {
+	t.Run("other link in the project directory", func(t *testing.T) {
+		home := newHome(t)
+		file := filepath.Join(home, ".claude.json")
+		writeFile(t, file)
+		hardLink(t, file, filepath.Join(home, "work", "api", "claude.json"))
+		unreadable(t, file)
+		checkHardLinkRefusal(t, home, filepath.Join(home, "work", "api"), file)
+	})
+	t.Run("other link outside every project directory", func(t *testing.T) {
+		home := newHome(t)
+		file := filepath.Join(home, ".claude.json")
+		writeFile(t, file)
+		hardLink(t, file, filepath.Join(newDir(t), "claude.json"))
+		unreadable(t, file)
+		checkHardLinkRefusal(t, home, filepath.Join(home, "work", "api"), file)
+	})
+	t.Run("target of a symlink with another link", func(t *testing.T) {
+		home := newHome(t)
+		store := newDir(t)
+		target := filepath.Join(store, "claude.json")
+		writeFile(t, target)
+		hardLink(t, target, filepath.Join(home, "work", "api", "claude.json"))
+		symlinkAt(t, target, filepath.Join(home, ".claude.json"))
+		checkHardLinkRefusal(t, home, filepath.Join(home, "work", "api"), target)
+	})
+	t.Run("single link", func(t *testing.T) {
+		home := newHome(t)
+		file := filepath.Join(home, ".claude.json")
+		writeFile(t, file)
+		unreadable(t, file)
+		checkCreates(t, account(home), filepath.Join(home, "work", "api"), filepath.Join(home, "work", "api"))
+	})
+	t.Run("hard link of another file in the project directory", func(t *testing.T) {
+		home := newHome(t)
+		writeFile(t, filepath.Join(home, ".claude.json"))
+		other := filepath.Join(home, "notes.txt")
+		writeFile(t, other)
+		hardLink(t, other, filepath.Join(home, "work", "api", "notes.txt"))
+		checkCreates(t, account(home), filepath.Join(home, "work", "api"), filepath.Join(home, "work", "api"))
+	})
+}
+
 // TestHandleWithProtectedFilesThatLeadNowhere covers a .claude.json that is
 // a broken symlink, which protects only the directory where its target would
 // be created, and one that cannot be resolved, which stops init.
