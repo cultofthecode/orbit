@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/cultofthecode/orbit/internal/agent"
@@ -112,7 +113,8 @@ func TestInitInstallsClaudeCodeAndDropsItsHostsWithoutAgent(t *testing.T) {
 
 // TestInitDeletesTheNewMachineWhenTheDownloadIsRefused installs an agent
 // whose installer lies on a host that the proxy refuses: curl fails, and
-// bash, which reads no script, exits 0.
+// bash, which reads no script, exits 0. Only the failure of the install
+// passes: a refusal of init fails the test.
 func TestInitDeletesTheNewMachineWhenTheDownloadIsRefused(t *testing.T) {
 	waitToRunInit(t)
 	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
@@ -127,8 +129,8 @@ func TestInitDeletesTheNewMachineWhenTheDownloadIsRefused(t *testing.T) {
 
 	out, err := initHandler(client, agents).Handle(ctx, initialize.Input{Dir: dir, Agent: refused.Name})
 
-	if err == nil {
-		t.Fatalf("Handle = %+v, want the install to fail", out)
+	if err == nil || !strings.Contains(err.Error(), "install the agent in sandbox "+name) {
+		t.Fatalf("Handle = %+v, %v, want the install to fail; machines that this test did not create: %s", out, err, otherMachines(ctx, client, name))
 	}
 	t.Logf("Handle = %v", err)
 	if exists, err := client.Exists(ctx, name); err != nil || exists {
