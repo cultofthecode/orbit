@@ -123,28 +123,28 @@ func newHandler(fake *orbstacktest.Fake, entry *user.User) Handler {
 	}
 }
 
-// fakeScript returns a root script that names the default uid and the agent
-// domains.
-func fakeScript(defaultUID uint32, agentDomains []string) ([]byte, error) {
-	return []byte(scriptFor(defaultUID, agentDomains)), nil
+// fakeScript returns a root script that names the default uid, the agent
+// domains, and the SSH agent forwarding.
+func fakeScript(defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error) {
+	return []byte(scriptFor(defaultUID, agentDomains, forwardSSHAgent)), nil
 }
 
-// scriptFor returns the script that fakeScript builds for uid and
-// agentDomains.
-func scriptFor(uid uint32, agentDomains []string) string {
-	return "provision with the default uid " + strconv.FormatUint(uint64(uid), 10) + " and the agent domains [" + strings.Join(agentDomains, " ") + "]\n"
+// scriptFor returns the script that fakeScript builds for uid, agentDomains,
+// and forward.
+func scriptFor(uid uint32, agentDomains []string, forward bool) string {
+	return "provision with the default uid " + strconv.FormatUint(uint64(uid), 10) + " and the agent domains [" + strings.Join(agentDomains, " ") + "] and SSH agent forwarding " + strconv.FormatBool(forward) + "\n"
 }
 
 // ownScript returns the script that fakeScript builds for the user who runs
 // the test, without an agent.
 func ownScript() string {
-	return scriptFor(uint32(os.Getuid()), nil)
+	return scriptFor(uint32(os.Getuid()), nil, true)
 }
 
 // ownAgentScript returns the script that fakeScript builds for the user who
 // runs the test, with testAgent.
 func ownAgentScript() string {
-	return scriptFor(uint32(os.Getuid()), testAgent.EgressDomains)
+	return scriptFor(uint32(os.Getuid()), testAgent.EgressDomains, true)
 }
 
 // testInstallScript is the install script of testAgent that the handler
@@ -227,7 +227,8 @@ func checkCreates(t *testing.T, entry *user.User, dir, project string) {
 func checkedCreateCalls(name, project string) []orbstacktest.Call {
 	return []orbstacktest.Call{
 		{Op: orbstacktest.OpMounts},
-		{Op: orbstacktest.OpCreate, Name: name, Dir: project},
+		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true},
+		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpActiveMounts, Name: name},
 	}
@@ -238,6 +239,7 @@ func checkedCreateCalls(name, project string) []orbstacktest.Call {
 func checkedKeepCalls(name string) []orbstacktest.Call {
 	return []orbstacktest.Call{
 		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpActiveMounts, Name: name},
 	}
@@ -285,6 +287,7 @@ func TestHandleKeepsAnExistingMachine(t *testing.T) {
 	name := sandbox.MachineName(project)
 	fake := orbstacktest.New(sandbox.NamePrefix)
 	fake.Machines[name] = map[string]string{project: project}
+	fake.Forwarded[name] = true
 
 	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
 
@@ -640,22 +643,22 @@ func TestHandleRefusesAnExistingMachineThatMountsAnotherDirectory(t *testing.T) 
 		{
 			name:       "configured with .ssh",
 			configured: map[string]string{project: ssh},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "configured with a second mount",
 			configured: map[string]string{project: project, "/home/dev": home},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "configured at another path",
 			configured: map[string]string{"/mnt/mac" + project: project},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "no mount",
 			configured: map[string]string{},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "mounts .ssh after a swap",
@@ -668,6 +671,7 @@ func TestHandleRefusesAnExistingMachineThatMountsAnotherDirectory(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			fake := orbstacktest.New(sandbox.NamePrefix)
 			fake.Machines[name] = test.configured
+			fake.Forwarded[name] = true
 			if test.active != nil {
 				fake.Active[name] = test.active
 			}
@@ -1965,7 +1969,7 @@ func TestHandleReportsOrbStackFailures(t *testing.T) {
 			createErr: boom,
 			wantCalls: []orbstacktest.Call{
 				{Op: orbstacktest.OpMounts},
-				{Op: orbstacktest.OpCreate, Name: name, Dir: project},
+				{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true},
 			},
 		},
 		{
@@ -2031,6 +2035,7 @@ func TestHandleKeepsAnExistingMachineWhenProvisioningFails(t *testing.T) {
 	name := sandbox.MachineName(project)
 	fake := orbstacktest.New(sandbox.NamePrefix)
 	fake.Machines[name] = map[string]string{project: project}
+	fake.Forwarded[name] = true
 	fake.RunAsRootErr = boom
 
 	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
@@ -2052,7 +2057,7 @@ func TestHandleRefusesAScriptThatCannotBeBuiltBeforeItAsksOrbStack(t *testing.T)
 	project := filepath.Join(home, "work", "api")
 	fake := orbstacktest.New(sandbox.NamePrefix)
 	handler := newHandler(fake, account(home))
-	handler.ProvisionScript = func(uint32, []string) ([]byte, error) { return nil, boom }
+	handler.ProvisionScript = func(uint32, []string, bool) ([]byte, error) { return nil, boom }
 
 	_, err := handler.Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
 
@@ -2218,7 +2223,7 @@ func TestHandleRefusesAHostileAgentDomainBeforeItAsksOrbStack(t *testing.T) {
 	handler := newHandler(fake, account(home))
 	handler.Agent = func(string) (sandbox.Agent, error) { return hostile, nil }
 	var gotDomains []string
-	handler.ProvisionScript = func(_ uint32, agentDomains []string) ([]byte, error) {
+	handler.ProvisionScript = func(_ uint32, agentDomains []string, _ bool) ([]byte, error) {
 		gotDomains = agentDomains
 		return nil, refused
 	}
@@ -2265,6 +2270,7 @@ func TestHandleKeepsAnExistingMachineWhenTheInstallFails(t *testing.T) {
 	name := sandbox.MachineName(project)
 	fake := orbstacktest.New(sandbox.NamePrefix)
 	fake.Machines[name] = map[string]string{project: project}
+	fake.Forwarded[name] = true
 	fake.RunAsAgentErr = boom
 
 	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
@@ -2575,4 +2581,154 @@ func TestHandleFailsClosedOnADirectoryVariableThatNamesAFile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandleCreatesWithoutForwardingWhenAsked(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, NoSSHForwarding: true})
+
+	if err != nil || got != (Output{Name: name, Dir: project, Created: true}) {
+		t.Fatalf("Handle = %+v, %v, want the created sandbox", got, err)
+	}
+	want := []orbstacktest.Call{
+		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: false},
+		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
+		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpActiveMounts, Name: name},
+		{Op: orbstacktest.OpRunAsRoot, Name: name, Script: scriptFor(uint32(os.Getuid()), nil, false)},
+	}
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v", fake.Calls, want)
+	}
+}
+
+func TestHandleProvisionsAnExistingMachineThatMatchesTheFlag(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, NoSSHForwarding: true})
+
+	if err != nil {
+		t.Fatalf("Handle = %v", err)
+	}
+	want := append(checkedKeepCalls(name), orbstacktest.Call{Op: orbstacktest.OpRunAsRoot, Name: name, Script: scriptFor(uint32(os.Getuid()), nil, false)})
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v", fake.Calls, want)
+	}
+}
+
+func TestHandleRefusesAnExistingMachineWhoseForwardingDiffers(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	tests := []struct {
+		name      string
+		forwarded bool
+		input     Input
+	}{
+		{name: "flag against a machine that forwards", forwarded: true, input: Input{Dir: project, NoSSHForwarding: true}},
+		{name: "no flag against a machine that does not forward", forwarded: false, input: Input{Dir: project}},
+		{name: "no flag with an agent against a machine that does not forward", forwarded: false, input: Input{Dir: project, Agent: testAgentName}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.Machines[name] = map[string]string{project: project}
+			fake.Forwarded[name] = test.forwarded
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), test.input)
+
+			if !errors.Is(err, ErrSSHForwardingMismatch) || got != (Output{}) {
+				t.Errorf("Handle = %+v, %v, want %v", got, err, ErrSSHForwardingMismatch)
+			}
+			if err != nil && !strings.Contains(err.Error(), "--no-ssh-forwarding") {
+				t.Errorf("error %q does not name --no-ssh-forwarding", err)
+			}
+			want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
+			if !slices.Equal(fake.Calls, want) {
+				t.Errorf("calls = %v, want only %v: no command in the machine, no start, no delete", fake.Calls, want)
+			}
+			if _, kept := fake.Machines[name]; !kept {
+				t.Error("the existing machine was deleted")
+			}
+		})
+	}
+}
+
+func TestHandleDeletesACreatedMachineThatReportsAnotherForwarding(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	other := false
+	fake.CreatedForwarded = &other
+
+	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+	if !errors.Is(err, ErrSSHForwardingMismatch) || got != (Output{}) {
+		t.Errorf("Handle = %+v, %v, want %v", got, err, ErrSSHForwardingMismatch)
+	}
+	want := []orbstacktest.Call{
+		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true},
+		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
+		{Op: orbstacktest.OpDelete, Name: name},
+	}
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v", fake.Calls, want)
+	}
+	if len(fake.Machines) != 0 {
+		t.Errorf("machines = %v, want the created machine deleted", fake.Machines)
+	}
+}
+
+func TestHandleStopsWhenTheForwardingCannotBeRead(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	boom := errors.New("orb list has no forward_ssh_agent")
+	t.Run("existing machine is kept and untouched", func(t *testing.T) {
+		fake := orbstacktest.New(sandbox.NamePrefix)
+		fake.Machines[name] = map[string]string{project: project}
+		fake.SSHAgentForwardedErr = boom
+
+		_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+		if !errors.Is(err, boom) {
+			t.Errorf("Handle = %v, want %v", err, boom)
+		}
+		want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
+		if !slices.Equal(fake.Calls, want) {
+			t.Errorf("calls = %v, want %v", fake.Calls, want)
+		}
+		if _, kept := fake.Machines[name]; !kept {
+			t.Error("the existing machine was deleted")
+		}
+	})
+	t.Run("created machine is deleted", func(t *testing.T) {
+		fake := orbstacktest.New(sandbox.NamePrefix)
+		fake.SSHAgentForwardedErr = boom
+
+		_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+		if !errors.Is(err, boom) {
+			t.Errorf("Handle = %v, want %v", err, boom)
+		}
+		if len(fake.Machines) != 0 {
+			t.Errorf("machines = %v, want the created machine deleted", fake.Machines)
+		}
+		for _, call := range fake.Calls {
+			if call.Op == orbstacktest.OpRunAsRoot || call.Op == orbstacktest.OpActiveMounts {
+				t.Errorf("call %v ran in the machine before the check passed", call)
+			}
+		}
+	})
 }

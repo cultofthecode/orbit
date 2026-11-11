@@ -62,6 +62,10 @@ var (
 	// ErrMountMismatch reports a machine that does not mount exactly the
 	// project directory, once, at its own path.
 	ErrMountMismatch = errors.New("machine does not mount exactly the project directory at its own path")
+	// ErrSSHForwardingMismatch reports a machine whose SSH agent forwarding
+	// differs from the request. OrbStack fixes the setting when it creates
+	// the machine, so init neither changes nor provisions such a machine.
+	ErrSSHForwardingMismatch = errors.New("the SSH agent forwarding of the sandbox differs from the request")
 	// ErrRelocatedPath reports an environment variable that moves a
 	// protected location to a value that is empty, relative, or has a ".."
 	// segment. Orbit cannot know where the tool puts the location then.
@@ -332,6 +336,20 @@ func ValidateMounts(dir string, mounts map[string]string) error {
 		return fmt.Errorf("%w: want %s, got %v", ErrMountMismatch, dir, mounts)
 	}
 	return nil
+}
+
+// CheckSSHForwarding reports whether a machine whose forwarding of the host
+// SSH agent is have matches the request want. It refuses a difference with
+// ErrSSHForwardingMismatch and a message that names the current setting and
+// the two ways out (Q1, D25). It decides only; the caller reads have.
+func CheckSSHForwarding(want, have bool) error {
+	if want == have {
+		return nil
+	}
+	if have {
+		return fmt.Errorf("%w: the sandbox forwards the host SSH agent, and --no-ssh-forwarding was passed; run init without --no-ssh-forwarding to keep it, or delete the sandbox and run init --no-ssh-forwarding again to get one without forwarding", ErrSSHForwardingMismatch)
+	}
+	return fmt.Errorf("%w: the sandbox does not forward the host SSH agent; run init --no-ssh-forwarding to keep it without forwarding, or delete the sandbox and run init again to get forwarding", ErrSSHForwardingMismatch)
 }
 
 // checkFacts refuses facts that the rules cannot decide on: no home

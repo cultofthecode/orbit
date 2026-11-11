@@ -12,29 +12,33 @@ import (
 // of the current working directory with handler and prints the result to the
 // output stream of the command. It takes no arguments. Its flag --agent
 // names the agent to install; its help lists agents, the names that
-// handler knows.
+// handler knows. Its flag --no-ssh-forwarding leaves the SSH agent of the
+// host out of the sandbox.
 func NewCommand(handler Handler, agents []string) *cobra.Command {
 	var agent string
+	var noSSHForwarding bool
 	command := &cobra.Command{
 		Use:   "init",
 		Short: "Create the sandbox of the current directory",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return run(cmd, handler, agent)
+			return run(cmd, handler, Input{Agent: agent, NoSSHForwarding: noSSHForwarding})
 		},
 	}
 	command.Flags().StringVar(&agent, "agent", "", "agent to install in the sandbox: "+strings.Join(agents, ", ")+" (default none)")
+	command.Flags().BoolVar(&noSSHForwarding, "no-ssh-forwarding", false, "do not forward the host SSH agent into the sandbox")
 	return command
 }
 
-// run calls handler for the current working directory and the agent, and
-// prints its output.
-func run(cmd *cobra.Command, handler Handler, agent string) error {
+// run calls handler for the current working directory and in, and prints its
+// output.
+func run(cmd *cobra.Command, handler Handler, in Input) error {
 	dir, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
-	out, err := handler.Handle(cmd.Context(), Input{Dir: dir, Agent: agent})
+	in.Dir = dir
+	out, err := handler.Handle(cmd.Context(), in)
 	if err != nil {
 		return err
 	}

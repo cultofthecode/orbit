@@ -18,7 +18,7 @@ func TestFakeCreatesAndFindsMachines(t *testing.T) {
 	if err != nil || before {
 		t.Fatalf("Exists before Create = %v, %v, want false", before, err)
 	}
-	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api"); err != nil {
+	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	after, err := fake.Exists(ctx, "orbit-api-1d9b22c9")
@@ -28,7 +28,7 @@ func TestFakeCreatesAndFindsMachines(t *testing.T) {
 
 	wantCalls := []Call{
 		{Op: OpExists, Name: "orbit-api-1d9b22c9"},
-		{Op: OpCreate, Name: "orbit-api-1d9b22c9", Dir: "/work/api"},
+		{Op: OpCreate, Name: "orbit-api-1d9b22c9", Dir: "/work/api", Forward: true},
 		{Op: OpExists, Name: "orbit-api-1d9b22c9"},
 	}
 	if !slices.Equal(fake.Calls, wantCalls) {
@@ -43,7 +43,7 @@ func TestFakeReportsMountsAndDeletes(t *testing.T) {
 	const name = "orbit-api-1d9b22c9"
 	fake := New("orbit-")
 	ctx := context.Background()
-	if err := fake.Create(ctx, name, "/work/api"); err != nil {
+	if err := fake.Create(ctx, name, "/work/api", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	own := map[string]string{"/work/api": "/work/api"}
@@ -69,7 +69,7 @@ func TestFakeReportsMountsAndDeletes(t *testing.T) {
 		t.Errorf("after Delete: Machines = %v, Active = %v, want none", fake.Machines, fake.Active)
 	}
 	wantCalls := []Call{
-		{Op: OpCreate, Name: name, Dir: "/work/api"},
+		{Op: OpCreate, Name: name, Dir: "/work/api", Forward: true},
 		{Op: OpMounts},
 		{Op: OpActiveMounts, Name: name},
 		{Op: OpActiveMounts, Name: name},
@@ -121,7 +121,7 @@ func TestFakeRefusesForeignNames(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fake := New(test.prefix)
-			err := fake.Create(context.Background(), test.machine, "/work/api")
+			err := fake.Create(context.Background(), test.machine, "/work/api", true)
 			if !errors.Is(err, ErrForeignMachine) {
 				t.Errorf("Create(%q) = %v, want %v", test.machine, err, ErrForeignMachine)
 			}
@@ -135,7 +135,7 @@ func TestFakeRefusesForeignNames(t *testing.T) {
 func TestFakeRefusesMountPathsLikeTheAdapter(t *testing.T) {
 	for _, dir := range []string{"", "work/api", "/work/a:b", "/work/.ssh:", "/work/a,b", "/work/a:/b"} {
 		fake := New("orbit-")
-		err := fake.Create(context.Background(), "orbit-api-1d9b22c9", dir)
+		err := fake.Create(context.Background(), "orbit-api-1d9b22c9", dir, true)
 		if !errors.Is(err, ErrMountPath) {
 			t.Errorf("Create with the directory %q = %v, want %v", dir, err, ErrMountPath)
 		}
@@ -160,7 +160,7 @@ func TestFakeFailsWhenTold(t *testing.T) {
 	if _, err := fake.Exists(ctx, "orbit-api-1d9b22c9"); !errors.Is(err, boom) {
 		t.Errorf("Exists = %v, want %v", err, boom)
 	}
-	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api"); !errors.Is(err, boom) {
+	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", true); !errors.Is(err, boom) {
 		t.Errorf("Create = %v, want %v", err, boom)
 	}
 	if err := fake.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true")); !errors.Is(err, boom) {
@@ -190,7 +190,7 @@ func TestFakeFailsWhenTold(t *testing.T) {
 func TestFakeDeletesAndRunsScripts(t *testing.T) {
 	fake := New("orbit-")
 	ctx := context.Background()
-	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api"); err != nil {
+	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	if err := fake.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("echo hi\n")); err != nil {
@@ -206,7 +206,7 @@ func TestFakeDeletesAndRunsScripts(t *testing.T) {
 		t.Errorf("Machines = %v, want none", fake.Machines)
 	}
 	wantCalls := []Call{
-		{Op: OpCreate, Name: "orbit-api-1d9b22c9", Dir: "/work/api"},
+		{Op: OpCreate, Name: "orbit-api-1d9b22c9", Dir: "/work/api", Forward: true},
 		{Op: OpRunAsRoot, Name: "orbit-api-1d9b22c9", Script: "echo hi\n"},
 		{Op: OpRunAsAgent, Name: "orbit-api-1d9b22c9", Script: "id -un\n"},
 		{Op: OpDelete, Name: "orbit-api-1d9b22c9"},
@@ -240,7 +240,7 @@ func TestFakeStopsAndStartsMachines(t *testing.T) {
 	if state, err := fake.State(ctx, name); err != nil || state != "" {
 		t.Fatalf("State before Create = %q, %v, want no machine", state, err)
 	}
-	if err := fake.Create(ctx, name, "/work/api"); err != nil {
+	if err := fake.Create(ctx, name, "/work/api", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	steps := []struct {
@@ -266,7 +266,7 @@ func TestFakeRefusesCommandsInAStoppedMachine(t *testing.T) {
 	const name = "orbit-api-1d9b22c9"
 	fake := New("orbit-")
 	ctx := context.Background()
-	if err := fake.Create(ctx, name, "/work/api"); err != nil {
+	if err := fake.Create(ctx, name, "/work/api", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	fake.States[name] = "starting"
@@ -319,7 +319,7 @@ func TestFakeStartAndStopFailWhenTold(t *testing.T) {
 	const name = "orbit-api-1d9b22c9"
 	fake := New("orbit-")
 	ctx := context.Background()
-	if err := fake.Create(ctx, name, "/work/api"); err != nil {
+	if err := fake.Create(ctx, name, "/work/api", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	failure := errors.New("orb failed")
@@ -342,7 +342,7 @@ func TestFakeShellRecordsAndReturnsTheStatus(t *testing.T) {
 	fake := New("orbit-")
 	ctx := context.Background()
 	const name = "orbit-api-11111111"
-	if err := fake.Create(ctx, name, "/Users/dev/api"); err != nil {
+	if err := fake.Create(ctx, name, "/Users/dev/api", true); err != nil {
 		t.Fatal(err)
 	}
 	fake.ShellStatus = 3
@@ -361,7 +361,7 @@ func TestFakeShellRefusesWhatTheAdapterRefuses(t *testing.T) {
 	fake := New("orbit-")
 	ctx := context.Background()
 	const name = "orbit-api-11111111"
-	if err := fake.Create(ctx, name, "/Users/dev/api"); err != nil {
+	if err := fake.Create(ctx, name, "/Users/dev/api", true); err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
@@ -393,5 +393,55 @@ func TestFakeShellRefusesWhatTheAdapterRefuses(t *testing.T) {
 	}
 	if _, err := fake.Shell(ctx, name, "/Users/dev/api", strings.NewReader(""), io.Discard, io.Discard); !errors.Is(err, fake.ShellErr) {
 		t.Errorf("Shell with ShellErr = %v, want %v", err, fake.ShellErr)
+	}
+}
+
+func TestFakeKeepsTheSSHAgentForwardingOfACreatedMachine(t *testing.T) {
+	fake := New("orbit-")
+	ctx := context.Background()
+	for name, forward := range map[string]bool{"orbit-on-1d9b22c9": true, "orbit-off-00db83c9": false} {
+		if err := fake.Create(ctx, name, "/work/"+name, forward); err != nil {
+			t.Fatalf("Create(%q) = %v", name, err)
+		}
+		if got, err := fake.SSHAgentForwarded(ctx, name); err != nil || got != forward {
+			t.Errorf("SSHAgentForwarded(%q) = %t, %v, want %t", name, got, err, forward)
+		}
+	}
+	if err := fake.Delete(ctx, "orbit-on-1d9b22c9"); err != nil {
+		t.Fatalf("Delete = %v", err)
+	}
+	if _, err := fake.SSHAgentForwarded(ctx, "orbit-on-1d9b22c9"); !errors.Is(err, ErrNoMachine) {
+		t.Errorf("SSHAgentForwarded after Delete = %v, want %v", err, ErrNoMachine)
+	}
+}
+
+func TestFakeReportsAnotherForwardingThanRequestedWhenToldTo(t *testing.T) {
+	fake := New("orbit-")
+	other := false
+	fake.CreatedForwarded = &other
+	if err := fake.Create(context.Background(), "orbit-api-1d9b22c9", "/work/api", true); err != nil {
+		t.Fatalf("Create = %v", err)
+	}
+	if got, err := fake.SSHAgentForwarded(context.Background(), "orbit-api-1d9b22c9"); err != nil || got {
+		t.Errorf("SSHAgentForwarded = %t, %v, want false", got, err)
+	}
+}
+
+func TestFakeSSHAgentForwardedRefusesWhatTheAdapterRefuses(t *testing.T) {
+	fake := New("orbit-")
+	ctx := context.Background()
+	if _, err := fake.SSHAgentForwarded(ctx, "ubuntu"); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("SSHAgentForwarded of a foreign machine = %v, want %v", err, ErrForeignMachine)
+	}
+	if _, err := fake.SSHAgentForwarded(ctx, "orbit-gone-22222222"); !errors.Is(err, ErrNoMachine) {
+		t.Errorf("SSHAgentForwarded of a missing machine = %v, want %v", err, ErrNoMachine)
+	}
+	boom := errors.New("boom")
+	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", true); err != nil {
+		t.Fatal(err)
+	}
+	fake.SSHAgentForwardedErr = boom
+	if _, err := fake.SSHAgentForwarded(ctx, "orbit-api-1d9b22c9"); !errors.Is(err, boom) {
+		t.Errorf("SSHAgentForwarded = %v, want %v", err, boom)
 	}
 }

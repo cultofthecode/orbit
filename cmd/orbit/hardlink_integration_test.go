@@ -86,8 +86,17 @@ func (m accountHomeMachines) Exists(ctx context.Context, name string) (bool, err
 	return exists, err
 }
 
-func (m accountHomeMachines) Create(ctx context.Context, name, dir string) error {
-	return m.withAccountHome(func() error { return m.machines.Create(ctx, name, dir) })
+func (m accountHomeMachines) SSHAgentForwarded(ctx context.Context, name string) (bool, error) {
+	var forwarded bool
+	err := m.withAccountHome(func() (err error) {
+		forwarded, err = m.machines.SSHAgentForwarded(ctx, name)
+		return err
+	})
+	return forwarded, err
+}
+
+func (m accountHomeMachines) Create(ctx context.Context, name, dir string, forwardSSHAgent bool) error {
+	return m.withAccountHome(func() error { return m.machines.Create(ctx, name, dir, forwardSSHAgent) })
 }
 
 func (m accountHomeMachines) RunAsRoot(ctx context.Context, name string, script []byte) error {

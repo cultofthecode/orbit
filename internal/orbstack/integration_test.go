@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -70,10 +71,17 @@ func inMachine(ctx context.Context, name string, command ...string) (string, err
 	return strings.TrimSpace(string(output)), err
 }
 
-// newMachine creates a machine of the integration tests with the mount dir
-// under its own deadline, createTimeout, registers its deletion, and returns
-// its client and its name.
+// newMachine creates a machine of the integration tests without SSH agent
+// forwarding, with the mount dir, under its own deadline, createTimeout,
+// registers its deletion, and returns its client and its name.
 func newMachine(t *testing.T, dir string) (*Client, string) {
+	t.Helper()
+	return newForwardingMachine(t, dir, false)
+}
+
+// newForwardingMachine is newMachine with the SSH agent forwarding that
+// forward names.
+func newForwardingMachine(t *testing.T, dir string, forward bool) (*Client, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
 	defer cancel()
@@ -90,7 +98,7 @@ func newMachine(t *testing.T, dir string) (*Client, string) {
 			t.Errorf("Exists(%q) after Delete = %v, %v, want false", name, exists, err)
 		}
 	})
-	if err := client.Create(ctx, name, dir); err != nil {
+	if err := client.Create(ctx, name, dir, forward); err != nil {
 		t.Fatalf("Create(%q, %q) = %v", name, dir, err)
 	}
 	t.Logf("created the machine %s with the mount %s", name, dir)
@@ -306,6 +314,18 @@ func TestOnlyAllowedVariablesReachTheMachine(t *testing.T) {
 			t.Setenv(forwarded, variable)
 			if output, err := inMachine(ctx, name, "printenv", variable); err != nil || output != marker {
 				t.Errorf("orb with %s=%s printed %q, %v, want %q: the test no longer proves the removal", forwarded, variable, output, err, marker)
+			}
+		})
+	}
+}
+
+func TestCreateFixesTheSSHAgentForwardingAndTheAdapterReadsItBack(t *testing.T) {
+	for _, forward := range []bool{true, false} {
+		t.Run(strconv.FormatBool(forward), func(t *testing.T) {
+			client, name := newForwardingMachine(t, hostDir(t), forward)
+			got, err := client.SSHAgentForwarded(testContext(t), name)
+			if err != nil || got != forward {
+				t.Errorf("SSHAgentForwarded(%q) = %t, %v, want %t", name, got, err, forward)
 			}
 		})
 	}
