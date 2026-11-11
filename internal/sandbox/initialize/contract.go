@@ -28,12 +28,12 @@ type Output struct {
 }
 
 // ErrNotDirectory reports a project path that is not a directory. An unknown
-// agent fails with the error of Handler.Agent. A refused
-// project directory fails with one of the errors of
-// sandbox.ValidateProjectDir, sandbox.ErrNestedProjectDir,
-// sandbox.ErrContainsProjectDir, or ErrLinkedSandboxDir, a missing one
-// with fs.ErrNotExist, and a machine that mounts something else than the
-// project directory with sandbox.ErrMountMismatch.
+// agent fails with the error of Handler.Agent. A refused project directory
+// fails with one of the errors of sandbox.ValidateProjectDir,
+// sandbox.ErrNestedProjectDir, sandbox.ErrContainsProjectDir, or
+// ErrLinkedSandboxDir, a missing one with fs.ErrNotExist, and a machine that
+// mounts something else than the project directory with
+// sandbox.ErrMountMismatch.
 var ErrNotDirectory = errors.New("project path is not a directory")
 
 // ErrLinkedSandboxDir reports another machine whose stored mount path passes

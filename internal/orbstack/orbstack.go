@@ -1,7 +1,7 @@
 // Package orbstack is the adapter to OrbStack. Through the orb CLI it
 // creates, finds, and deletes isolated machines and runs scripts in them as
-// root or as the agent user. It is the only package with OrbStack-specific code, and it depends on
-// no other package of this repository.
+// root or as the agent user. It is the only package with OrbStack-specific
+// code, and it depends on no other package of this repository.
 package orbstack
 
 import (
