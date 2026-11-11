@@ -45,6 +45,13 @@ func TestProxyRequiresFirewallAndAddress(t *testing.T) {
 	}
 }
 
+func TestHardenUnitHasNoStartLimit(t *testing.T) {
+	file := unitFile(t, "/etc/systemd/system/orbit-harden.service")
+	if !hasDirective(file, "StartLimitIntervalSec", "0") {
+		t.Errorf("orbit-harden.service keeps the start limit:\n%s", file.Content)
+	}
+}
+
 func TestOwnUnitsAreEnabledAtBoot(t *testing.T) {
 	for _, path := range []string{"/etc/systemd/system/orbit-proxy-address.service", "/etc/systemd/system/orbit-harden.service"} {
 		if !hasDirective(unitFile(t, path), "WantedBy", "multi-user.target") {

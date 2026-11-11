@@ -133,6 +133,38 @@ func TestInitProvisionsTheSandbox(t *testing.T) {
 	checkProxyClosedFromTheMac(t, name)
 }
 
+// hardenRestarts restarts the harden unit as every run of init does, one
+// time more than the default start limit of systemd allows (5 starts in
+// 10 s). The burst does not depend on how fast apt-get runs in init.
+const hardenRestarts = `
+set -eu
+for run in 1 2 3 4 5 6; do systemctl restart orbit-harden.service; done
+systemctl is-active --quiet orbit-harden.service
+`
+
+// TestInitRunsAgainAfterRepeatedRuns re-runs init on one sandbox right
+// after the harden unit restarted more often than the default start limit
+// of systemd allows (#66).
+func TestInitRunsAgainAfterRepeatedRuns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
+	t.Cleanup(cancel)
+	client := orbstack.New(sandbox.NamePrefix)
+	dir, name := newSandboxDir(ctx, t, client)
+	handler := initHandler(client, claudeRegistry(t))
+
+	if _, err := handler.Handle(ctx, initialize.Input{Dir: dir}); err != nil {
+		t.Fatalf("first Handle = %v", err)
+	}
+	for run := 2; run <= 3; run++ {
+		if err := client.RunAsRoot(ctx, name, []byte(hardenRestarts)); err != nil {
+			t.Fatalf("restarts of orbit-harden.service before run %d in %s:\n%v", run, name, err)
+		}
+		if out, err := handler.Handle(ctx, initialize.Input{Dir: dir}); err != nil || out.Created {
+			t.Fatalf("Handle run %d = %+v, %v, want the existing sandbox provisioned again", run, out, err)
+		}
+	}
+}
+
 // projectDir returns the canonical path of a new project directory that
 // the mount rules accept.
 func projectDir(t *testing.T) string {

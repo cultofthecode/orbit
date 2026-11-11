@@ -107,12 +107,14 @@ func proxyDropIn() string {
 }
 
 // hardenUnit runs the harden script at every boot, in case OrbStack
-// restores the sudo rule of its default user.
+// restores the sudo rule of its default user. It has no start limit,
+// because every run of the root script restarts it.
 func hardenUnit() string {
 	return lines(
 		"[Unit]",
 		"Description=Orbit: remove sudo from every account except root",
 		"Before="+unitUserSessions,
+		"StartLimitIntervalSec=0",
 		"",
 		"[Service]",
 		"Type=oneshot",
