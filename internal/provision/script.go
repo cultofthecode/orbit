@@ -13,7 +13,7 @@ import (
 
 // Version is the provisioning version that the root script writes into the
 // marker file as its last action.
-const Version = 2
+const Version = 3
 
 // MarkerPath is the file that exists only in a machine that provisioning
 // completed. A later slice can refuse a machine without it.
@@ -88,10 +88,14 @@ func Script(in ScriptInput) ([]byte, error) {
 	sections := [][]string{
 		prelude(),
 		installPackages(),
+		installDocker(),
+		maskRootfulDocker(),
 		staticDNS(),
 		writeFiles(files),
 		startBoundary(),
 		createAgent(in.ForwardSSHAgent),
+		helperPermissions(),
+		startEngine(),
 		selfCheck(in.DefaultUID, in.ForwardSSHAgent),
 		writeMarker(),
 	}
@@ -242,7 +246,7 @@ func putFile(file File) []string {
 func startBoundary() []string {
 	return []string{
 		"systemctl daemon-reload",
-		"systemctl enable " + strings.Join(boundaryUnits(), " ") + " >/dev/null",
+		"systemctl enable " + strings.Join(append(boundaryUnits(), unitGate), " ") + " >/dev/null",
 		"systemctl start " + unitProxyAddress,
 		"nft -f " + firewallPath,
 		"systemctl start " + unitFirewall,
@@ -288,7 +292,7 @@ func selfCheck(defaultUID uint32, forwardSSHAgent bool) []string {
 		fmt.Sprintf("for group in %s; do", strings.Join(privilegedGroups, " ")),
 		fmt.Sprintf(`  case " $(id -nG %s) " in *" $group "*) fail "%s is in the group $group";; esac`, AgentUser, AgentUser),
 		"done",
-	}, sshCheck(forwardSSHAgent))
+	}, sshCheck(forwardSSHAgent), dockerCheck())
 	return script
 }
 
@@ -314,9 +318,22 @@ func sshCheck(forwardSSHAgent bool) []string {
 // table is loaded and every boundary unit and systemd-user-sessions.service
 // is active. An active nftables.service alone does not prove the table.
 func boundaryCheck() []string {
+	return unitsCheck(append(boundaryUnits(), unitUserSessions))
+}
+
+// boundaryUnitsCheck is boundaryCheck without
+// systemd-user-sessions.service: the gate that user managers wait for cannot
+// wait for the unit that ends the login gate.
+func boundaryUnitsCheck() []string {
+	return unitsCheck(boundaryUnits())
+}
+
+// unitsCheck fails unless the firewall table is loaded and every unit of
+// units is active.
+func unitsCheck(units []string) []string {
 	return []string{
 		`nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`,
-		"for unit in " + strings.Join(append(boundaryUnits(), unitUserSessions), " ") + "; do",
+		"for unit in " + strings.Join(units, " ") + "; do",
 		`  systemctl is-active --quiet "$unit" || fail "$unit is not active"`,
 		"done",
 	}
