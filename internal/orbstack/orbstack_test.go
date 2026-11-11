@@ -975,6 +975,20 @@ func TestRunAsAgentPutsNoCallerValueOnTheCommandLine(t *testing.T) {
 	}
 }
 
+// TestAllowedVariablesAreTheDecidedList pins the allowlist of #76 to its 13
+// names, so that a name added to or removed from allowedVariables fails a
+// test and a reviewer sees the change of the boundary (R08).
+func TestAllowedVariablesAreTheDecidedList(t *testing.T) {
+	want := []string{
+		"HOME", "PATH", "TMPDIR",
+		"TERM", "COLORTERM",
+		"LANG", "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC", "LC_TIME",
+	}
+	if !slices.Equal(allowedVariables, want) {
+		t.Errorf("allowedVariables = %q, want exactly %q", allowedVariables, want)
+	}
+}
+
 func TestAllowedEnvironment(t *testing.T) {
 	allowed := []string{
 		"HOME=/Users/dev", "PATH=/usr/bin:/bin", "TMPDIR=/var/folders/x/T/", "TERM=xterm-256color", "COLORTERM=truecolor",
