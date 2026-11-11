@@ -98,6 +98,127 @@ func TestProtectedFiles(t *testing.T) {
 	}
 }
 
+// environment returns a lookup over env, as os.LookupEnv would answer it.
+func environment(env map[string]string) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		value, set := env[name]
+		return value, set
+	}
+}
+
+func TestRelocatedDirs(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want []Relocated
+	}{
+		{name: "nothing set", env: map[string]string{}},
+		{name: "other variables", env: map[string]string{"HOME": "relative", "SSH_AUTH_SOCK": ""}},
+		{
+			name: "every variable",
+			env: map[string]string{
+				"CLAUDE_CONFIG_DIR": "/Users/dev/dotfiles/claude",
+				"GH_CONFIG_DIR":     "/Users/dev/dotfiles/gh",
+				"GNUPGHOME":         "/Users/dev/dotfiles/gnupg",
+				"XDG_CONFIG_HOME":   "/Users/dev/dotfiles/config",
+			},
+			want: []Relocated{
+				{Variable: "CLAUDE_CONFIG_DIR", Path: "/Users/dev/dotfiles/claude"},
+				{Variable: "GH_CONFIG_DIR", Path: "/Users/dev/dotfiles/gh"},
+				{Variable: "GNUPGHOME", Path: "/Users/dev/dotfiles/gnupg"},
+				{Variable: "XDG_CONFIG_HOME", Path: "/Users/dev/dotfiles/config/gh"},
+			},
+		},
+		{
+			name: "trailing separator, repeated separator, and dot",
+			env:  map[string]string{"GNUPGHOME": "/Users/dev//dotfiles/./gnupg/", "XDG_CONFIG_HOME": "/"},
+			want: []Relocated{
+				{Variable: "GNUPGHOME", Path: "/Users/dev/dotfiles/gnupg"},
+				{Variable: "XDG_CONFIG_HOME", Path: "/gh"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := RelocatedDirs(environment(test.env))
+			if err != nil || !slices.Equal(got, test.want) {
+				t.Errorf("RelocatedDirs = %v, %v, want %v", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestRelocatedFiles(t *testing.T) {
+	env := map[string]string{
+		"AWS_CONFIG_FILE":             "/Users/dev/dotfiles/aws/config",
+		"AWS_SHARED_CREDENTIALS_FILE": "/Users/dev/dotfiles/aws/credentials/",
+		"GNUPGHOME":                   "/Users/dev/dotfiles/gnupg",
+	}
+	want := []Relocated{
+		{Variable: "AWS_CONFIG_FILE", Path: "/Users/dev/dotfiles/aws/config"},
+		{Variable: "AWS_SHARED_CREDENTIALS_FILE", Path: "/Users/dev/dotfiles/aws/credentials"},
+	}
+
+	got, err := RelocatedFiles(environment(env))
+
+	if err != nil || !slices.Equal(got, want) {
+		t.Errorf("RelocatedFiles = %v, %v, want %v", got, err, want)
+	}
+}
+
+// TestRelocatedLocationsFailClosed covers values that name no absolute path
+// that Orbit can protect: it refuses them and names the variable, for every
+// variable, also when the other variables are valid.
+func TestRelocatedLocationsFailClosed(t *testing.T) {
+	values := []struct {
+		name  string
+		value string
+	}{
+		{name: "empty", value: ""},
+		{name: "relative", value: "dotfiles/gnupg"},
+		{name: "dot", value: "."},
+		{name: "dot relative", value: "./gnupg"},
+		{name: "parent relative", value: "../gnupg"},
+		{name: "unexpanded tilde", value: "~/dotfiles/gnupg"},
+		{name: "unexpanded variable", value: "$HOME/dotfiles/gnupg"},
+		{name: "space before the separator", value: " /Users/dev/dotfiles"},
+		{name: "parent after a name", value: "/Users/dev/link/../gnupg"},
+		{name: "trailing parent", value: "/Users/dev/dotfiles/.."},
+		{name: "leading parent", value: "/../Users/dev/gnupg"},
+	}
+	locate := map[string]func(func(string) (string, bool)) ([]Relocated, error){
+		"CLAUDE_CONFIG_DIR":           RelocatedDirs,
+		"GH_CONFIG_DIR":               RelocatedDirs,
+		"GNUPGHOME":                   RelocatedDirs,
+		"XDG_CONFIG_HOME":             RelocatedDirs,
+		"AWS_CONFIG_FILE":             RelocatedFiles,
+		"AWS_SHARED_CREDENTIALS_FILE": RelocatedFiles,
+	}
+	for variable, relocated := range locate {
+		for _, value := range values {
+			t.Run(variable+" "+value.name, func(t *testing.T) {
+				env := map[string]string{"GH_CONFIG_DIR": "/Users/dev/gh", "AWS_CONFIG_FILE": "/Users/dev/aws", variable: value.value}
+
+				got, err := relocated(environment(env))
+
+				if !errors.Is(err, ErrRelocatedPath) || !strings.Contains(err.Error(), variable+"=") {
+					t.Errorf("%s=%q: got %v, %v, want %v naming %s", variable, value.value, got, err, ErrRelocatedPath, variable)
+				}
+			})
+		}
+	}
+}
+
+// TestRelocatedLocationsTellHowToUseTheDefault covers the message for a
+// variable that is set and empty: it tells the user to unset it.
+func TestRelocatedLocationsTellHowToUseTheDefault(t *testing.T) {
+	_, err := RelocatedDirs(environment(map[string]string{"GNUPGHOME": ""}))
+
+	if !errors.Is(err, ErrRelocatedPath) || !strings.Contains(err.Error(), "unset GNUPGHOME") {
+		t.Errorf("RelocatedDirs = %v, want %v that says unset GNUPGHOME", err, ErrRelocatedPath)
+	}
+}
+
 func TestValidateProjectDir(t *testing.T) {
 	const user, root = 501, 0
 	homes := []string{"/Users/dev", "/System/Volumes/Data/Users/dev"}
