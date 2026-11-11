@@ -4,7 +4,7 @@
 Backlog source: .ai/specs/product-brief.md
 Last filed: 2026-11-11
 
-Parents are linked as GitHub sub-issues. The epics carry no checklist. E04 comes from the owner's request of 2026-11-11, which the brief does not record yet: its open question 1 asks the owner to add the decision (D25) and move E04 into *Scope → Now*.
+Parents are linked as GitHub sub-issues. The epics carry no checklist. E04 comes from the owner's request of 2026-11-11. The brief does not record it yet: decision 1 of epic #46 (taken by the coordinator under the owner's delegation of 2026-11-11) adds D25 and moves E04 into *Scope → Now*, and E04-T02 (#48) writes that row into the brief.
 
 | Id | Issue | Title | Epic | Depends on | Adopted |
 |---|---|---|---|---|---|
