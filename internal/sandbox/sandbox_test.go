@@ -209,6 +209,16 @@ func TestRelocatedLocationsFailClosed(t *testing.T) {
 	}
 }
 
+// TestRelocatedLocationsTellHowToUseTheDefault covers the message for a
+// variable that is set and empty: it tells the user to unset it.
+func TestRelocatedLocationsTellHowToUseTheDefault(t *testing.T) {
+	_, err := RelocatedDirs(environment(map[string]string{"GNUPGHOME": ""}))
+
+	if !errors.Is(err, ErrRelocatedPath) || !strings.Contains(err.Error(), "unset GNUPGHOME") {
+		t.Errorf("RelocatedDirs = %v, want %v that says unset GNUPGHOME", err, ErrRelocatedPath)
+	}
+}
+
 func TestValidateProjectDir(t *testing.T) {
 	const user, root = 501, 0
 	homes := []string{"/Users/dev", "/System/Volumes/Data/Users/dev"}

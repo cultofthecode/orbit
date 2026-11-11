@@ -462,7 +462,8 @@ func allProtectedSpellings(homes []string) ([]string, error) {
 
 // allFileDirSpellings returns every spelling of the directories that hold
 // the protected files of homes and the protected files that the environment
-// moves, or would be created in.
+// moves, or would be created in, and of the directories that hold a symlink
+// on the path of a location that the environment moves.
 func allFileDirSpellings(homes []string) ([]string, error) {
 	fileDirs, err := protectedFileDirSpellings(homes)
 	if err != nil {
@@ -472,7 +473,35 @@ func allFileDirSpellings(homes []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return distinct(slices.Concat(fileDirs, relocated)), nil
+	hops, err := relocatedHopSpellings()
+	if err != nil {
+		return nil, err
+	}
+	return distinct(slices.Concat(fileDirs, relocated, hops)), nil
+}
+
+// relocatedHopSpellings returns every spelling of each directory that holds
+// a symlink on the path of a protected location that the environment moves,
+// as linkSpellings walks it. A variable can name a path through a project
+// directory, where the agent could replace that symlink and redirect the
+// tool on the host.
+func relocatedHopSpellings() ([]string, error) {
+	dirHops, err := relocatedSpellings(sandbox.RelocatedDirs, chainHolders)
+	if err != nil {
+		return nil, err
+	}
+	fileHops, err := relocatedSpellings(sandbox.RelocatedFiles, chainHolders)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Concat(dirHops, fileHops), nil
+}
+
+// chainHolders returns the second result of linkSpellings for path: every
+// spelling of each directory that holds a symlink on its chain.
+func chainHolders(path string) ([]string, error) {
+	_, holders, err := linkSpellings(path)
+	return holders, err
 }
 
 // relocatedSpellings returns what resolve returns for each protected

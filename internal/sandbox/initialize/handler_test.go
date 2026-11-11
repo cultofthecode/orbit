@@ -1916,12 +1916,20 @@ var movedLocations = []movedLocation{
 // create makes the location in home.
 func (m movedLocation) create(t *testing.T, home string) {
 	t.Helper()
+	m.createIn(t, home, "dotfiles")
+}
+
+// createIn makes the location in the directory dir of home instead of in
+// dotfiles.
+func (m movedLocation) createIn(t *testing.T, home, dir string) {
+	t.Helper()
+	location := filepath.Join(dir, inDotfiles(m.location))
 	if !m.file {
-		makeDirs(t, home, m.location)
+		makeDirs(t, home, location)
 		return
 	}
-	makeDirs(t, home, filepath.Dir(m.location))
-	writeFile(t, filepath.Join(home, m.location))
+	makeDirs(t, home, filepath.Dir(location))
+	writeFile(t, filepath.Join(home, location))
 }
 
 // set sets the variable to path.
@@ -1962,6 +1970,18 @@ func (m movedLocation) layouts() []linkLayout {
 		{name: "dangling symlink to a location inside the project", want: m.containerErr(), layout: func(t *testing.T, home string) string {
 			symlinkAt(t, filepath.Join(home, m.value), filepath.Join(home, "linked"))
 			m.set(t, filepath.Join(home, "linked"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "location through a symlink in the project", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			m.createIn(t, home, "store")
+			symlinkAt(t, filepath.Join(home, "store", inDotfiles(m.value)), filepath.Join(home, "dotfiles", "cred"))
+			m.set(t, filepath.Join(home, "dotfiles", "cred"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "location through a symlinked directory in the project", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			m.createIn(t, home, "store")
+			symlinkAt(t, filepath.Join(home, "store"), filepath.Join(home, "dotfiles", "sub"))
+			m.set(t, filepath.Join(home, "dotfiles", "sub", inDotfiles(m.value)))
 			return filepath.Join(home, "dotfiles")
 		}},
 		{name: "missing location under a symlinked parent", want: m.containerErr(), layout: func(t *testing.T, home string) string {

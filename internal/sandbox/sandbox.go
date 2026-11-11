@@ -133,15 +133,17 @@ type ProjectDir struct {
 	// its canonical path and as its path on its own volume.
 	Homes []string
 	// Protected holds every spelling of the directory that each path of
-	// ProtectedDirs and RelocatedDirs resolves to, or of the path where its target would be
-	// created when it does not exist, and of every directory that a
-	// symlink in one of those directories leads to or would create.
+	// ProtectedDirs and RelocatedDirs resolves to, or of the path where its
+	// target would be created when it does not exist, and of every
+	// directory that a symlink in one of those directories leads to or
+	// would create.
 	Protected []string
 	// ProtectedFileDirs holds every spelling of the directory that holds
 	// the file that each path of ProtectedFiles and RelocatedFiles resolves
 	// to, or would be created in, of the directory that holds each file
 	// that a symlink in a protected directory leads to, and of each
-	// directory that holds a symlink on the chain of such a symlink.
+	// directory that holds a symlink on the chain of such a symlink or on
+	// the path of RelocatedDirs and RelocatedFiles.
 	ProtectedFileDirs []string
 }
 
@@ -338,7 +340,10 @@ func relocate(relocations []relocation, lookup func(string) (string, bool)) ([]R
 // ".." is a symlink, the kernel applies ".." to its target, so a lexical
 // clean would protect the wrong directory.
 func relocatedPath(variable, value string) (string, error) {
-	if !filepath.IsAbs(value) || slices.Contains(strings.Split(value, string(filepath.Separator)), "..") {
+	switch {
+	case value == "":
+		return "", fmt.Errorf("%w: %s=\"\" (unset %s to use its default location)", ErrRelocatedPath, variable, variable)
+	case !filepath.IsAbs(value) || slices.Contains(strings.Split(value, string(filepath.Separator)), ".."):
 		return "", fmt.Errorf("%w: %s=%q", ErrRelocatedPath, variable, value)
 	}
 	return filepath.Clean(value), nil
