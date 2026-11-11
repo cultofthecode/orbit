@@ -210,7 +210,7 @@ The system SHALL let a Mac with Homebrew install and upgrade Orbit with `brew in
 | Case | What happens | What the user or Maintainer sees |
 |---|---|---|
 | Homebrew's `go` is older than the `go` line of `go.mod` (today `go 1.27.4`) | The formula build fails, or Go tries to download a toolchain, which Homebrew's build sandbox may block `[UNVERIFIED]`. | The tap CI fails on the bump PR, so the PR is not merged. Rule in `RELEASING.md`: raise the `go` line of `go.mod` only to a version that Homebrew's `go` already ships. |
-| A tag is pushed on the wrong commit | The release workflow refuses (not on `main`, or CI not green). | A failed release run naming the check; no release. The Maintainer pushes a new tag on the right commit; the wrong tag is deleted only if it never produced a release. |
+| A tag is pushed on the wrong commit | The release workflow refuses (not on `main`, or CI not green). | A failed release run naming the check; no release. The refused tag stays, because tags are never deleted (Q9); the Maintainer tags the right commit with the next patch version. |
 | A release is broken after publication | The tag and release stay (immutable). | A patch release `vX.Y.Z+1`; the tap PR updates the formula. Never move or force-push a tag. |
 | GoReleaser publishes the release, but the tap PR job fails | The release exists; the tap stays at the old version. | A failed job in the release run. The Maintainer re-runs that job, or runs `brew bump-formula-pr --url … cultofthecode/tap/orbit` by hand. |
 | The tap CI fails on the bump PR | The PR is not merged; users stay on the previous version. | A red PR on the tap with the `brew` output. |
@@ -280,7 +280,7 @@ M1 and M2 can ship now and in parallel. M3 is built and dry-run privately (`gore
 ### Phase 2 — version (M2)
 
 1. Characterize: a test in `cmd/orbit/main_test.go` that `orbit --version` today fails with an unknown-flag error. Commit it alone.
-2. Add `version` and `commit` variables, the resolve function (linker value, then build info, then `dev`), and `Version` with a template on the root command; update the test to the three scenarios of "Orbit reports its version" (linker values set through the test, build info faked through a function field, `dev`). Check: `go test ./cmd/orbit/`, and `go build -ldflags "-X main.version=0.0.0-test -X main.commit=abc1234" ./cmd/orbit && ./orbit --version`.
+2. Add `version` and `commit` variables, the resolve function (linker value, then build info, then `dev`), and `Version` with a template on the root command; update the test to the five scenarios of "Orbit reports its version" (release build and Homebrew build: linker values set through the test; `go install` and plain `go build`: build info faked through a function field; no version information: `dev`). Check: `go test ./cmd/orbit/`, and `go build -ldflags "-X main.version=0.0.0-test -X main.commit=abc1234" ./cmd/orbit && ./orbit --version`.
 
 ### Phase 3 — release builds (M3)
 
