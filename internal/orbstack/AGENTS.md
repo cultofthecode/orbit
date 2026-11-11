@@ -4,7 +4,7 @@ The adapter to OrbStack, through the `orb` CLI. It is the only package with OrbS
 
 ## Layout
 
-- `orbstack.go` — `Client`: `Create`, `Exists`, `Delete`, `RunAsRoot`. Each argument list of `orb` comes from a small pure function with a unit test.
+- `orbstack.go` — `Client`: `Create`, `Exists`, `Mounts`, `ActiveMounts`, `Delete`, `RunAsRoot`. Each argument list of `orb`, and each parser of its output, is a small pure function with a unit test.
 - `orbstacktest/` — the in-memory fake for handler tests. It imports nothing from the adapter.
 - `integration_test.go` — tests against a real OrbStack, behind the `integration` build tag.
 
@@ -12,7 +12,8 @@ The adapter to OrbStack, through the `orb` CLI. It is the only package with OrbS
 
 - `createArgs` always passes `--isolated`, `--isolate-network`, and one mount in the form `DIR:DIR`. A caller cannot change them. A mount without a destination lands under `/mnt/mac`.
 - `Create` refuses a directory that is not absolute or that holds a colon or a comma (`ErrMountPath`). `orb` splits a mount at the first colon, so such a path mounts another directory than the one that was validated; OrbStack stores the mounts of a machine as a list with commas.
-- `Create`, `Delete`, and `RunAsRoot` refuse a name without the prefix of the client (`ErrForeignMachine`) before they run a command.
+- `Mounts` reads the configured mounts of every machine from `orb list --format json`. `ActiveMounts` reads `/proc/self/mountinfo` as root in the machine and returns the mounts of the file system `virtiofs` with the source `mac`: its root is the root of the host, so the root of each mount is the host path of the mounted directory as the machine resolved it. It shows a symlink that was swapped in before the mount was made. It does not show a path that was removed and recreated as a symlink between two starts: after a restart it still reports the stored path while the machine serves the target (OrbStack 2.2.5). It is not proof of the identity of the mounted directory. Both fail with `ErrMountTable` on output they cannot read and on a mount point that appears twice; they never guess.
+- `Create`, `ActiveMounts`, `Delete`, and `RunAsRoot` refuse a name without the prefix of the client (`ErrForeignMachine`) before they run a command.
 - `RunAsRoot` runs `orb -m NAME -u root bash -s` with the script on standard input. The user is fixed; no argument of the caller reaches the command line. A client with an empty prefix refuses every name. `cmd/orbit` passes `sandbox.NamePrefix`.
 - The adapter imports no other package of this repository. Only `cmd/orbit` imports the adapter; `golangci-lint` (depguard) fails on any other import. Slices use `orbstacktest` in tests.
 - The adapter does not pass `--forward-ssh-agent`. Add an operation only when a slice needs it, and add it to the fake in the same change.

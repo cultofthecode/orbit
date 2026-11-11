@@ -45,19 +45,12 @@ func TestCommandPrintsTheResult(t *testing.T) {
 		{
 			name:       "created",
 			wantStdout: "Created sandbox " + name + " for " + project + "\n",
-			wantCalls: []orbstacktest.Call{
-				{Op: orbstacktest.OpExists, Name: name},
-				{Op: orbstacktest.OpCreate, Name: name, Dir: project},
-				{Op: orbstacktest.OpRunAsRoot, Name: name, Script: ownScript()},
-			},
+			wantCalls:  createCalls(name, project),
 		},
 		{
 			name:       "already exists",
 			wantStdout: "Sandbox " + name + " already exists for " + project + "\n",
-			wantCalls: []orbstacktest.Call{
-				{Op: orbstacktest.OpExists, Name: name},
-				{Op: orbstacktest.OpRunAsRoot, Name: name, Script: ownScript()},
-			},
+			wantCalls:  keepCalls(name),
 		},
 	}
 	for _, test := range tests {

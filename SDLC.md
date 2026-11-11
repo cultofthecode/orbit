@@ -179,7 +179,7 @@ Every PR passes the full validation gate before review sign-off, in this order:
 4. `go test ./...` — unit and handler tests
 5. `go build ./...` — build
 
-Integration tests and the escape suite need a running OrbStack (`go test -tags integration ./...`). They are not in the default gate. A `risk-high` change to the sandbox boundary must run them (see the risk table).
+Integration tests and the escape suite need a running OrbStack (`go test -tags integration -p 1 ./...`). They are not in the default gate. Run the packages one at a time (`-p 1`): `init` refuses every directory while another machine's stored mount passes through a symlink, and `internal/orbstack` creates such a machine on purpose. A `risk-high` change to the sandbox boundary must run them (see the risk table).
 
 Any non-zero exit fails the gate and blocks the PR. The implementing skills run the gate before they open a PR. `om-check-and-commit` runs it before it pushes a branch that a human worked on. The command list lives in `.ai/agentic.config.json`. When the list changes, update it there and in this section together.
 

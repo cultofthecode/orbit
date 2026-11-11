@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -75,6 +76,207 @@ func TestDeleteArgs(t *testing.T) {
 	want := []string{"delete", "--force", "orbit-api-1d9b22c9"}
 	if got := deleteArgs("orbit-api-1d9b22c9"); !slices.Equal(got, want) {
 		t.Errorf("deleteArgs() = %q, want %q", got, want)
+	}
+}
+
+func TestMountsArgs(t *testing.T) {
+	want := []string{"list", "--format", "json"}
+	if got := mountsArgs(); !slices.Equal(got, want) {
+		t.Errorf("mountsArgs() = %q, want %q", got, want)
+	}
+}
+
+func TestActiveMountsArgs(t *testing.T) {
+	want := []string{"-m", "orbit-api-1d9b22c9", "-u", "root", "cat", "/proc/self/mountinfo"}
+	if got := activeMountsArgs("orbit-api-1d9b22c9"); !slices.Equal(got, want) {
+		t.Errorf("activeMountsArgs() = %q, want %q", got, want)
+	}
+}
+
+// machineList is the output of "orb list --format json" of OrbStack 2.2.5
+// with an isolated machine and a machine without isolation.
+const machineList = `[
+  {"id": "01M73SPM5Q7ZR17EAG6KHQVAWR", "name": "orbit-api-1d9b22c9",
+   "config": {"isolated": true, "isolate_network": true,
+     "mounts": [{"source": "/Users/dev/Project/api", "destination": "/Users/dev/Project/api"}]},
+   "state": "running"},
+  {"id": "01M73SPM5Q7ZR17EAG6KHQVAWS", "name": "ubuntu", "config": {"isolated": false}, "state": "stopped"}
+]`
+
+func TestParseMounts(t *testing.T) {
+	tests := []struct {
+		name string
+		list string
+		want map[string]map[string]string
+	}{
+		{
+			name: "isolated machine and machine without isolation",
+			list: machineList,
+			want: map[string]map[string]string{
+				"orbit-api-1d9b22c9": {"/Users/dev/Project/api": "/Users/dev/Project/api"},
+				"ubuntu":             {},
+			},
+		},
+		{name: "no machines", list: "[]", want: map[string]map[string]string{}},
+		{
+			name: "mount at another path and a second mount",
+			list: `[{"name": "orbit-x", "config": {"mounts": [
+				{"source": "/Users/dev/.ssh", "destination": "/Users/dev/Project/api"},
+				{"source": "/Users/dev", "destination": "/home/dev"}]}}]`,
+			want: map[string]map[string]string{
+				"orbit-x": {"/Users/dev/Project/api": "/Users/dev/.ssh", "/home/dev": "/Users/dev"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseMounts([]byte(test.list))
+			if err != nil || !reflect.DeepEqual(got, test.want) {
+				t.Errorf("parseMounts = %v, %v, want %v", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestParseMountsRefusesWhatItCannotRead(t *testing.T) {
+	tests := []struct {
+		name string
+		list string
+	}{
+		{name: "empty output", list: ""},
+		{name: "text output", list: "orbit-api-1d9b22c9  running  ubuntu"},
+		{name: "object instead of a list", list: `{"name": "orbit-x"}`},
+		{name: "mounts of the wrong type", list: `[{"name": "orbit-x", "config": {"mounts": "/a:/a"}}]`},
+		{name: "machine listed twice", list: `[{"name": "orbit-x"}, {"name": "orbit-x"}]`},
+		{
+			name: "two mounts at one mount point",
+			list: `[{"name": "orbit-x", "config": {"mounts": [
+				{"source": "/Users/dev/Project/api", "destination": "/Users/dev/Project/api"},
+				{"source": "/Users/dev/.ssh", "destination": "/Users/dev/Project/api"}]}}]`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseMounts([]byte(test.list))
+			if !errors.Is(err, ErrMountTable) || got != nil {
+				t.Errorf("parseMounts(%q) = %v, %v, want %v", test.list, got, err, ErrMountTable)
+			}
+		})
+	}
+}
+
+// mountTableEntries are entries of /proc/self/mountinfo in an isolated
+// machine of OrbStack 2.2.5, besides the mount of the project.
+var mountTableEntries = []string{
+	"125 1 0:31 / / rw,relatime shared:1 - btrfs /dev/vdb1 rw,space_cache=v2",
+	"130 125 0:5 /null /dev/null rw,nosuid master:2 - devtmpfs devtmpfs rw,size=4k",
+	"140 125 0:40 /opt/orbstack-guest /opt/orbstack-guest ro,relatime - overlay orbstack ro,lowerdir=/x",
+	"150 125 0:22 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw",
+	"160 125 0:44 / /tmp rw,nosuid,nodev shared:9 - tmpfs tmpfs rw",
+}
+
+// table returns a mount table with the entries of the machine and entries.
+func table(entries ...string) string {
+	return strings.Join(slices.Concat(mountTableEntries, entries), "\n") + "\n"
+}
+
+func TestParseMountTable(t *testing.T) {
+	const project = "/Users/dev/Project/api"
+	tests := []struct {
+		name  string
+		table string
+		want  map[string]string
+	}{
+		{
+			name:  "project at its own path",
+			table: table("195 125 0:35 " + project + " " + project + " rw,relatime shared:107 - virtiofs mac rw"),
+			want:  map[string]string{project: project},
+		},
+		{
+			name:  "symlink swapped for another directory",
+			table: table("195 125 0:35 /Users/dev/.ssh " + project + " rw,relatime shared:107 - virtiofs mac rw"),
+			want:  map[string]string{project: "/Users/dev/.ssh"},
+		},
+		{
+			name:  "no optional fields",
+			table: table("195 125 0:35 " + project + " " + project + " rw,relatime - virtiofs mac rw"),
+			want:  map[string]string{project: project},
+		},
+		{
+			name:  "escaped space, tab, newline, and backslash",
+			table: table(`195 125 0:35 /Users/dev/My\040Project\011a\012b\134c /Users/dev/My\040Project\011a\012b\134c rw - virtiofs mac rw`),
+			want:  map[string]string{"/Users/dev/My Project\ta\nb\\c": "/Users/dev/My Project\ta\nb\\c"},
+		},
+		{
+			name:  "virtiofs of another source",
+			table: table("195 125 0:35 / /mnt/other rw - virtiofs other rw"),
+			want:  map[string]string{},
+		},
+		{
+			name:  "host shared at a second mount point",
+			table: table("195 125 0:35 "+project+" "+project+" rw - virtiofs mac rw", "196 125 0:35 / /mnt/mac rw - virtiofs mac rw"),
+			want:  map[string]string{project: project, "/mnt/mac": "/"},
+		},
+		{name: "no mount of the host", table: table(), want: map[string]string{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseMountTable(test.table)
+			if err != nil || !reflect.DeepEqual(got, test.want) {
+				t.Errorf("parseMountTable = %q, %v, want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestParseMountTableRefusesWhatItCannotRead(t *testing.T) {
+	const project = "/Users/dev/Project/api"
+	tests := []struct {
+		name  string
+		table string
+	}{
+		{name: "empty table", table: ""},
+		{name: "error text", table: "cat: /proc/self/mountinfo: No such file or directory\n"},
+		{name: "entry without the end of the optional fields", table: table("195 125 0:35 / / rw shared:1 virtiofs mac rw x")},
+		{name: "entry without a source", table: table("195 125 0:35 / / rw - virtiofs")},
+		{name: "end of the optional fields too early", table: table("195 125 0:35 / - rw x y virtiofs mac rw")},
+		{name: "blank line in the table", table: table("", "195 125 0:35 / / rw - virtiofs mac rw")},
+		{name: "cut escape", table: table(`195 125 0:35 /Users/dev/a\04 /Users/dev/a\04 rw - virtiofs mac rw`)},
+		{name: "escape that is not octal", table: table(`195 125 0:35 /Users/dev/a\089 /Users/dev/a\089 rw - virtiofs mac rw`)},
+		{name: "escape above one byte", table: table(`195 125 0:35 /Users/dev/a\777 /Users/dev/a\777 rw - virtiofs mac rw`)},
+		{
+			name: "second mount over the project",
+			table: table(
+				"195 125 0:35 "+project+" "+project+" rw - virtiofs mac rw",
+				"196 195 0:35 /Users/dev/.ssh "+project+" rw - virtiofs mac rw",
+			),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseMountTable(test.table)
+			if !errors.Is(err, ErrMountTable) || got != nil {
+				t.Errorf("parseMountTable(%q) = %q, %v, want %v", test.table, got, err, ErrMountTable)
+			}
+		})
+	}
+}
+
+func TestMountsAndActiveMountsReadOrb(t *testing.T) {
+	const project = "/Users/dev/Project/api"
+	useFakeCLI(t, "if [ \"$1\" = list ]; then printf '%s\\n' '"+machineList+"'\n"+
+		"else echo '195 125 0:35 "+project+" "+project+" rw - virtiofs mac rw'; fi\n")
+	client := New(testPrefix)
+	ctx := context.Background()
+	want := map[string]string{project: project}
+
+	mounts, err := client.Mounts(ctx)
+	if err != nil || !reflect.DeepEqual(mounts["orbit-api-1d9b22c9"], want) {
+		t.Errorf("Mounts = %v, %v, want %v for orbit-api-1d9b22c9", mounts, err, want)
+	}
+	active, err := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
+	if err != nil || !reflect.DeepEqual(active, want) {
+		t.Errorf("ActiveMounts = %v, %v, want %v", active, err, want)
 	}
 }
 
@@ -171,6 +373,9 @@ func TestGuardsRunNoCommand(t *testing.T) {
 	if err := client.Delete(ctx, "ubuntu"); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("Delete of a foreign machine = %v, want %v", err, ErrForeignMachine)
 	}
+	if _, err := client.ActiveMounts(ctx, "ubuntu"); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("ActiveMounts of a foreign machine = %v, want %v", err, ErrForeignMachine)
+	}
 	if err := client.RunAsRoot(ctx, "ubuntu", []byte("true\n")); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("RunAsRoot in a foreign machine = %v, want %v", err, ErrForeignMachine)
 	}
@@ -190,11 +395,15 @@ func TestFailedCommandCarriesStderr(t *testing.T) {
 	client := New(testPrefix)
 	ctx := context.Background()
 	_, existsErr := client.Exists(ctx, "orbit-api-1d9b22c9")
+	_, mountsErr := client.Mounts(ctx)
+	_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
 	failures := map[string]error{
-		"Create":    client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
-		"Exists":    existsErr,
-		"Delete":    client.Delete(ctx, "orbit-api-1d9b22c9"),
-		"RunAsRoot": client.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
+		"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
+		"Exists":       existsErr,
+		"Mounts":       mountsErr,
+		"ActiveMounts": activeMountsErr,
+		"Delete":       client.Delete(ctx, "orbit-api-1d9b22c9"),
+		"RunAsRoot":    client.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
 	}
 
 	for operation, err := range failures {

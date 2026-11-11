@@ -210,3 +210,103 @@ func TestValidateProjectDirHasTwoIndependentRules(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateNotNested(t *testing.T) {
+	sandboxes := []string{"/Users/dev/Project/orbit", "/System/Volumes/Data/Users/dev/Project/orbit", "/private/tmp/work"}
+	tests := []struct {
+		name      string
+		dir       string
+		sandboxes []string
+		want      error
+	}{
+		{name: "no sandbox", dir: "/Users/dev/Project/api"},
+		{name: "sibling of a sandbox", dir: "/Users/dev/Project/api", sandboxes: sandboxes},
+		{name: "prefix look-alike of a sandbox", dir: "/Users/dev/Project/orbitx", sandboxes: sandboxes},
+		{name: "child of a prefix look-alike", dir: "/Users/dev/Project/orbit-2/sub", sandboxes: sandboxes},
+		{name: "name with two dots in a sibling", dir: "/Users/dev/Project/..orbit", sandboxes: sandboxes},
+		{name: "prefix of the name of a sandbox", dir: "/Users/dev/Project/orb", sandboxes: sandboxes},
+		{name: "prefix of a sandbox in a parent", dir: "/private/tm", sandboxes: sandboxes},
+		{name: "sibling of the parent of a sandbox", dir: "/Users/dev/Projects", sandboxes: sandboxes},
+
+		{name: "child of a sandbox", dir: "/Users/dev/Project/orbit/sub", sandboxes: sandboxes, want: ErrNestedProjectDir},
+		{name: "deep child of a sandbox", dir: "/Users/dev/Project/orbit/a/b/c/d", sandboxes: sandboxes, want: ErrNestedProjectDir},
+		{name: "project directory of another sandbox", dir: "/private/tmp/work", sandboxes: sandboxes, want: ErrNestedProjectDir},
+		{name: "child of a sandbox on the data volume", dir: "/System/Volumes/Data/Users/dev/Project/orbit/sub", sandboxes: sandboxes, want: ErrNestedProjectDir},
+		{name: "every directory when a sandbox mounts root", dir: "/Users/dev/Project/api", sandboxes: []string{"/"}, want: ErrNestedProjectDir},
+		{name: "child of a sandbox with a dot directory", dir: "/Users/dev/Project/orbit/.git", sandboxes: sandboxes, want: ErrNestedProjectDir},
+		{name: "root mounted by another sandbox", dir: "/", sandboxes: []string{"/"}, want: ErrNestedProjectDir},
+
+		{name: "parent of a sandbox", dir: "/Users/dev/Project", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "grandparent of a sandbox", dir: "/Users/dev", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "home-like ancestor of a sandbox", dir: "/Users", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "root above every sandbox", dir: "/", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "parent of a sandbox on the data volume", dir: "/System/Volumes/Data/Users/dev", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "data volume above a sandbox", dir: "/System/Volumes/Data", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "parent of a sandbox in a temporary directory", dir: "/private/tmp", sandboxes: sandboxes, want: ErrContainsProjectDir},
+		{name: "parent of a sandbox with a dot directory", dir: "/Users/dev/Project/orbit", sandboxes: []string{"/Users/dev/Project/orbit/.git"}, want: ErrContainsProjectDir},
+		{name: "ancestor of a deep sandbox", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev/Project/a/b/c/d"}, want: ErrContainsProjectDir},
+		{name: "parent of one of several sandboxes", dir: "/srv", sandboxes: []string{"/Users/dev/Project/orbit", "/srv/work"}, want: ErrContainsProjectDir},
+
+		{name: "relative directory", dir: "Project/orbit/sub", sandboxes: sandboxes, want: ErrPathNotClean},
+		{name: "directory with dot dot", dir: "/Users/dev/Project/orbit/sub/..", sandboxes: sandboxes, want: ErrPathNotClean},
+		{name: "directory with a trailing slash", dir: "/Users/dev/Project/orbit/sub/", sandboxes: sandboxes, want: ErrPathNotClean},
+		{name: "empty directory", dir: "", sandboxes: sandboxes, want: ErrPathNotClean},
+		{name: "sandbox with dot dot", dir: "/Users/dev/Project/api", sandboxes: []string{"/Users/dev/Project/orbit/../api"}, want: ErrPathNotClean},
+		{name: "relative sandbox", dir: "/Users/dev/Project/api", sandboxes: []string{"Project"}, want: ErrPathNotClean},
+		{name: "empty sandbox", dir: "/Users/dev/Project/api", sandboxes: []string{""}, want: ErrPathNotClean},
+		{name: "parent of a sandbox with dot dot", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev/Project/orbit/.."}, want: ErrPathNotClean},
+		{name: "parent of a sandbox with a trailing slash", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev/Project/orbit/"}, want: ErrPathNotClean},
+		{name: "parent with a trailing slash", dir: "/Users/dev/Project/", sandboxes: sandboxes, want: ErrPathNotClean},
+		{name: "sandbox in home shorthand", dir: "/Users/dev/Project", sandboxes: []string{"~/Project/orbit"}, want: ErrPathNotClean},
+		{name: "sandbox with a dot segment", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev/./Project/orbit"}, want: ErrPathNotClean},
+		{name: "sandbox with a double slash", dir: "/Users/dev/Project", sandboxes: []string{"/Users/dev//Project/orbit"}, want: ErrPathNotClean},
+		{name: "unrelated directory beside a sandbox that is not clean", dir: "/srv/api", sandboxes: []string{"/Users/dev/Project/orbit", "Project/orbit"}, want: ErrPathNotClean},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateNotNested(test.dir, test.sandboxes)
+			if !errors.Is(err, test.want) {
+				t.Errorf("ValidateNotNested(%q, %q) = %v, want %v", test.dir, test.sandboxes, err, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateMounts(t *testing.T) {
+	const dir = "/Users/dev/Project/orbit"
+	tests := []struct {
+		name   string
+		dir    string
+		mounts map[string]string
+		want   error
+	}{
+		{name: "project directory at its own path", dir: dir, mounts: map[string]string{dir: dir}},
+
+		{name: "no mount", dir: dir, mounts: map[string]string{}, want: ErrMountMismatch},
+		{name: "no mount table", dir: dir, mounts: nil, want: ErrMountMismatch},
+		{name: "swapped for .ssh", dir: dir, mounts: map[string]string{dir: "/Users/dev/.ssh"}, want: ErrMountMismatch},
+		{name: "swapped for a sibling", dir: dir, mounts: map[string]string{dir: "/Users/dev/Project/secret"}, want: ErrMountMismatch},
+		{name: "swapped for root", dir: dir, mounts: map[string]string{dir: "/"}, want: ErrMountMismatch},
+		{name: "parent of the project", dir: dir, mounts: map[string]string{dir: "/Users/dev/Project"}, want: ErrMountMismatch},
+		{name: "child of the project", dir: dir, mounts: map[string]string{dir: dir + "/sub"}, want: ErrMountMismatch},
+		{name: "other spelling of the project", dir: dir, mounts: map[string]string{dir: "/System/Volumes/Data" + dir}, want: ErrMountMismatch},
+		{name: "project in another letter case", dir: dir, mounts: map[string]string{dir: strings.ToLower(dir)}, want: ErrMountMismatch},
+		{name: "project with a trailing slash", dir: dir, mounts: map[string]string{dir: dir + "/"}, want: ErrMountMismatch},
+		{name: "project at another path", dir: dir, mounts: map[string]string{"/mnt/mac" + dir: dir}, want: ErrMountMismatch},
+		{name: "project and a second mount", dir: dir, mounts: map[string]string{dir: dir, "/home/dev/.ssh": "/Users/dev/.ssh"}, want: ErrMountMismatch},
+		{name: "project twice", dir: dir, mounts: map[string]string{dir: dir, "/srv/orbit": dir}, want: ErrMountMismatch},
+		{name: "another directory at its own path", dir: dir, mounts: map[string]string{"/Users/dev/.ssh": "/Users/dev/.ssh"}, want: ErrMountMismatch},
+
+		{name: "empty project directory", dir: "", mounts: map[string]string{"": ""}, want: ErrPathNotClean},
+		{name: "relative project directory", dir: "Project/orbit", mounts: map[string]string{"Project/orbit": "Project/orbit"}, want: ErrPathNotClean},
+		{name: "project directory with dot dot", dir: dir + "/..", mounts: map[string]string{dir + "/..": dir + "/.."}, want: ErrPathNotClean},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateMounts(test.dir, test.mounts)
+			if !errors.Is(err, test.want) {
+				t.Errorf("ValidateMounts(%q, %v) = %v, want %v", test.dir, test.mounts, err, test.want)
+			}
+		})
+	}
+}
