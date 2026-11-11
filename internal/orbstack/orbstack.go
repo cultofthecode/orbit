@@ -43,11 +43,20 @@ const (
 // stateDir is the directory under $HOME through which orb finds OrbStack.
 const stateDir = ".orbstack"
 
-// forwardingVariables are the variables through which orb copies host
-// variables into a machine: each holds a colon-separated list of names, and
-// orb sets every named host variable in the command that it runs in the
-// machine. OrbStack 2.2.5 reads both, by exact name.
-var forwardingVariables = []string{"ORBENV", "WSLENV"}
+// strippedVariables are the host variables that execute removes from the
+// environment of orb, by exact name. OrbStack 2.2.5 copies each of them into
+// the command that it runs in a machine, as root and as the agent. ORBENV and
+// WSLENV hold a colon-separated list of names, and orb also copies every host
+// variable that they name. A proxy URL can hold a user name and a password,
+// and DOCKER_HOST points the Docker client in the machine at an endpoint of
+// the host.
+var strippedVariables = []string{
+	"ORBENV", "WSLENV",
+	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY",
+	"http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
+	"DOCKER_HOST",
+	"ELECTRON_RUN_AS_NODE",
+}
 
 // mountSeparator divides the source and the destination of a mount.
 const mountSeparator = ":"
@@ -499,12 +508,17 @@ func homeCause(h home) string {
 
 // execute runs orb with args and stdin and returns its standard output, also
 // when the command fails. orb gets the environment of the process without
-// the forwarding variables, so that no host variable reaches a machine. The
-// error of a failed command carries the standard error of orb.
+// strippedVariables: ORBENV, WSLENV, HTTP_PROXY, HTTPS_PROXY, ALL_PROXY,
+// FTP_PROXY and their lowercase forms, DOCKER_HOST, and ELECTRON_RUN_AS_NODE.
+// orb still copies the other host variables that it forwards by itself into
+// the machine: terminal values (TERM, TERM_PROGRAM, COLORTERM, and similar),
+// locale values (LANG, LC_*), __CF* values, COMMAND_MODE, and every other
+// DOCKER_* variable (OrbStack 2.2.5). The error of a failed command carries
+// the standard error of orb.
 func execute(ctx context.Context, args []string, stdin []byte) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, cli, args...)
-	cmd.Env = withoutForwarding(os.Environ())
+	cmd.Env = withoutStrippedVariables(os.Environ())
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -514,18 +528,18 @@ func execute(ctx context.Context, args []string, stdin []byte) (string, error) {
 	return stdout.String(), nil
 }
 
-// withoutForwarding returns a copy of environ, a list of NAME=value entries,
-// without every entry of a forwarding variable. It keeps every other entry,
-// also a name that differs from a forwarding variable only in letter case,
-// because orb reads the names exactly.
-func withoutForwarding(environ []string) []string {
-	return slices.DeleteFunc(slices.Clone(environ), isForwarding)
+// withoutStrippedVariables returns a copy of environ, a list of NAME=value
+// entries, without every entry of a stripped variable. It keeps every other
+// entry, also a name that differs from a stripped variable only in letter
+// case, because orb reads the names exactly.
+func withoutStrippedVariables(environ []string) []string {
+	return slices.DeleteFunc(slices.Clone(environ), isStripped)
 }
 
-// isForwarding reports whether entry sets a forwarding variable.
-func isForwarding(entry string) bool {
+// isStripped reports whether entry sets a stripped variable.
+func isStripped(entry string) bool {
 	name, _, _ := strings.Cut(entry, "=")
-	return slices.Contains(forwardingVariables, name)
+	return slices.Contains(strippedVariables, name)
 }
 
 // commandError wraps the error of the failed orb subcommand and appends what

@@ -967,14 +967,14 @@ func TestRunAsAgentPutsNoCallerValueOnTheCommandLine(t *testing.T) {
 	}
 }
 
-func TestWithoutForwarding(t *testing.T) {
+func TestWithoutStrippedVariables(t *testing.T) {
 	tests := []struct {
 		name    string
 		environ []string
 		want    []string
 	}{
 		{
-			name:    "no forwarding variable",
+			name:    "no stripped variable",
 			environ: []string{"HOME=/Users/dev", "PATH=/usr/bin"},
 			want:    []string{"HOME=/Users/dev", "PATH=/usr/bin"},
 		},
@@ -994,24 +994,51 @@ func TestWithoutForwarding(t *testing.T) {
 			want:    []string{"TOKEN=secret"},
 		},
 		{
+			name: "proxy URLs with a user name and a password",
+			environ: []string{
+				"HTTP_PROXY=http://u:pw@p:1", "HTTPS_PROXY=http://u:pw@p:1", "ALL_PROXY=socks5://u:pw@p:1", "FTP_PROXY=http://u:pw@p:1",
+				"http_proxy=http://u:pw@p:1", "https_proxy=http://u:pw@p:1", "all_proxy=socks5://u:pw@p:1", "ftp_proxy=http://u:pw@p:1",
+				"HOME=/Users/dev",
+			},
+			want: []string{"HOME=/Users/dev"},
+		},
+		{
+			name:    "DOCKER_HOST and ELECTRON_RUN_AS_NODE",
+			environ: []string{"DOCKER_HOST=ssh://u@host", "ELECTRON_RUN_AS_NODE=1", "HOME=/Users/dev"},
+			want:    []string{"HOME=/Users/dev"},
+		},
+		{
+			name:    "a stripped variable twice with different values",
+			environ: []string{"HTTPS_PROXY=http://a@p:1", "HTTPS_PROXY=http://u:pw@p:1", "DOCKER_HOST=", "DOCKER_HOST=tcp://h:2375"},
+			want:    []string{},
+		},
+		{
 			name:    "entry without a value",
-			environ: []string{"ORBENV", "WSLENV", "TOKEN=secret"},
+			environ: []string{"ORBENV", "WSLENV", "HTTP_PROXY", "DOCKER_HOST", "TOKEN=secret"},
 			want:    []string{"TOKEN=secret"},
 		},
 		{
 			name:    "value that holds an equals sign",
-			environ: []string{"ORBENV=TOKEN=x", "TOKEN=secret"},
+			environ: []string{"ORBENV=TOKEN=x", "ALL_PROXY=http://u:p=w@p:1", "TOKEN=secret"},
 			want:    []string{"TOKEN=secret"},
 		},
 		{
-			name:    "similar names that orb does not read",
-			environ: []string{"orbenv=TOKEN", "Wslenv=TOKEN", "ORBENV_X=TOKEN", "XORBENV=TOKEN", " ORBENV=TOKEN", "ORBENV =TOKEN"},
-			want:    []string{"orbenv=TOKEN", "Wslenv=TOKEN", "ORBENV_X=TOKEN", "XORBENV=TOKEN", " ORBENV=TOKEN", "ORBENV =TOKEN"},
+			name: "similar names that orb does not read",
+			environ: []string{
+				"orbenv=TOKEN", "Wslenv=TOKEN", "ORBENV_X=TOKEN", "XORBENV=TOKEN", " ORBENV=TOKEN", "ORBENV =TOKEN",
+				"Http_Proxy=http://u:pw@p:1", "HTTP_proxy=http://u:pw@p:1", "XHTTP_PROXY=x", "HTTP_PROXY_X=x",
+				"NO_PROXY=localhost", "no_proxy=localhost", "docker_host=x", "electron_run_as_node=1",
+			},
+			want: []string{
+				"orbenv=TOKEN", "Wslenv=TOKEN", "ORBENV_X=TOKEN", "XORBENV=TOKEN", " ORBENV=TOKEN", "ORBENV =TOKEN",
+				"Http_Proxy=http://u:pw@p:1", "HTTP_proxy=http://u:pw@p:1", "XHTTP_PROXY=x", "HTTP_PROXY_X=x",
+				"NO_PROXY=localhost", "no_proxy=localhost", "docker_host=x", "electron_run_as_node=1",
+			},
 		},
 		{
-			name:    "forwarding name in a value",
-			environ: []string{"NOTE=ORBENV=TOKEN", "=ORBENV"},
-			want:    []string{"NOTE=ORBENV=TOKEN", "=ORBENV"},
+			name:    "stripped name in a value",
+			environ: []string{"NOTE=ORBENV=TOKEN", "=ORBENV", "NOTE2=HTTP_PROXY=http://u:pw@p:1", "=DOCKER_HOST"},
+			want:    []string{"NOTE=ORBENV=TOKEN", "=ORBENV", "NOTE2=HTTP_PROXY=http://u:pw@p:1", "=DOCKER_HOST"},
 		},
 		{
 			name:    "empty environment",
@@ -1022,32 +1049,36 @@ func TestWithoutForwarding(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			environ := slices.Clone(test.environ)
-			got := withoutForwarding(environ)
+			got := withoutStrippedVariables(environ)
 			if !slices.Equal(got, test.want) {
-				t.Errorf("withoutForwarding(%q) = %q, want %q", test.environ, got, test.want)
+				t.Errorf("withoutStrippedVariables(%q) = %q, want %q", test.environ, got, test.want)
 			}
 			if !slices.Equal(environ, test.environ) {
-				t.Errorf("withoutForwarding changed its argument to %q", environ)
+				t.Errorf("withoutStrippedVariables changed its argument to %q", environ)
 			}
 		})
 	}
 }
 
-// TestNoCommandCarriesAForwardingVariable sets ORBENV and WSLENV to name a
-// variable of the test process, runs every operation of the client against
-// a fake orb that records its environment, and checks that no command of
-// orb, orb status included, gets a forwarding variable, and that every
-// command keeps the rest of the environment.
-func TestNoCommandCarriesAForwardingVariable(t *testing.T) {
+// TestNoCommandCarriesAStrippedVariable sets every stripped variable, with
+// ORBENV and WSLENV naming a variable of the test process, runs every
+// operation of the client against a fake orb that records its environment,
+// and checks that no command of orb, orb status included, gets a stripped
+// variable, and that every command keeps the rest of the environment.
+func TestNoCommandCarriesAStrippedVariable(t *testing.T) {
 	const machineName = "orbit-api-1d9b22c9"
 	dir := t.TempDir()
 	useBareFakeCLI(t, "/usr/bin/env > \"$(/usr/bin/mktemp '"+dir+"/env.XXXXXX')\"\n"+
 		reportsRunning+
 		"if [ \"$1\" = list ] && [ \"$2\" = --format ]; then echo '[]'; exit 0; fi\n"+
 		"if [ \"$5\" = cat ]; then echo '195 125 0:35 /p /p rw - virtiofs mac rw'; fi\n")
+	for _, name := range strippedVariables {
+		t.Setenv(name, "http://orbit:forwarding-marker@proxy.invalid:3128")
+	}
 	t.Setenv("ORBIT_TEST_SECRET", "forwarding-marker")
 	t.Setenv("ORBENV", "ORBIT_TEST_SECRET:HOME")
 	t.Setenv("WSLENV", "ORBIT_TEST_SECRET/u")
+	t.Setenv("NO_PROXY", "localhost")
 	client := New(testPrefix)
 	ctx := context.Background()
 
@@ -1080,11 +1111,11 @@ func TestNoCommandCarriesAForwardingVariable(t *testing.T) {
 		}
 		environ := strings.Split(strings.TrimSpace(string(content)), "\n")
 		for _, entry := range environ {
-			if isForwarding(entry) {
+			if isStripped(entry) {
 				t.Errorf("orb got %q", entry)
 			}
 		}
-		for _, kept := range []string{"ORBIT_TEST_SECRET=forwarding-marker", "HOME=" + os.Getenv("HOME")} {
+		for _, kept := range []string{"ORBIT_TEST_SECRET=forwarding-marker", "NO_PROXY=localhost", "HOME=" + os.Getenv("HOME")} {
 			if !slices.Contains(environ, kept) {
 				t.Errorf("orb did not get %q", kept)
 			}

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -226,23 +227,30 @@ func TestAnotherHomeNamesHomeWhileOrbStackRuns(t *testing.T) {
 	}
 }
 
-// TestNoHostVariableReachesTheMachine sets ORBENV and WSLENV to name a
-// variable of the test process. A script of RunAsRoot and one of RunAsAgent
-// find the variable unset in the machine. orb run directly with the same
-// environment does forward it, so the test fails when the client stops
-// removing the forwarding variables.
-func TestNoHostVariableReachesTheMachine(t *testing.T) {
+// TestNoStrippedVariableReachesTheMachine sets every stripped variable: ORBENV
+// and WSLENV name a variable of the test process, and each other one holds a
+// proxy URL with a user name and a marker as the password. A script of
+// RunAsRoot and one of RunAsAgent find no variable that holds the marker in
+// the machine. orb run directly with the same environment does forward each
+// of them, so the test fails when the client stops removing one.
+func TestNoStrippedVariableReachesTheMachine(t *testing.T) {
 	const variable = "ORBIT_IT_FORWARDED"
+	namingVariables := []string{"ORBENV", "WSLENV"}
 	marker := "marker-" + strings.ToLower(rand.Text()[:8])
+	value := "http://orbit:" + marker + "@proxy.invalid:3128"
 	client, name := newMachine(t, hostDir(t))
 	ctx := testContext(t)
 	if err := client.RunAsRoot(ctx, name, []byte("set -eu\nuseradd --create-home --shell /bin/bash --user-group "+AgentUser+"\n")); err != nil {
 		t.Fatalf("create the agent user: %v", err)
 	}
 	t.Setenv(variable, marker)
-	t.Setenv("ORBENV", variable)
-	t.Setenv("WSLENV", variable)
-	script := []byte("printf '%s' \"${" + variable + "-unset}\" > \"$HOME/forwarded\"\n")
+	for _, stripped := range strippedVariables {
+		t.Setenv(stripped, value)
+	}
+	for _, naming := range namingVariables {
+		t.Setenv(naming, variable)
+	}
+	script := []byte("env > \"$HOME/environment\"\n")
 
 	if err := client.RunAsRoot(ctx, name, script); err != nil {
 		t.Fatalf("RunAsRoot = %v", err)
@@ -250,19 +258,32 @@ func TestNoHostVariableReachesTheMachine(t *testing.T) {
 	if err := client.RunAsAgent(ctx, name, script); err != nil {
 		t.Fatalf("RunAsAgent = %v", err)
 	}
-	for _, file := range []string{"/root/forwarded", "/home/" + AgentUser + "/forwarded"} {
-		if output, err := inMachine(ctx, name, "cat", file); err != nil || output != "unset" {
-			t.Errorf("%s in the machine = %q, %v, want %q", file, output, err, "unset")
+	for _, file := range []string{"/root/environment", "/home/" + AgentUser + "/environment"} {
+		output, err := inMachine(ctx, name, "cat", file)
+		if err != nil || !strings.Contains(output, "HOME=") || strings.Contains(output, marker) {
+			t.Errorf("%s in the machine = %q, %v, want an environment without %q", file, output, err, marker)
 		}
 	}
 
-	for _, forwarding := range forwardingVariables {
-		t.Run("orb forwards with "+forwarding, func(t *testing.T) {
-			t.Setenv("ORBENV", "")
-			t.Setenv("WSLENV", "")
-			t.Setenv(forwarding, variable)
+	output, err := inMachine(ctx, name, "env")
+	if err != nil {
+		t.Fatalf("orb env = %v", err)
+	}
+	direct := strings.Split(output, "\n")
+	for _, stripped := range strippedVariables {
+		t.Run("orb forwards with "+stripped, func(t *testing.T) {
+			if !slices.Contains(namingVariables, stripped) {
+				if !slices.Contains(direct, stripped+"="+value) {
+					t.Errorf("orb with %s=%s did not forward it: the test no longer proves the removal", stripped, value)
+				}
+				return
+			}
+			for _, naming := range namingVariables {
+				t.Setenv(naming, "")
+			}
+			t.Setenv(stripped, variable)
 			if output, err := inMachine(ctx, name, "printenv", variable); err != nil || output != marker {
-				t.Errorf("orb with %s=%s printed %q, %v, want %q: the test no longer proves the removal", forwarding, variable, output, err, marker)
+				t.Errorf("orb with %s=%s printed %q, %v, want %q: the test no longer proves the removal", stripped, variable, output, err, marker)
 			}
 		})
 	}
