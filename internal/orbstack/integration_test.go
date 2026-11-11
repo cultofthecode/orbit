@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -25,6 +26,32 @@ const createTimeout = 5 * time.Minute
 // integrationTimeout bounds the steps of one integration test after its
 // machine exists.
 const integrationTimeout = 3 * time.Minute
+
+// initLockPath is the file that serializes the integration runs on one
+// host. A test whose machine makes init refuse every directory holds an
+// exclusive lock on it; every test in cmd/orbit that runs init holds a
+// shared lock on the same path.
+const initLockPath = "/tmp/orbit-integration-init.lock"
+
+// blockInit holds the exclusive lock on initLockPath until the end of t, so
+// that no init test of any run on the host runs while the machine of t
+// exists. Call it before newMachine: the lock is released after the
+// machine is deleted.
+func blockInit(t *testing.T) {
+	t.Helper()
+	file, err := os.OpenFile(initLockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+		return
+	}
+	t.Logf("waiting for the integration tests of other runs that hold the init lock (%s)", initLockPath)
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatalf("lock %s: %v", initLockPath, err)
+	}
+}
 
 // testContext returns a context that ends after integrationTimeout.
 func testContext(t *testing.T) context.Context {
@@ -125,8 +152,11 @@ func TestCreateMountsOnlyTheDirectoryAtItsOwnPath(t *testing.T) {
 // agent swapped for a relative symlink to another directory after the check
 // and before the mount. The configuration of OrbStack still names the
 // checked path; the active mounts show the target of the symlink. A path
-// swapped between two starts does not show there.
+// swapped between two starts does not show there. While the machine exists,
+// init refuses every directory, so the test blocks the init tests of every
+// run on the host.
 func TestActiveMountsShowASwappedPath(t *testing.T) {
+	blockInit(t)
 	base := hostDir(t)
 	checked := filepath.Join(base, "project", "sub")
 	secret := filepath.Join(base, "secret")
