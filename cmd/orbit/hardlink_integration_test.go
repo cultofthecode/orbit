@@ -18,9 +18,8 @@ import (
 
 // temporaryHome makes a new home directory with a .claude directory in it,
 // makes it the home directory of the environment of the test, and returns
-// its canonical path. orb finds OrbStack through $HOME/.orbstack (#70), so
-// that path is a symlink to the one of the account home.
-func temporaryHome(t *testing.T) string {
+// its canonical path and the account home.
+func temporaryHome(t *testing.T) (string, string) {
 	t.Helper()
 	account, err := user.Current()
 	if err != nil {
@@ -30,17 +29,77 @@ func temporaryHome(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(account.HomeDir, ".orbstack"), filepath.Join(home, ".orbstack")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(home, ".claude", "file-history", "one"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(home, ".claude", "file-history", "two"), 0o700); err != nil {
-		t.Fatal(err)
+	for _, dir := range []string{"one", "two"} {
+		if err := os.MkdirAll(filepath.Join(home, ".claude", "file-history", dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("HOME", home)
-	return home
+	return home, account.HomeDir
+}
+
+// accountHomeMachines runs every call of machines with HOME set to the
+// account home: orb finds OrbStack through $HOME and reports a stopped
+// OrbStack under any other HOME (#70), while the handler reads the
+// temporary HOME of the test before it asks OrbStack anything. The test
+// runs no other goroutine that reads HOME.
+type accountHomeMachines struct {
+	machines *orbstack.Client
+	home     string
+}
+
+// withAccountHome runs call with HOME set to the account home and restores
+// HOME afterwards.
+func (m accountHomeMachines) withAccountHome(call func() error) error {
+	previous := os.Getenv("HOME")
+	if err := os.Setenv("HOME", m.home); err != nil {
+		return err
+	}
+	defer func() { _ = os.Setenv("HOME", previous) }()
+	return call()
+}
+
+func (m accountHomeMachines) Mounts(ctx context.Context) (map[string]map[string]string, error) {
+	var mounts map[string]map[string]string
+	err := m.withAccountHome(func() (err error) {
+		mounts, err = m.machines.Mounts(ctx)
+		return err
+	})
+	return mounts, err
+}
+
+func (m accountHomeMachines) ActiveMounts(ctx context.Context, name string) (map[string]string, error) {
+	var mounts map[string]string
+	err := m.withAccountHome(func() (err error) {
+		mounts, err = m.machines.ActiveMounts(ctx, name)
+		return err
+	})
+	return mounts, err
+}
+
+func (m accountHomeMachines) Exists(ctx context.Context, name string) (bool, error) {
+	var exists bool
+	err := m.withAccountHome(func() (err error) {
+		exists, err = m.machines.Exists(ctx, name)
+		return err
+	})
+	return exists, err
+}
+
+func (m accountHomeMachines) Create(ctx context.Context, name, dir string) error {
+	return m.withAccountHome(func() error { return m.machines.Create(ctx, name, dir) })
+}
+
+func (m accountHomeMachines) RunAsRoot(ctx context.Context, name string, script []byte) error {
+	return m.withAccountHome(func() error { return m.machines.RunAsRoot(ctx, name, script) })
+}
+
+func (m accountHomeMachines) RunAsAgent(ctx context.Context, name string, script []byte) error {
+	return m.withAccountHome(func() error { return m.machines.RunAsAgent(ctx, name, script) })
+}
+
+func (m accountHomeMachines) Delete(ctx context.Context, name string) error {
+	return m.withAccountHome(func() error { return m.machines.Delete(ctx, name) })
 }
 
 // writeHardLinkedFile writes the empty file path, with a second hard link at
@@ -64,10 +123,11 @@ func writeHardLinkedFile(t *testing.T, path, link string) {
 func TestInitRefusesAHardLinkedCredentialFile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
 	t.Cleanup(cancel)
-	home := temporaryHome(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
-	handler := initHandler(client, claudeRegistry(t))
+	home, accountHome := temporaryHome(t)
+	machines := accountHomeMachines{machines: client, home: accountHome}
+	handler := initHandler(machines, claudeRegistry(t))
 	settings := filepath.Join(home, ".claude", "settings.json")
 	link := filepath.Join(dir, "settings.json")
 	writeHardLinkedFile(t, settings, link)
@@ -76,7 +136,8 @@ func TestInitRefusesAHardLinkedCredentialFile(t *testing.T) {
 	if !errors.Is(err, sandbox.ErrHardLinkedFile) || !strings.Contains(err.Error(), settings) {
 		t.Fatalf("Handle with a hard link to %s = %+v, %v, want %v naming it", settings, refused, err, sandbox.ErrHardLinkedFile)
 	}
-	if exists, err := client.Exists(ctx, name); err != nil || exists {
+	t.Logf("refused: %v", err)
+	if exists, err := machines.Exists(ctx, name); err != nil || exists {
 		t.Fatalf("Exists(%q) after the refusal = %v, %v, want false", name, exists, err)
 	}
 
