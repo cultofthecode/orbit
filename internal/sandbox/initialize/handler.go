@@ -328,7 +328,11 @@ func (h Handler) loadFacts(path string) (sandbox.ProjectDir, error) {
 	if err != nil {
 		return sandbox.ProjectDir{}, fmt.Errorf("protected directory: %w", err)
 	}
-	return sandbox.ProjectDir{Path: dir, OwnerUID: owner, UserUID: uid, Homes: homes, Protected: protected}, nil
+	fileDirs, err := protectedFileDirSpellings(homes)
+	if err != nil {
+		return sandbox.ProjectDir{}, fmt.Errorf("protected file: %w", err)
+	}
+	return sandbox.ProjectDir{Path: dir, OwnerUID: owner, UserUID: uid, Homes: homes, Protected: protected, ProtectedFileDirs: fileDirs}, nil
 }
 
 // loadUser returns the uid of the user who runs Orbit and every spelling of
@@ -380,21 +384,28 @@ func homeSpellings(accountHome string) ([]string, error) {
 }
 
 // protectedSpellings returns every spelling of the directories that the
-// protected paths of homes resolve to. It leaves out a protected path that
-// does not exist.
+// protected paths of homes resolve to. For a protected path that does not
+// exist, it returns every spelling of its nearest existing parent, joined
+// with the rest of the path.
 func protectedSpellings(homes []string) ([]string, error) {
-	return existingSpellings(protectedPaths(homes))
+	return pathSpellings(protectedPaths(homes))
 }
 
-// existingSpellings returns every spelling of the directories that paths
-// resolve to. It leaves out a path that does not exist.
-func existingSpellings(paths []string) ([]string, error) {
+// protectedFileDirSpellings returns every spelling of the directories that
+// hold the files that the protected file paths of homes resolve to. It
+// follows the symlinks without opening the files, and it leaves out a path
+// that does not exist.
+func protectedFileDirSpellings(homes []string) ([]string, error) {
 	var resolved []string
-	for _, path := range paths {
-		spellings, err := dirSpellings(path)
+	for _, path := range protectedFilePaths(homes) {
+		target, err := filepath.EvalSymlinks(path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
+		if err != nil {
+			return nil, err
+		}
+		spellings, err := dirSpellings(filepath.Dir(target))
 		if err != nil {
 			return nil, err
 		}
@@ -408,6 +419,15 @@ func protectedPaths(homes []string) []string {
 	var paths []string
 	for _, home := range homes {
 		paths = append(paths, sandbox.ProtectedDirs(home)...)
+	}
+	return paths
+}
+
+// protectedFilePaths returns the protected file paths of every home in homes.
+func protectedFilePaths(homes []string) []string {
+	var paths []string
+	for _, home := range homes {
+		paths = append(paths, sandbox.ProtectedFiles(home)...)
 	}
 	return paths
 }

@@ -46,6 +46,8 @@ var (
 	// ErrProtectedAncestor reports a directory that contains a protected
 	// directory.
 	ErrProtectedAncestor = errors.New("project directory contains a protected directory")
+	// ErrProtectedFile reports a directory that contains a protected file.
+	ErrProtectedFile = errors.New("project directory contains a protected file")
 	// ErrNotOwner reports a directory that the user does not own.
 	ErrNotOwner = errors.New("project directory is not owned by the user")
 	// ErrNestedProjectDir reports a directory inside the project directory
@@ -63,8 +65,13 @@ var (
 )
 
 // protectedNames are the directories of a home directory that never enter a
-// sandbox, with everything inside them.
-var protectedNames = []string{".claude", ".ssh"}
+// sandbox, with everything inside them: the credentials and the
+// configuration of the agent, SSH, AWS, GnuPG, and the GitHub CLI.
+var protectedNames = []string{".aws", ".claude", filepath.Join(".config", "gh"), ".gnupg", ".ssh"}
+
+// protectedFileNames are the files of a home directory that never enter a
+// sandbox: the configuration and the state of the agent.
+var protectedFileNames = []string{".claude.json"}
 
 // outsideSlug matches every run of characters that a slug cannot hold.
 var outsideSlug = regexp.MustCompile(`[^a-z0-9]+`)
@@ -87,6 +94,10 @@ type ProjectDir struct {
 	// Protected holds every spelling of the directory that each path of
 	// ProtectedDirs resolves to, for the paths that exist.
 	Protected []string
+	// ProtectedFileDirs holds every spelling of the directory that holds
+	// the file that each path of ProtectedFiles resolves to, for the paths
+	// that exist.
+	ProtectedFileDirs []string
 }
 
 // MachineName returns the name of the machine of a project directory:
@@ -103,20 +114,26 @@ func MachineName(resolvedDir string) string {
 // enter a sandbox. A handler resolves each of them, because a protected
 // directory can be a symlink to a directory somewhere else.
 func ProtectedDirs(home string) []string {
-	dirs := make([]string, len(protectedNames))
-	for i, name := range protectedNames {
-		dirs[i] = filepath.Join(home, name)
-	}
-	return dirs
+	return joinAll(home, protectedNames)
+}
+
+// ProtectedFiles returns the paths of the files in the home directory home
+// that never enter a sandbox. A handler resolves each of them, because a
+// protected file can be a symlink to a file in another directory.
+func ProtectedFiles(home string) []string {
+	return joinAll(home, protectedFileNames)
 }
 
 // ValidateProjectDir reports whether the project directory dir may be
 // mounted into a sandbox. Two independent rules must both accept it. The
 // first refuses the root of the file system; a home directory and every
-// directory that contains one; and a protected directory, every directory
-// inside one, and every directory that contains one. The protected
-// directories are ProtectedDirs of every home and the paths in dir.Protected.
-// The second refuses a directory that the user does not own. Each refusal
+// directory that contains one; a protected directory, every directory inside
+// one, and every directory that contains one; and every directory that
+// contains a protected file. The protected directories are ProtectedDirs of
+// every home and the paths in dir.Protected. The directories that hold a
+// protected file are the homes and the paths in dir.ProtectedFileDirs; a
+// directory inside one of them does not contain the file, so it passes. The
+// second refuses a directory that the user does not own. Each refusal
 // wraps the sentinel error of its reason. Paths are compared by their
 // components, so every path must be in a spelling that the system reports.
 func ValidateProjectDir(dir ProjectDir) error {
@@ -170,7 +187,7 @@ func checkFacts(dir ProjectDir) error {
 	if len(dir.Homes) == 0 {
 		return ErrNoHome
 	}
-	return checkPaths(slices.Concat([]string{dir.Path}, dir.Homes, dir.Protected))
+	return checkPaths(slices.Concat([]string{dir.Path}, dir.Homes, dir.Protected, dir.ProtectedFileDirs))
 }
 
 // checkPaths refuses a path that is not absolute and clean.
@@ -198,6 +215,8 @@ func refusal(dir ProjectDir) error {
 		return ErrProtectedDir
 	case containsAny(dir.Path, protected):
 		return ErrProtectedAncestor
+	case containsAny(dir.Path, protectedFileDirs(dir)):
+		return ErrProtectedFile
 	case dir.OwnerUID != dir.UserUID:
 		return ErrNotOwner
 	}
@@ -212,6 +231,27 @@ func allProtected(dir ProjectDir) []string {
 		protected = append(protected, ProtectedDirs(home)...)
 	}
 	return protected
+}
+
+// protectedFileDirs returns the directories that hold the protected files of
+// every home of dir, followed by the resolved ones that the handler found.
+func protectedFileDirs(dir ProjectDir) []string {
+	dirs := slices.Clone(dir.ProtectedFileDirs)
+	for _, home := range dir.Homes {
+		for _, file := range ProtectedFiles(home) {
+			dirs = append(dirs, filepath.Dir(file))
+		}
+	}
+	return dirs
+}
+
+// joinAll returns dir joined with each of names.
+func joinAll(dir string, names []string) []string {
+	paths := make([]string, len(names))
+	for i, name := range names {
+		paths[i] = filepath.Join(dir, name)
+	}
+	return paths
 }
 
 // isWithinAny reports whether path is one of parents or lies inside one.
