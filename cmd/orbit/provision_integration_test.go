@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -28,6 +30,12 @@ import (
 // provisionTimeout bounds the provisioning test: two runs of the root
 // script, each with a package install, and the probes.
 const provisionTimeout = 10 * time.Minute
+
+// initLockPath is the file that serializes the integration runs on one
+// host: TestActiveMountsShowASwappedPath in internal/orbstack holds an
+// exclusive lock on the same path while its machine makes init refuse
+// every directory.
+const initLockPath = "/tmp/orbit-integration-init.lock"
 
 // macBridgeAddr is the address of the Mac on the bridge of OrbStack, as the
 // spike of 2026-11-10 found it reachable from a machine.
@@ -187,28 +195,20 @@ blocked "agent direct to 1.1.1.1 after the attempts of the agent" as_agent curl 
 `
 
 func TestInitProvisionsTheSandbox(t *testing.T) {
+	waitToRunInit(t)
 	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
 	t.Cleanup(cancel)
 	client := orbstack.New(sandbox.NamePrefix)
-	dir := projectDir(t)
-	name := sandbox.MachineName(dir)
-	if exists, err := client.Exists(ctx, name); err != nil || exists {
-		t.Fatalf("Exists(%q) before init = %v, %v, want false", name, exists, err)
-	}
-	t.Cleanup(func() {
-		if err := client.Delete(context.WithoutCancel(ctx), name); err != nil {
-			t.Errorf("Delete(%q) = %v", name, err)
-		}
-	})
+	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
 
 	first, err := handler.Handle(ctx, initialize.Input{Dir: dir})
 	if err != nil || !first.Created {
-		t.Fatalf("first Handle = %+v, %v, want a created sandbox", first, err)
+		t.Fatalf("first Handle = %+v, %v, want a created sandbox; machines that this test did not create: %s", first, err, otherMachines(ctx, client, name))
 	}
 	second, err := handler.Handle(ctx, initialize.Input{Dir: dir})
 	if err != nil || second.Created {
-		t.Fatalf("second Handle = %+v, %v, want the existing sandbox provisioned again", second, err)
+		t.Fatalf("second Handle = %+v, %v, want the existing sandbox provisioned again; machines that this test did not create: %s", second, err, otherMachines(ctx, client, name))
 	}
 
 	port := macPortReachableByRoot(ctx, t, client, name)
@@ -220,6 +220,39 @@ func TestInitProvisionsTheSandbox(t *testing.T) {
 	}
 	checkAgentWroteTheProject(t, dir)
 	checkProxyClosedFromTheMac(t, name)
+}
+
+// waitToRunInit holds a shared lock on initLockPath until the end of t. It
+// waits while a test of any run on the host holds the exclusive lock, so
+// that init does not refuse because of a machine of another run. Call it
+// before the deadline of the test starts.
+func waitToRunInit(t *testing.T) {
+	t.Helper()
+	file, err := os.OpenFile(initLockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err == nil {
+		return
+	}
+	t.Logf("waiting for a test of another run that blocks init (%s)", initLockPath)
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH); err != nil {
+		t.Fatalf("lock %s: %v", initLockPath, err)
+	}
+}
+
+// otherMachines returns the names of the machines on the host besides
+// name, for the failure message of an init test: init checks the mounts of
+// every machine, so a machine that the test did not create can make it
+// refuse.
+func otherMachines(ctx context.Context, client *orbstack.Client, name string) string {
+	mounts, err := client.Mounts(context.WithoutCancel(ctx))
+	if err != nil {
+		return fmt.Sprintf("unknown (%v)", err)
+	}
+	names := slices.DeleteFunc(slices.Sorted(maps.Keys(mounts)), func(machine string) bool { return machine == name })
+	return strings.Join(names, ", ")
 }
 
 // rootOnlyPaths returns rootOnlyFiles and the units and the harden script of
