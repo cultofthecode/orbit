@@ -83,6 +83,19 @@ var (
 	ErrUnexpectedState = errors.New("wait and try again")
 )
 
+// Errors of the host-side checks that run before Orbit creates or starts a
+// machine.
+var (
+	// ErrNotDirectory reports a project path that is not a directory.
+	ErrNotDirectory = errors.New("project path is not a directory")
+	// ErrLinkedSandboxDir reports another machine whose stored mount path
+	// passes through a symlink. Orbit stores canonical paths, so the host
+	// layout changed after that machine was created, and OrbStack follows
+	// the symlink at its next start. The slices refuse every project
+	// directory until the user fixes the path or deletes that machine.
+	ErrLinkedSandboxDir = errors.New("the project directory of another sandbox passes through a symlink")
+)
+
 // protectedNames are the directories of a home directory that never enter a
 // sandbox, with everything inside them: the credentials and the
 // configuration of the agent, SSH, AWS, GnuPG, and the GitHub CLI.

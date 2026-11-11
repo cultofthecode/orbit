@@ -4,7 +4,7 @@
 // by --agent as the agent user.
 package initialize
 
-import "errors"
+import "github.com/cultofthecode/orbit/internal/sandbox"
 
 // Input is the request to create the sandbox of a project directory.
 type Input struct {
@@ -27,19 +27,19 @@ type Output struct {
 	Created bool
 }
 
-// ErrNotDirectory reports a project path that is not a directory. An unknown
-// agent fails with the error of Handler.Agent. A refused project directory
-// fails with one of the errors of sandbox.ValidateProjectDir,
-// sandbox.ErrNestedProjectDir, sandbox.ErrContainsProjectDir, or
-// ErrLinkedSandboxDir, a missing one with fs.ErrNotExist, a variable that
-// moves a protected location to a path that Orbit cannot protect with
-// sandbox.ErrRelocatedPath, and a machine that mounts something else than
-// the project directory with sandbox.ErrMountMismatch.
-var ErrNotDirectory = errors.New("project path is not a directory")
+// ErrNotDirectory reports a project path that is not a directory. It is
+// sandbox.ErrNotDirectory. An unknown agent fails with the error of
+// Handler.Agent. A refused project directory fails with one of the errors of
+// sandbox.ValidateProjectDir, sandbox.ErrNestedProjectDir,
+// sandbox.ErrContainsProjectDir, or ErrLinkedSandboxDir, a missing one with
+// fs.ErrNotExist, a variable that moves a protected location to a path that
+// Orbit cannot protect with sandbox.ErrRelocatedPath, and a machine that
+// mounts something else than the project directory with
+// sandbox.ErrMountMismatch.
+var ErrNotDirectory = sandbox.ErrNotDirectory
 
 // ErrLinkedSandboxDir reports another machine whose stored mount path passes
-// through a symlink. Orbit stores canonical paths, so the host layout changed
-// after that machine was created, and OrbStack follows the symlink at its
-// next start. The handler refuses every project directory until the user
-// fixes the path or deletes that machine.
-var ErrLinkedSandboxDir = errors.New("the project directory of another sandbox passes through a symlink")
+// through a symlink. It is sandbox.ErrLinkedSandboxDir. The handler refuses
+// every project directory until the user fixes the path or deletes that
+// machine.
+var ErrLinkedSandboxDir = sandbox.ErrLinkedSandboxDir
