@@ -66,6 +66,11 @@ var (
 	// protected location to a value that is empty, relative, or has a ".."
 	// segment. Orbit cannot know where the tool puts the location then.
 	ErrRelocatedPath = errors.New("environment variable that moves a protected location is not an absolute path without a .. segment")
+	// ErrHardLinkedFile reports a protected file that has more than one hard
+	// link. Every link is the same file, and Orbit cannot find the other
+	// links without a scan of every volume, so a project directory could
+	// hold one.
+	ErrHardLinkedFile = errors.New("protected file has more than one hard link")
 )
 
 // protectedNames are the directories of a home directory that never enter a
@@ -145,6 +150,17 @@ type ProjectDir struct {
 	// directory that holds a symlink on the chain of such a symlink or on
 	// the path of RelocatedDirs and RelocatedFiles.
 	ProtectedFileDirs []string
+	// ProtectedFileLinks holds the link count of the file that each path of
+	// ProtectedFiles resolves to, for each of those files that exists.
+	ProtectedFileLinks []FileLinks
+}
+
+// FileLinks is the number of hard links of a file.
+type FileLinks struct {
+	// Path is the absolute, clean path of the file.
+	Path string
+	// Count is the link count that the system reports for the file.
+	Count uint64
 }
 
 // Relocated is a protected location that an environment variable moves.
@@ -197,8 +213,11 @@ func RelocatedFiles(lookup func(string) (string, bool)) ([]Relocated, error) {
 }
 
 // ValidateProjectDir reports whether the project directory dir may be
-// mounted into a sandbox. Two independent rules must both accept it. The
-// first refuses the root of the file system; a home directory and every
+// mounted into a sandbox. First it refuses every project directory while a
+// file in dir.ProtectedFileLinks has more than one hard link, with
+// ErrHardLinkedFile naming that file, because another link to it can lie
+// anywhere. Then two independent rules must both accept dir. The first
+// refuses the root of the file system; a home directory and every
 // directory that contains one; a protected directory, every directory inside
 // one, and every directory that contains one; and every directory that
 // contains a protected file. The protected directories are ProtectedDirs of
@@ -210,6 +229,9 @@ func RelocatedFiles(lookup func(string) (string, bool)) ([]Relocated, error) {
 // components, so every path must be in a spelling that the system reports.
 func ValidateProjectDir(dir ProjectDir) error {
 	if err := checkFacts(dir); err != nil {
+		return err
+	}
+	if err := checkHardLinks(dir.ProtectedFileLinks); err != nil {
 		return err
 	}
 	if reason := refusal(dir); reason != nil {
@@ -259,7 +281,31 @@ func checkFacts(dir ProjectDir) error {
 	if len(dir.Homes) == 0 {
 		return ErrNoHome
 	}
-	return checkPaths(slices.Concat([]string{dir.Path}, dir.Homes, dir.Protected, dir.ProtectedFileDirs))
+	return checkPaths(slices.Concat([]string{dir.Path}, dir.Homes, dir.Protected, dir.ProtectedFileDirs, linkPaths(dir.ProtectedFileLinks)))
+}
+
+// linkPaths returns the path of each of files.
+func linkPaths(files []FileLinks) []string {
+	paths := make([]string, len(files))
+	for i, file := range files {
+		paths[i] = file.Path
+	}
+	return paths
+}
+
+// checkHardLinks refuses the files that have more than one hard link and
+// names each of them.
+func checkHardLinks(files []FileLinks) error {
+	var linked []string
+	for _, file := range files {
+		if file.Count > 1 {
+			linked = append(linked, file.Path)
+		}
+	}
+	if len(linked) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s; remove the other hard links to it", ErrHardLinkedFile, strings.Join(linked, ", "))
 }
 
 // checkPaths refuses a path that is not absolute and clean.
