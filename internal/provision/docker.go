@@ -236,7 +236,7 @@ func subIDCheck(path string) []string {
 // owner.
 func helperCheck(path string, ownerUID int) []string {
 	return []string{
-		fmt.Sprintf(`[ "$(stat -c '%%u %%a' %s)" = "%d %s" ] || fail "%s is not owned by root with mode %s"`, path, ownerUID, helperMode, path, helperMode),
+		fmt.Sprintf(`[ -n "$(find %s -maxdepth 0 -user %d -perm %s)" ] || fail "%s is not owned by root with mode %s"`, path, ownerUID, helperMode, path, helperMode),
 	}
 }
 

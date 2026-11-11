@@ -181,8 +181,8 @@ func TestScriptSelfChecksTheEngine(t *testing.T) {
 		"for unit in docker.service docker.socket containerd.service; do",
 		`[ ! -e /var/run/docker.sock ] && [ ! -e /run/docker.sock ] || fail "a rootful Docker socket exists"`,
 		`[ -e /var/lib/systemd/linger/agent ] || fail "agent has no linger"`,
-		`[ "$(stat -c '%u %a' /usr/bin/newuidmap)" = "0 4755" ] || fail "/usr/bin/newuidmap is not owned by root with mode 4755"`,
-		`[ "$(stat -c '%u %a' /usr/bin/newgidmap)" = "0 4755" ] || fail "/usr/bin/newgidmap is not owned by root with mode 4755"`,
+		`[ -n "$(find /usr/bin/newuidmap -maxdepth 0 -user 0 -perm 4755)" ] || fail "/usr/bin/newuidmap is not owned by root with mode 4755"`,
+		`[ -n "$(find /usr/bin/newgidmap -maxdepth 0 -user 0 -perm 4755)" ] || fail "/usr/bin/newgidmap is not owned by root with mode 4755"`,
 		"chmod 4755 /usr/bin/newuidmap /usr/bin/newgidmap",
 		`systemctl is-active --quiet orbit-boundary-gate.service || fail "orbit-boundary-gate.service is not active"`,
 		`docker buildx version >/dev/null || fail "docker buildx is missing"`,
@@ -218,9 +218,6 @@ func TestSubIDCheckFailsOnASecondEntryAndOnALowRange(t *testing.T) {
 }
 
 func TestHelperCheckFailsOnAGroupWritableHelperAndAWrongOwner(t *testing.T) {
-	if exec.Command("stat", "-c", "%u", ".").Run() != nil {
-		t.Skip("stat does not support -c (GNU coreutils)")
-	}
 	uid := os.Getuid()
 	tests := []struct {
 		name    string
