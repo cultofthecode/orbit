@@ -137,19 +137,37 @@ func New(prefix string) *Client {
 }
 
 // Create creates the isolated machine name with dir as its only mount, at the
-// same absolute path as on the host. It runs no command when name lacks the
-// prefix of the client or dir cannot be mounted.
-func (c *Client) Create(ctx context.Context, name, dir string) error {
+// same absolute path as on the host, and forwards the SSH agent of the host
+// into it only when forwardSSHAgent is true. OrbStack fixes that setting when
+// it creates the machine. It runs no command when name lacks the prefix of
+// the client or dir cannot be mounted.
+func (c *Client) Create(ctx context.Context, name, dir string, forwardSSHAgent bool) error {
 	if err := c.checkOwned(name); err != nil {
 		return err
 	}
 	if err := checkMountable(dir); err != nil {
 		return err
 	}
-	if _, err := run(ctx, createArgs(name, dir), nil); err != nil {
+	if _, err := run(ctx, createArgs(name, dir, forwardSSHAgent), nil); err != nil {
 		return fmt.Errorf("create machine %s: %w", name, err)
 	}
 	return nil
+}
+
+// SSHAgentForwarded reports whether the machine name forwards the SSH agent
+// of the host, as orb list prints it. It runs only orb status and orb list,
+// so it never starts a machine. It fails when no machine has that name, when
+// the entry has no boolean setting, and when the name lacks the prefix of the
+// client, and then it runs no command.
+func (c *Client) SSHAgentForwarded(ctx context.Context, name string) (bool, error) {
+	if err := c.checkOwned(name); err != nil {
+		return false, err
+	}
+	list, err := run(ctx, mountsArgs(), nil)
+	if err != nil {
+		return false, fmt.Errorf("list machines: %w", err)
+	}
+	return parseSSHAgentForwarded([]byte(list), name)
 }
 
 // Exists reports whether a machine with the given name exists.
@@ -331,18 +349,20 @@ func checkMountable(dir string) error {
 	return nil
 }
 
+// forwardFlag is the flag of orb create that forwards the SSH agent of the
+// host into the machine.
+const forwardFlag = "--forward-ssh-agent"
+
 // createArgs returns the arguments of orb that create the machine name. The
 // machine is always isolated, also on the network, and dir is always mounted
-// at its own path: a mount without a destination lands under /mnt/mac.
-func createArgs(name, dir string) []string {
-	return []string{
-		"create",
-		"--isolated",
-		"--isolate-network",
-		"--mount", dir + mountSeparator + dir,
-		image,
-		name,
+// at its own path: a mount without a destination lands under /mnt/mac. The
+// flag that forwards the SSH agent is there only when forward is true.
+func createArgs(name, dir string, forward bool) []string {
+	args := []string{"create", "--isolated", "--isolate-network"}
+	if forward {
+		args = append(args, forwardFlag)
 	}
+	return append(args, "--mount", dir+mountSeparator+dir, image, name)
 }
 
 // statusArgs returns the arguments of orb that print the state of OrbStack
@@ -385,7 +405,8 @@ type machine struct {
 	Name   string `json:"name"`
 	State  string `json:"state"`
 	Config struct {
-		Mounts []struct {
+		ForwardSSHAgent *bool `json:"forward_ssh_agent"`
+		Mounts          []struct {
 			Source      string `json:"source"`
 			Destination string `json:"destination"`
 		} `json:"mounts"`
@@ -413,6 +434,32 @@ func parseMounts(list []byte) (map[string]map[string]string, error) {
 		}
 	}
 	return mounts, nil
+}
+
+// parseSSHAgentForwarded returns the SSH agent setting of the machine name in
+// the output of "orb list --format json". It fails on output that it cannot
+// read, on a machine that is not listed or is listed twice, and on an entry
+// whose setting is missing or not a boolean: it never assumes a default.
+func parseSSHAgentForwarded(list []byte, name string) (bool, error) {
+	var machines []machine
+	if err := json.Unmarshal(list, &machines); err != nil {
+		return false, fmt.Errorf("%w: %w", ErrMachineList, err)
+	}
+	var settings []*bool
+	for _, m := range machines {
+		if m.Name == name {
+			settings = append(settings, m.Config.ForwardSSHAgent)
+		}
+	}
+	switch {
+	case len(settings) == 0:
+		return false, fmt.Errorf("%w: machine %q is not listed", ErrMachineList, name)
+	case len(settings) > 1:
+		return false, fmt.Errorf("%w: machine %q is listed twice", ErrMachineList, name)
+	case settings[0] == nil:
+		return false, fmt.Errorf("%w: machine %q has no config.forward_ssh_agent", ErrMachineList, name)
+	}
+	return *settings[0], nil
 }
 
 // parseState returns the state of the machine name in the output of "orb

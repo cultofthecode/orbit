@@ -616,3 +616,31 @@ func TestExitStatusError(t *testing.T) {
 		t.Errorf("ExitStatus = %q, as %+v", err, target)
 	}
 }
+
+func TestCheckSSHForwarding(t *testing.T) {
+	tests := []struct {
+		name     string
+		want     bool
+		have     bool
+		mismatch bool
+		mentions []string
+	}{
+		{name: "forward and forwards", want: true, have: true},
+		{name: "leave out and leaves out", want: false, have: false},
+		{name: "forward but the machine does not", want: true, have: false, mismatch: true, mentions: []string{"does not forward", "init --no-ssh-forwarding", "delete the sandbox"}},
+		{name: "leave out but the machine forwards", want: false, have: true, mismatch: true, mentions: []string{"forwards the host SSH agent", "delete the sandbox"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := CheckSSHForwarding(test.want, test.have)
+			if errors.Is(err, ErrSSHForwardingMismatch) != test.mismatch || (err != nil) != test.mismatch {
+				t.Fatalf("CheckSSHForwarding(%t, %t) = %v, want a mismatch: %t", test.want, test.have, err, test.mismatch)
+			}
+			for _, part := range test.mentions {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("CheckSSHForwarding(%t, %t) = %q, want it to mention %q", test.want, test.have, err, part)
+				}
+			}
+		})
+	}
+}

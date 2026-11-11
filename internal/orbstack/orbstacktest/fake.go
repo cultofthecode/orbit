@@ -40,17 +40,18 @@ const (
 
 // Operations that a Fake records.
 const (
-	OpState        = "state"
-	OpStart        = "start"
-	OpStop         = "stop"
-	OpExists       = "exists"
-	OpCreate       = "create"
-	OpMounts       = "mounts"
-	OpActiveMounts = "active-mounts"
-	OpDelete       = "delete"
-	OpRunAsRoot    = "run-as-root"
-	OpRunAsAgent   = "run-as-agent"
-	OpShell        = "shell"
+	OpState             = "state"
+	OpStart             = "start"
+	OpStop              = "stop"
+	OpExists            = "exists"
+	OpCreate            = "create"
+	OpSSHAgentForwarded = "ssh-agent-forwarded"
+	OpMounts            = "mounts"
+	OpActiveMounts      = "active-mounts"
+	OpDelete            = "delete"
+	OpRunAsRoot         = "run-as-root"
+	OpRunAsAgent        = "run-as-agent"
+	OpShell             = "shell"
 )
 
 // Call is one call that a Fake received.
@@ -59,6 +60,8 @@ type Call struct {
 	Name   string
 	Dir    string
 	Script string
+	// Forward is the SSH agent forwarding that a Create call asked for.
+	Forward bool
 }
 
 // Fake keeps machines in memory and records every call.
@@ -71,6 +74,13 @@ type Fake struct {
 	// differ from the configured ones: what a machine mounts after its path
 	// was swapped.
 	Active map[string]map[string]string
+	// Forwarded maps the name of a machine to its SSH agent forwarding. A
+	// machine without an entry does not forward. Create sets the entry.
+	Forwarded map[string]bool
+	// CreatedForwarded, when set, is the forwarding that Create stores
+	// instead of the requested one: a machine that reports another setting
+	// than the one it was created with.
+	CreatedForwarded *bool
 	// States maps the name of a machine to its state. A machine without an
 	// entry is running. Create sets StateRunning, Start StateRunning, and
 	// Stop StateStopped.
@@ -85,6 +95,9 @@ type Fake struct {
 	StopErr error
 	// ExistsErr, when set, is the result of every Exists call.
 	ExistsErr error
+	// SSHAgentForwardedErr, when set, is the result of every
+	// SSHAgentForwarded call.
+	SSHAgentForwardedErr error
 	// CreateErr, when set, is the result of every Create call.
 	CreateErr error
 	// MountsErr, when set, is the result of every Mounts call.
@@ -110,7 +123,7 @@ type Fake struct {
 // New returns a fake with no machines that creates only machines whose names
 // start with prefix.
 func New(prefix string) *Fake {
-	return &Fake{Machines: map[string]map[string]string{}, Active: map[string]map[string]string{}, States: map[string]string{}, prefix: prefix}
+	return &Fake{Machines: map[string]map[string]string{}, Active: map[string]map[string]string{}, Forwarded: map[string]bool{}, States: map[string]string{}, prefix: prefix}
 }
 
 // State returns the state of the machine name, or "" when it does not
@@ -189,11 +202,11 @@ func (f *Fake) Exists(_ context.Context, name string) (bool, error) {
 	return exists, nil
 }
 
-// Create adds the machine name with dir mounted at its own path. It refuses
-// a name without the prefix of the fake, and a directory that the adapter
-// cannot mount at its own path.
-func (f *Fake) Create(_ context.Context, name, dir string) error {
-	f.Calls = append(f.Calls, Call{Op: OpCreate, Name: name, Dir: dir})
+// Create adds the machine name with dir mounted at its own path and the SSH
+// agent forwarding forwardSSHAgent. It refuses a name without the prefix of
+// the fake, and a directory that the adapter cannot mount at its own path.
+func (f *Fake) Create(_ context.Context, name, dir string, forwardSSHAgent bool) error {
+	f.Calls = append(f.Calls, Call{Op: OpCreate, Name: name, Dir: dir, Forward: forwardSSHAgent})
 	if err := f.checkOwned(name); err != nil {
 		return err
 	}
@@ -205,7 +218,25 @@ func (f *Fake) Create(_ context.Context, name, dir string) error {
 	}
 	f.Machines[name] = map[string]string{dir: dir}
 	f.States[name] = StateRunning
+	f.Forwarded[name] = forwardSSHAgent
+	if f.CreatedForwarded != nil {
+		f.Forwarded[name] = *f.CreatedForwarded
+	}
 	return nil
+}
+
+// SSHAgentForwarded returns the SSH agent forwarding of the machine name. It
+// refuses a name without the prefix of the fake and a machine that does not
+// exist, and it runs nothing in the machine.
+func (f *Fake) SSHAgentForwarded(_ context.Context, name string) (bool, error) {
+	f.Calls = append(f.Calls, Call{Op: OpSSHAgentForwarded, Name: name})
+	if err := f.checkExists(name); err != nil {
+		return false, err
+	}
+	if f.SSHAgentForwardedErr != nil {
+		return false, f.SSHAgentForwardedErr
+	}
+	return f.Forwarded[name], nil
 }
 
 // Mounts returns a copy of the configured mounts of every machine.
@@ -254,6 +285,7 @@ func (f *Fake) Delete(_ context.Context, name string) error {
 	}
 	delete(f.Machines, name)
 	delete(f.Active, name)
+	delete(f.Forwarded, name)
 	delete(f.States, name)
 	return nil
 }

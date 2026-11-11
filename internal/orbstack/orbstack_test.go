@@ -25,14 +25,26 @@ func TestCreateArgs(t *testing.T) {
 		name    string
 		machine string
 		dir     string
+		forward bool
 		want    []string
 	}{
 		{
-			name:    "project directory",
+			name:    "project directory without forwarding",
 			machine: "orbit-api-1d9b22c9",
 			dir:     "/Users/dev/Project/api",
 			want: []string{
 				"create", "--isolated", "--isolate-network",
+				"--mount", "/Users/dev/Project/api:/Users/dev/Project/api",
+				"ubuntu:26.04", "orbit-api-1d9b22c9",
+			},
+		},
+		{
+			name:    "project directory with forwarding",
+			machine: "orbit-api-1d9b22c9",
+			dir:     "/Users/dev/Project/api",
+			forward: true,
+			want: []string{
+				"create", "--isolated", "--isolate-network", "--forward-ssh-agent",
 				"--mount", "/Users/dev/Project/api:/Users/dev/Project/api",
 				"ubuntu:26.04", "orbit-api-1d9b22c9",
 			},
@@ -48,7 +60,18 @@ func TestCreateArgs(t *testing.T) {
 			},
 		},
 		{
-			name:    "directory that looks like a flag",
+			name:    "directory that looks like a flag, with forwarding",
+			machine: "orbit-x-00000000",
+			dir:     "/--forward-ssh-agent",
+			forward: true,
+			want: []string{
+				"create", "--isolated", "--isolate-network", "--forward-ssh-agent",
+				"--mount", "/--forward-ssh-agent:/--forward-ssh-agent",
+				"ubuntu:26.04", "orbit-x-00000000",
+			},
+		},
+		{
+			name:    "directory that looks like a flag, without forwarding",
 			machine: "orbit-x-00000000",
 			dir:     "/--forward-ssh-agent",
 			want: []string{
@@ -60,12 +83,12 @@ func TestCreateArgs(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := createArgs(test.machine, test.dir)
+			got := createArgs(test.machine, test.dir, test.forward)
 			if !slices.Equal(got, test.want) {
-				t.Errorf("createArgs(%q, %q) =\n%q, want\n%q", test.machine, test.dir, got, test.want)
+				t.Errorf("createArgs(%q, %q, %t) =\n%q, want\n%q", test.machine, test.dir, test.forward, got, test.want)
 			}
-			if slices.Contains(got, "--forward-ssh-agent") {
-				t.Errorf("createArgs(%q, %q) = %q, want no SSH agent forwarding", test.machine, test.dir, got)
+			if count := strings.Count(strings.Join(got, "\x00"), "\x00--forward-ssh-agent\x00"); (count == 1) != test.forward {
+				t.Errorf("createArgs(%q, %q, %t) = %q, want the flag %t", test.machine, test.dir, test.forward, got, test.forward)
 			}
 		})
 	}
@@ -373,7 +396,7 @@ func TestGuardsRunNoCommand(t *testing.T) {
 	client := New(testPrefix)
 	ctx := context.Background()
 
-	if err := client.Create(ctx, "ubuntu", "/Users/dev/Project/api"); !errors.Is(err, ErrForeignMachine) {
+	if err := client.Create(ctx, "ubuntu", "/Users/dev/Project/api", true); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("Create of a foreign machine = %v, want %v", err, ErrForeignMachine)
 	}
 	if err := client.Delete(ctx, "ubuntu"); !errors.Is(err, ErrForeignMachine) {
@@ -397,10 +420,10 @@ func TestGuardsRunNoCommand(t *testing.T) {
 	if err := New("").RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true\n")); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("RunAsAgent of a client without a prefix = %v, want %v", err, ErrForeignMachine)
 	}
-	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/.ssh:x"); !errors.Is(err, ErrMountPath) {
+	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/.ssh:x", true); !errors.Is(err, ErrMountPath) {
 		t.Errorf("Create with a colon in the directory = %v, want %v", err, ErrMountPath)
 	}
-	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/a,b"); !errors.Is(err, ErrMountPath) {
+	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/a,b", true); !errors.Is(err, ErrMountPath) {
 		t.Errorf("Create with a comma in the directory = %v, want %v", err, ErrMountPath)
 	}
 }
@@ -414,7 +437,7 @@ func TestFailedCommandCarriesStderr(t *testing.T) {
 	_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
 	_, stateErr := client.State(ctx, "orbit-api-1d9b22c9")
 	failures := map[string]error{
-		"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
+		"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", true),
 		"Exists":       existsErr,
 		"Mounts":       mountsErr,
 		"ActiveMounts": activeMountsErr,
@@ -588,7 +611,7 @@ func TestNoCallStartsAStoppedOrbStack(t *testing.T) {
 			_, stateErr := client.State(ctx, "orbit-api-1d9b22c9")
 			_, shellErr := client.Shell(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 			results := map[string]error{
-				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
+				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", true),
 				"Exists":       existsErr,
 				"Mounts":       mountsErr,
 				"ActiveMounts": activeMountsErr,
@@ -874,7 +897,7 @@ func TestStoppedUnderAnotherHomeNamesHome(t *testing.T) {
 			_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
 			_, shellErr := client.Shell(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 			results := map[string]error{
-				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
+				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", true),
 				"Exists":       existsErr,
 				"Mounts":       mountsErr,
 				"ActiveMounts": activeMountsErr,
@@ -1170,7 +1193,7 @@ func TestEveryCommandGetsOnlyAllowedVariables(t *testing.T) {
 	_, stateErr := client.State(ctx, machineName)
 	_, shellErr := client.Shell(ctx, machineName, "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	operations := map[string]error{
-		"Create":       client.Create(ctx, machineName, "/Users/dev/Project/api"),
+		"Create":       client.Create(ctx, machineName, "/Users/dev/Project/api", true),
 		"Exists":       existsErr,
 		"Mounts":       mountsErr,
 		"ActiveMounts": activeMountsErr,
@@ -1474,7 +1497,7 @@ func TestEveryCommandRunsOrbWithTheSameEnvironment(t *testing.T) {
 	_, stateErr := client.State(ctx, machineName)
 	_, shellErr := client.Shell(ctx, machineName, projectDir, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	operations := map[string]error{
-		"Create":       client.Create(ctx, machineName, projectDir),
+		"Create":       client.Create(ctx, machineName, projectDir, true),
 		"Exists":       existsErr,
 		"Mounts":       mountsErr,
 		"ActiveMounts": activeMountsErr,
@@ -1508,5 +1531,72 @@ func TestEveryCommandRunsOrbWithTheSameEnvironment(t *testing.T) {
 		if !bytes.Equal(content, first) {
 			t.Errorf("environment of orb differs between commands:\n%s\n---\n%s", first, content)
 		}
+	}
+}
+
+func TestParseSSHAgentForwarded(t *testing.T) {
+	list := `[
+		{"name":"ubuntu","state":"running","config":{}},
+		{"name":"orbit-on-1d9b22c9","state":"running","config":{"forward_ssh_agent":true}},
+		{"name":"orbit-off-00db83c9","state":"stopped","config":{"forward_ssh_agent":false}}
+	]`
+	tests := []struct {
+		machine string
+		want    bool
+	}{
+		{machine: "orbit-on-1d9b22c9", want: true},
+		{machine: "orbit-off-00db83c9", want: false},
+	}
+	for _, test := range tests {
+		got, err := parseSSHAgentForwarded([]byte(list), test.machine)
+		if err != nil || got != test.want {
+			t.Errorf("parseSSHAgentForwarded(%q) = %t, %v, want %t", test.machine, got, err, test.want)
+		}
+	}
+}
+
+func TestParseSSHAgentForwardedRefusesWhatItCannotRead(t *testing.T) {
+	tests := []struct {
+		name string
+		list string
+	}{
+		{name: "not JSON", list: "orbit-api-1d9b22c9 running"},
+		{name: "not a list", list: `{"name":"orbit-api-1d9b22c9"}`},
+		{name: "machine missing", list: `[{"name":"orbit-other-00000000","config":{"forward_ssh_agent":true}}]`},
+		{name: "empty list", list: `[]`},
+		{name: "field missing", list: `[{"name":"orbit-api-1d9b22c9","config":{}}]`},
+		{name: "config missing", list: `[{"name":"orbit-api-1d9b22c9"}]`},
+		{name: "field null", list: `[{"name":"orbit-api-1d9b22c9","config":{"forward_ssh_agent":null}}]`},
+		{name: "field a string", list: `[{"name":"orbit-api-1d9b22c9","config":{"forward_ssh_agent":"true"}}]`},
+		{name: "field a number", list: `[{"name":"orbit-api-1d9b22c9","config":{"forward_ssh_agent":1}}]`},
+		{name: "name twice", list: `[{"name":"orbit-api-1d9b22c9","config":{"forward_ssh_agent":true}},{"name":"orbit-api-1d9b22c9","config":{"forward_ssh_agent":true}}]`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseSSHAgentForwarded([]byte(test.list), "orbit-api-1d9b22c9")
+			if !errors.Is(err, ErrMachineList) || got {
+				t.Errorf("parseSSHAgentForwarded(%s) = %t, %v, want false and %v", test.list, got, err, ErrMachineList)
+			}
+		})
+	}
+}
+
+func TestSSHAgentForwardedReadsTheListAndStartsNothing(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	useFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\n"+`echo '[{"name":"orbit-api-1d9b22c9","state":"stopped","config":{"forward_ssh_agent":true}}]'`+"\n")
+	got, err := New(testPrefix).SSHAgentForwarded(context.Background(), "orbit-api-1d9b22c9")
+	if err != nil || !got {
+		t.Errorf("SSHAgentForwarded = %t, %v, want true", got, err)
+	}
+	received, err := os.ReadFile(calls)
+	if want := "list --format json\n"; err != nil || string(received) != want {
+		t.Errorf("orb ran %q, %v, want only %q", received, err, want)
+	}
+}
+
+func TestSSHAgentForwardedRefusesAForeignMachine(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if _, err := New(testPrefix).SSHAgentForwarded(context.Background(), "ubuntu"); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("SSHAgentForwarded of a foreign machine = %v, want %v", err, ErrForeignMachine)
 	}
 }

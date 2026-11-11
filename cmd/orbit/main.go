@@ -65,9 +65,15 @@ func initHandler(machines initialize.Machines, agents *agent.Registry) initializ
 	return initialize.Handler{
 		Machines:        machines,
 		Agent:           sandboxAgent(agents),
-		ProvisionScript: provision.Script,
+		ProvisionScript: provisionScript,
 		CurrentUser:     user.Current,
 	}
+}
+
+// provisionScript fills the input of provision.Script from the arguments of
+// the handler of "orbit init".
+func provisionScript(defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error) {
+	return provision.Script(provision.ScriptInput{DefaultUID: defaultUID, AgentDomains: agentDomains, ForwardSSHAgent: forwardSSHAgent})
 }
 
 // shellCommand returns the command "orbit shell" on machines, with the

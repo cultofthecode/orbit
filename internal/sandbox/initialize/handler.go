@@ -26,9 +26,13 @@ type Machines interface {
 	// its kernel reports it: the host path of each mounted directory by its
 	// mount point. It names the path, not the identity of the directory.
 	ActiveMounts(ctx context.Context, name string) (map[string]string, error)
+	// SSHAgentForwarded reports whether the machine name forwards the SSH
+	// agent of the host. It runs nothing in the machine.
+	SSHAgentForwarded(ctx context.Context, name string) (bool, error)
 	// Create creates the isolated machine name with dir as its only mount,
-	// at the same absolute path as on the host.
-	Create(ctx context.Context, name, dir string) error
+	// at the same absolute path as on the host, and forwards the SSH agent
+	// of the host only when forwardSSHAgent is true.
+	Create(ctx context.Context, name, dir string, forwardSSHAgent bool) error
 	// RunAsRoot runs script with bash as root in the machine name and
 	// fails when the script fails.
 	RunAsRoot(ctx context.Context, name string, script []byte) error
@@ -48,10 +52,12 @@ type Handler struct {
 	// definitions; the slice does not import another module.
 	Agent func(name string) (sandbox.Agent, error)
 	// ProvisionScript returns the root script that provisions a machine
-	// whose default user has the uid defaultUID and whose proxy allows
-	// agentDomains in addition to the base list. cmd/orbit passes
-	// provision.Script; the slice does not import another module.
-	ProvisionScript func(defaultUID uint32, agentDomains []string) ([]byte, error)
+	// whose default user has the uid defaultUID, whose proxy allows
+	// agentDomains in addition to the base list, and which forwards the SSH
+	// agent of the host when forwardSSHAgent is true. cmd/orbit passes
+	// provision.Script through a function that fills its input; the slice
+	// does not import another module.
+	ProvisionScript func(defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error)
 	// CurrentUser returns the user who runs Orbit, from the account
 	// database of the system. cmd/orbit passes user.Current. The handler
 	// trusts its uid and its home directory more than the environment.
@@ -70,6 +76,8 @@ type plan struct {
 	name string
 	// dir is the canonical path of the project directory.
 	dir string
+	// forwardSSHAgent is true unless Input.NoSSHForwarding is set.
+	forwardSSHAgent bool
 	// provision is the root script.
 	provision []byte
 	// install is the install script of the agent, nil without an agent.
@@ -77,8 +85,9 @@ type plan struct {
 }
 
 // Handle creates the machine of the project directory in.Dir, unless it
-// already exists, checks that the machine mounts exactly that directory,
-// provisions it, also when it already existed, and then installs the agent
+// already exists, checks that the machine forwards the SSH agent as the
+// request says, which on an existing machine runs no command in it, checks
+// that the machine mounts exactly that directory, provisions it, also when it already existed, and then installs the agent
 // in.Agent as the agent user, when in.Agent is set. The allowlist of the
 // proxy is the base list plus the egress domains of in.Agent, so a run
 // without an agent removes the domains of an earlier one. It refuses an
@@ -86,15 +95,15 @@ type plan struct {
 // not accept, and a provisioning script that cannot be built before it asks
 // OrbStack anything, and a directory that is, lies inside, or contains the
 // project directory of another machine before it creates one. When the
-// mount check, provisioning, or the install fails on a machine that this
-// call created, it deletes that machine; it never deletes a machine that
+// forwarding check, the mount check, provisioning, or the install fails on a
+// machine that this call created, it deletes that machine; it never deletes a machine that
 // existed before the call.
 func (h Handler) Handle(ctx context.Context, in Input) (Output, error) {
 	p, err := h.prepare(in)
 	if err != nil {
 		return Output{}, err
 	}
-	created, err := h.checkedMachine(ctx, p.name, p.dir)
+	created, err := h.checkedMachine(ctx, p)
 	if err != nil {
 		return Output{}, err
 	}
@@ -115,11 +124,11 @@ func (h Handler) prepare(in Input) (plan, error) {
 	if err != nil {
 		return plan{}, err
 	}
-	script, err := h.ProvisionScript(facts.UserUID, agent.EgressDomains)
+	script, err := h.ProvisionScript(facts.UserUID, agent.EgressDomains, !in.NoSSHForwarding)
 	if err != nil {
 		return plan{}, fmt.Errorf("provisioning script: %w", err)
 	}
-	p := plan{name: sandbox.MachineName(facts.Path), dir: facts.Path, provision: script}
+	p := plan{name: sandbox.MachineName(facts.Path), dir: facts.Path, forwardSSHAgent: !in.NoSSHForwarding, provision: script}
 	if in.Agent != "" {
 		p.install = installScript(agent.Install)
 	}
@@ -147,20 +156,24 @@ func installScript(install string) []byte {
 	return []byte(strings.Join(lines, "\n") + "\n")
 }
 
-// checkedMachine creates the machine name with the mount dir, unless it
-// exists, after it checked that dir is not nested with the directory of
-// another machine, and checks the mounts of the machine. It reports whether
-// it created the machine.
-func (h Handler) checkedMachine(ctx context.Context, name, dir string) (bool, error) {
-	machines, err := h.unnestedMachines(ctx, name, dir)
+// checkedMachine creates the machine of p, unless it exists, after it
+// checked that its directory is not nested with the directory of another
+// machine, checks its SSH agent forwarding, which reads only the list of
+// OrbStack, and then its mounts, which is the first command that runs in the
+// machine. It reports whether it created the machine.
+func (h Handler) checkedMachine(ctx context.Context, p plan) (bool, error) {
+	machines, err := h.unnestedMachines(ctx, p.name, p.dir)
 	if err != nil {
 		return false, err
 	}
-	created, err := h.ensureMachine(ctx, name, dir, machines)
+	created, err := h.ensureMachine(ctx, p, machines)
 	if err != nil {
 		return false, err
 	}
-	return created, h.verifyMounts(ctx, name, dir, created)
+	if err := h.verifyForwarding(ctx, p, created); err != nil {
+		return false, err
+	}
+	return created, h.verifyMounts(ctx, p.name, p.dir, created)
 }
 
 // setUp provisions the machine of p and installs its agent. When one of
@@ -214,16 +227,41 @@ func (h Handler) unnestedMachines(ctx context.Context, name, dir string) (map[st
 	return machines, nil
 }
 
-// ensureMachine creates the machine name with the mount dir when it is not
-// one of machines, and reports whether it created it.
-func (h Handler) ensureMachine(ctx context.Context, name, dir string, machines map[string]map[string]string) (bool, error) {
-	if _, exists := machines[name]; exists {
+// ensureMachine creates the machine of p with its mount and its SSH agent
+// forwarding when it is not one of machines, and reports whether it created
+// it.
+func (h Handler) ensureMachine(ctx context.Context, p plan, machines map[string]map[string]string) (bool, error) {
+	if _, exists := machines[p.name]; exists {
 		return false, nil
 	}
-	if err := h.Machines.Create(ctx, name, dir); err != nil {
-		return false, fmt.Errorf("create sandbox %s: %w", name, err)
+	if err := h.Machines.Create(ctx, p.name, p.dir, p.forwardSSHAgent); err != nil {
+		return false, fmt.Errorf("create sandbox %s: %w", p.name, err)
 	}
 	return true, nil
+}
+
+// verifyForwarding checks that the machine of p forwards the SSH agent as p
+// says. When created is true and the check fails, it deletes the machine.
+// On an existing machine it changes nothing.
+func (h Handler) verifyForwarding(ctx context.Context, p plan, created bool) error {
+	err := h.checkForwarding(ctx, p)
+	if err == nil || !created {
+		return err
+	}
+	return h.discard(ctx, p.name, err)
+}
+
+// checkForwarding reads the SSH agent forwarding of the machine of p and
+// compares it with the request.
+func (h Handler) checkForwarding(ctx context.Context, p plan) error {
+	have, err := h.Machines.SSHAgentForwarded(ctx, p.name)
+	if err != nil {
+		return fmt.Errorf("read the SSH agent forwarding of sandbox %s: %w", p.name, err)
+	}
+	if err := sandbox.CheckSSHForwarding(p.forwardSSHAgent, have); err != nil {
+		return fmt.Errorf("sandbox %s: %w", p.name, err)
+	}
+	return nil
 }
 
 // verifyMounts checks that the machine name mounts exactly dir at its own

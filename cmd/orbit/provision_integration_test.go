@@ -91,11 +91,12 @@ MAC_PORT=%d
 HOST_CONTAINER=%s
 PROJECT_DIR='%s'
 ROOT_ONLY_FILES="%s"
+PROVISION_VERSION=%d
 DEFAULT_USER=$(getent passwd "$DEFAULT_UID" | cut -d: -f1)
 
-[ "$(cat /etc/orbit/provisioned)" = 1 ] || fail "marker"
+[ "$(cat /etc/orbit/provisioned)" = "$PROVISION_VERSION" ] || fail "marker"
 [ "$(id -u agent)" -ge 1000 ] || fail "agent uid below 1000"
-[ "$(id -nG agent)" = agent ] || fail "agent has groups: $(id -nG agent)"
+[ "$(id -nG agent)" = "agent orbstack" ] || fail "agent has groups: $(id -nG agent), want agent orbstack: the default init forwards the SSH agent"
 blocked "agent sudo" as_agent sudo -n true
 blocked "agent su to root" as_agent su -c true root </dev/null
 blocked "agent su to the default user" as_agent su -c true "$DEFAULT_USER" </dev/null
@@ -214,7 +215,7 @@ func TestInitProvisionsTheSandbox(t *testing.T) {
 	port := macPortReachableByRoot(ctx, t, client, name)
 	container := hostContainerReachableByRoot(ctx, t, client, name)
 	writeHostFile(t, dir)
-	script := fmt.Sprintf(probeScript, os.Getuid(), port, container, dir, strings.Join(rootOnlyPaths(), " "))
+	script := fmt.Sprintf(probeScript, os.Getuid(), port, container, dir, strings.Join(rootOnlyPaths(), " "), provision.Version)
 	if err := client.RunAsRoot(ctx, name, []byte(script)); err != nil {
 		t.Errorf("probes in %s:\n%v", name, err)
 	}
