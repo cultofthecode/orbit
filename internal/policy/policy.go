@@ -1,12 +1,14 @@
 // Package policy holds the network policy of a sandbox: the default allowlist
-// of the first version (D21) and the rule that decides whether a host name
-// may stand in an allow rule. It is pure and does no I/O.
+// of the first version, a base list plus the hosts of the agent (D24), and
+// the rule that decides whether a host name may stand in an allow rule. It
+// is pure and does no I/O.
 package policy
 
 import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -27,16 +29,9 @@ var hostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // numericLabel matches a label of digits only.
 var numericLabel = regexp.MustCompile(`^[0-9]+$`)
 
-// defaultAllowlist holds the hosts of D21, reachable on port 443 only.
-var defaultAllowlist = []string{
-	"claude.ai",
-	"downloads.claude.ai",
-	"api.anthropic.com",
-	"platform.claude.com",
-	"mcp-proxy.anthropic.com",
-	"code.claude.com",
-	"http-intake.logs.us5.datadoghq.com",
-	"browser-intake-us5-datadoghq.com",
+// baseAllowlist holds the base list of D24: the hosts that every sandbox may
+// reach on port 443, whatever its agent.
+var baseAllowlist = []string{
 	"github.com",
 	"codeload.github.com",
 	"raw.githubusercontent.com",
@@ -54,10 +49,20 @@ var defaultAllowlist = []string{
 	"dl-cdn.alpinelinux.org",
 }
 
-// DefaultAllowlist returns the hosts that every sandbox may reach in the
-// first version (D21). The caller owns the returned slice.
-func DefaultAllowlist() []string {
-	return append([]string(nil), defaultAllowlist...)
+// Allowlist returns the default allowlist of a sandbox whose agent needs
+// agentDomains (D24): the base list plus agentDomains, sorted and without
+// duplicates. Allowlist(nil) is exactly the base list. It refuses the whole
+// list when one of agentDomains fails ValidateHost. The caller owns the
+// returned slice.
+func Allowlist(agentDomains []string) ([]string, error) {
+	for _, domain := range agentDomains {
+		if err := ValidateHost(domain); err != nil {
+			return nil, fmt.Errorf("agent domain: %w", err)
+		}
+	}
+	hosts := slices.Concat(baseAllowlist, agentDomains)
+	slices.Sort(hosts)
+	return slices.Compact(hosts), nil
 }
 
 // ValidateHost reports whether host may stand in an allow rule. It accepts

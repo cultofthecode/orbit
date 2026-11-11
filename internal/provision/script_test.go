@@ -6,11 +6,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/cultofthecode/orbit/internal/policy"
 )
 
 func script(t *testing.T) []string {
 	t.Helper()
-	got, err := Script(501)
+	got, err := Script(501, nil)
 	if err != nil {
 		t.Fatalf("Script: %v", err)
 	}
@@ -101,7 +103,7 @@ func TestScriptCreatesTheAgentAfterTheBoundaryStarts(t *testing.T) {
 }
 
 func TestScriptGrantsNoSudo(t *testing.T) {
-	got, err := Script(501)
+	got, err := Script(501, nil)
 	if err != nil {
 		t.Fatalf("Script: %v", err)
 	}
@@ -184,7 +186,7 @@ func TestScriptNegativeChecksDoNotPipeIntoGrep(t *testing.T) {
 
 func TestScriptWritesEveryFileFromAQuotedHeredoc(t *testing.T) {
 	lines := script(t)
-	files, err := scriptFiles(501)
+	files, err := scriptFiles(501, nil)
 	if err != nil {
 		t.Fatalf("scriptFiles: %v", err)
 	}
@@ -199,7 +201,7 @@ func TestScriptWritesEveryFileFromAQuotedHeredoc(t *testing.T) {
 }
 
 func TestScriptCarriesTheDefaultUID(t *testing.T) {
-	got, err := Script(502)
+	got, err := Script(502, nil)
 	if err != nil {
 		t.Fatalf("Script: %v", err)
 	}
@@ -209,18 +211,51 @@ func TestScriptCarriesTheDefaultUID(t *testing.T) {
 }
 
 func TestScriptRefusesDefaultUIDZero(t *testing.T) {
-	got, err := Script(0)
+	got, err := Script(0, nil)
 	if !errors.Is(err, ErrScriptInput) || got != nil {
-		t.Errorf("Script(0) = %q, %v, want nil, %v", got, err, ErrScriptInput)
+		t.Errorf("Script(0, nil) = %q, %v, want nil, %v", got, err, ErrScriptInput)
+	}
+}
+
+func TestScriptAllowsTheAgentDomainsOnlyWithAnAgent(t *testing.T) {
+	withAgent, err := Script(501, []string{"claude.ai", "api.anthropic.com"})
+	if err != nil {
+		t.Fatalf("Script with agent domains: %v", err)
+	}
+	withoutAgent, err := Script(501, nil)
+	if err != nil {
+		t.Fatalf("Script without agent domains: %v", err)
+	}
+	for _, rule := range []string{`^claude\.ai$`, `^api\.anthropic\.com$`} {
+		if !slices.Contains(strings.Split(string(withAgent), "\n"), rule) {
+			t.Errorf("the script with agent domains lacks the allow rule %s", rule)
+		}
+	}
+	for _, host := range []string{"claude", "anthropic"} {
+		if strings.Contains(string(withoutAgent), host) {
+			t.Errorf("the script without agent domains names %q", host)
+		}
+	}
+	if !slices.Contains(strings.Split(string(withoutAgent), "\n"), `^github\.com$`) {
+		t.Error("the script without agent domains lacks the base list")
+	}
+}
+
+func TestScriptRefusesAHostileAgentDomain(t *testing.T) {
+	for _, domain := range []string{"*.anthropic.com", "1.2.3.4", "localhost", "Claude.AI", "example.com:22", "claude.ai\n^.*$"} {
+		got, err := Script(501, []string{"claude.ai", domain})
+		if !errors.Is(err, policy.ErrInvalidHost) || got != nil {
+			t.Errorf("Script with %q = %q, %v, want nil, %v", domain, got, err, policy.ErrInvalidHost)
+		}
 	}
 }
 
 func TestScriptIsDeterministic(t *testing.T) {
-	first, err := Script(501)
+	first, err := Script(501, nil)
 	if err != nil {
 		t.Fatalf("Script: %v", err)
 	}
-	second, err := Script(501)
+	second, err := Script(501, nil)
 	if err != nil {
 		t.Fatalf("Script: %v", err)
 	}

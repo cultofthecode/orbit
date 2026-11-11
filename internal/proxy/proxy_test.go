@@ -75,7 +75,11 @@ func TestConfigRefusesTheWholeListForOneInvalidHost(t *testing.T) {
 }
 
 func TestConfigSettings(t *testing.T) {
-	files, err := Config(policy.DefaultAllowlist())
+	hosts, err := policy.Allowlist(nil)
+	if err != nil {
+		t.Fatalf("Allowlist: %v", err)
+	}
+	files, err := Config(hosts)
 	if err != nil {
 		t.Fatalf("Config: %v", err)
 	}
