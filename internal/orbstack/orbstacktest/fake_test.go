@@ -3,8 +3,10 @@ package orbstacktest
 import (
 	"context"
 	"errors"
+	"io"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -333,5 +335,63 @@ func TestFakeStartAndStopFailWhenTold(t *testing.T) {
 	}
 	if fake.States[name] != StateRunning {
 		t.Errorf("state after failed calls = %q, want %q", fake.States[name], StateRunning)
+	}
+}
+
+func TestFakeShellRecordsAndReturnsTheStatus(t *testing.T) {
+	fake := New("orbit-")
+	ctx := context.Background()
+	const name = "orbit-api-11111111"
+	if err := fake.Create(ctx, name, "/Users/dev/api"); err != nil {
+		t.Fatal(err)
+	}
+	fake.ShellStatus = 3
+
+	status, err := fake.Shell(ctx, name, "/Users/dev/api", strings.NewReader(""), io.Discard, io.Discard)
+
+	if err != nil || status != 3 {
+		t.Errorf("Shell = %d, %v, want 3, nil", status, err)
+	}
+	if want := (Call{Op: OpShell, Name: name, Dir: "/Users/dev/api"}); fake.Calls[len(fake.Calls)-1] != want {
+		t.Errorf("last call = %+v, want %+v", fake.Calls[len(fake.Calls)-1], want)
+	}
+}
+
+func TestFakeShellRefusesWhatTheAdapterRefuses(t *testing.T) {
+	fake := New("orbit-")
+	ctx := context.Background()
+	const name = "orbit-api-11111111"
+	if err := fake.Create(ctx, name, "/Users/dev/api"); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		machine string
+		dir     string
+		want    error
+	}{
+		{machine: "ubuntu", dir: "/Users/dev/api", want: ErrForeignMachine},
+		{machine: "orbit-", dir: "/Users/dev/api", want: ErrForeignMachine},
+		{machine: name, dir: "api", want: ErrMountPath},
+		{machine: name, dir: "-uroot", want: ErrMountPath},
+		{machine: name, dir: "/Users/dev/a:b", want: ErrMountPath},
+		{machine: name, dir: "/Users/dev/a,b", want: ErrMountPath},
+	}
+	for _, test := range tests {
+		if _, err := fake.Shell(ctx, test.machine, test.dir, strings.NewReader(""), io.Discard, io.Discard); !errors.Is(err, test.want) {
+			t.Errorf("Shell(%q, %q) = %v, want %v", test.machine, test.dir, err, test.want)
+		}
+	}
+	if err := fake.Stop(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fake.Shell(ctx, name, "/Users/dev/api", strings.NewReader(""), io.Discard, io.Discard); !errors.Is(err, ErrStopped) {
+		t.Errorf("Shell in a stopped machine = %v, want %v", err, ErrStopped)
+	}
+	fake.ShellErr = errors.New("orb failed")
+	if err := fake.Start(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fake.Shell(ctx, name, "/Users/dev/api", strings.NewReader(""), io.Discard, io.Discard); !errors.Is(err, fake.ShellErr) {
+		t.Errorf("Shell with ShellErr = %v, want %v", err, fake.ShellErr)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,7 @@ const (
 	OpDelete       = "delete"
 	OpRunAsRoot    = "run-as-root"
 	OpRunAsAgent   = "run-as-agent"
+	OpShell        = "shell"
 )
 
 // Call is one call that a Fake received.
@@ -95,6 +97,10 @@ type Fake struct {
 	RunAsRootErr error
 	// RunAsAgentErr, when set, is the result of every RunAsAgent call.
 	RunAsAgentErr error
+	// ShellStatus is the exit status of every Shell call that succeeds.
+	ShellStatus int
+	// ShellErr, when set, is the result of every Shell call.
+	ShellErr error
 	// Calls holds the received calls, in order.
 	Calls []Call
 
@@ -291,6 +297,24 @@ func (f *Fake) RunAsAgent(_ context.Context, name string, script []byte) error {
 		return err
 	}
 	return f.RunAsAgentErr
+}
+
+// Shell records the shell of the agent user in the machine name, in the
+// directory dir, and returns ShellStatus. It refuses a name without the
+// prefix of the fake, a directory that the adapter cannot pass, and a
+// machine that exists and is not running. It does not use the streams.
+func (f *Fake) Shell(_ context.Context, name, dir string, _ io.Reader, _, _ io.Writer) (int, error) {
+	f.Calls = append(f.Calls, Call{Op: OpShell, Name: name, Dir: dir})
+	if err := f.checkNotStopped(name); err != nil {
+		return 0, err
+	}
+	if !filepath.IsAbs(dir) || strings.ContainsAny(dir, ":,") {
+		return 0, fmt.Errorf("%w: %q", ErrMountPath, dir)
+	}
+	if f.ShellErr != nil {
+		return 0, f.ShellErr
+	}
+	return f.ShellStatus, nil
 }
 
 // checkNotStopped refuses a name without the prefix of the fake and a machine

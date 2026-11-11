@@ -27,6 +27,18 @@ func MarkerCheckScript() []byte {
 	return []byte(lines(group(body)...))
 }
 
+// ReadinessScript returns the root script that orbit shell runs before it
+// opens a shell in a running machine. It fails unless MarkerPath holds
+// exactly Version, the firewall table is loaded, and every boundary unit and
+// systemd-user-sessions.service is active: orb sessions do not pass the
+// login gate of systemd-user-sessions.service, so the shell checks the
+// boundary itself. It does not wait for the boot. It prints the first
+// failure to standard error. The bytes never change between calls.
+func ReadinessScript() []byte {
+	body := slices.Concat(checkPrelude(), []string{markerCheck()}, boundaryCheck())
+	return []byte(lines(group(body)...))
+}
+
 // checkPrelude stops at the first failure and defines fail, which prints its
 // arguments to standard error and exits 1.
 func checkPrelude() []string {

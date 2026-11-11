@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -605,5 +606,13 @@ func TestValidateMounts(t *testing.T) {
 				t.Errorf("ValidateMounts(%q, %v) = %v, want %v", test.dir, test.mounts, err, test.want)
 			}
 		})
+	}
+}
+
+func TestExitStatusError(t *testing.T) {
+	var target ExitStatus
+	err := fmt.Errorf("shell: %w", ExitStatus{Code: 3})
+	if !errors.As(err, &target) || target.Code != 3 || err.Error() != "shell: exited with status 3" {
+		t.Errorf("ExitStatus = %q, as %+v", err, target)
 	}
 }
