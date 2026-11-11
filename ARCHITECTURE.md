@@ -1,6 +1,6 @@
 # Architecture — orbit
 
-The code so far is the composition root in `cmd/orbit`, the OrbStack adapter in `internal/orbstack` (create, exists, delete, run a script as root), the sandbox module in `internal/sandbox` with the `init` slice that creates and provisions the machine, and the pure modules `internal/policy`, `internal/proxy`, and `internal/provision`; the other modules under `internal/` do not exist yet. This file records the target structure, so that new code follows it. Rows marked **proposal** are not yet confirmed by the owner; they mirror the proposal rows in `.ai/specs/product-brief.md`. Keep this file current as the system changes. Agents read it (through `AGENTS.md`) before structural changes.
+The code so far is the composition root in `cmd/orbit`, which registers `orbit init`; the OrbStack adapter in `internal/orbstack` (create, exists, delete, run a script as root or as the agent user); the sandbox module in `internal/sandbox` with the `init` slice that creates and provisions the machine and installs the agent; the agent module in `internal/agent` with the Claude Code definition; and the pure modules `internal/policy`, `internal/proxy`, and `internal/provision`. The other modules under `internal/` do not exist yet. This file records the target structure, so that new code follows it. Rows marked **proposal** are not yet confirmed by the owner; they mirror the proposal rows in `.ai/specs/product-brief.md`. Keep this file current as the system changes. Agents read it (through `AGENTS.md`) before structural changes.
 
 ## Purpose and scope
 
@@ -70,7 +70,7 @@ internal/
 | Composition root | `cmd/orbit` | Builds the adapters, adds the cobra command of every slice to the root command, prints errors, and sets the exit code. Contains no behavior. | every module |
 | Sandbox | `internal/sandbox` | Lifecycle of the sandbox of a project directory: init, shell, stop, start, destroy, list (D19). Owns the sandbox spec and the mount rules. | `orbstack`, `provision`, `agent`, `policy`, `credential`, `kernel` |
 | Policy | `internal/policy` | Network policy rules: the default rules, and matching a destination. Commands that list and change rules are later scope (D19). | `kernel` |
-| Agent | `internal/agent` | What each agent needs: image, start command, required domains, and state paths. See Agent definitions. Claude Code first. | `kernel` |
+| Agent | `internal/agent` | What each agent needs: its install and its egress domains. See Agent definitions. Claude Code first. | `kernel` |
 | Credential | `internal/credential` | Which host credentials a sandbox may get, and in which form. By default only the forwarded SSH agent socket, which `--no-ssh` removes (R08). | `kernel` |
 | Provision | `internal/provision` | The root-owned setup of a machine: the agent user without sudo, the firewall, the proxy service, rootless Docker, the fixed toolchain. Owns the firewall rules as a pure function. | `policy`, `kernel` |
 | Proxy | `internal/proxy` | The configuration of tinyproxy, the egress proxy that root runs in the machine (D22). The proxy enforces the policy. | `policy`, `kernel` |
@@ -97,13 +97,15 @@ internal/agent/
 | Field of `Definition` | Meaning | Claude Code |
 |---|---|---|
 | `Name` | The value of `orbit init --agent` | `claude-code` |
-| `Install` | Commands that provisioning runs as the agent user to install the official client | the published Claude Code installer |
-| `EgressDomains` | Destinations the client and its login need. They become default allow rules for a sandbox of this agent. | recorded by the A02 spike |
-| `StatePaths` | Paths in the home of the agent user that hold login and history | `~/.claude`, `~/.claude.json` |
+| `Install` | The bash script that `init` runs as the agent user, after provisioning, to install the official client. The handler wraps it in one braced group with `set -euo pipefail` and the proxy settings of `/etc/environment`; a definition never repeats them. | `curl -fsSL https://claude.ai/install.sh \| bash` |
+| `EgressDomains` | Destinations the client and its login need. They become default allow rules for a sandbox of this agent (D24). | the eight Claude Code hosts of D24 |
+
+There is no `Start` and no `LoginHint`: Orbit does not start the agent (D19), and sign-in is `/login` in the client (D08). A field such as `StatePaths` comes when a slice reads it.
 
 Rules:
 
 - To add an agent, add one package with a `Definition` and its test, and register it in `cmd/orbit`. No slice changes.
+- A slice gets an agent through the function `Agent func(name string) (sandbox.Agent, error)`, which `cmd/orbit` builds from the registry; the slice does not import `internal/agent`.
 - No code outside `internal/agent/<name>` compares an agent name. A slice that needs agent-specific behavior gets a new field in `Definition`.
 - A `Definition` holds no secret and no user-specific value.
 - Each definition has a test that checks its fields against R04: an official install source, no change to the client, and no stored credential.
@@ -131,7 +133,7 @@ These come from the spike of 2026-11-10 on OrbStack 2.2.5 (`.ai/analysis/2026-11
 - The agent has no DNS. Its tools use the proxy: `HTTPS_PROXY`, the proxy settings in `~/.docker/config.json`, and a proxy drop-in for the rootless Docker daemon.
 - The firewall, the proxy, and the address that containers use to reach the proxy start as persistent units before any agent process. Without that, a restart leaves containers with no proxy (they fail closed).
 - Allow rules are host names seen in `CONNECT`. This is not data-loss prevention: an allowed host can receive uploads, and a different TLS name behind an allowed host is not detected.
-- The default allowlist is the list in D21, plus the `EgressDomains` of the installed agent. It is fixed in the first version.
+- The default allowlist is the base list of D24, plus the `EgressDomains` of the agent of the last `init`. Each `init` rebuilds it from its own `--agent`; Orbit stores no record of the installed agent. It is fixed in the first version.
 - With SSH agent forwarding (R08), the host agent is the socket `/opt/orbstack-guest/run/host-ssh-agent.sock`, group `orbstack`. The agent user needs that group. Git reaches GitHub over `ssh.github.com:443` through the proxy; port 22 stays closed.
 - Rootless Docker and its proxy settings (`~/.docker/config.json`, the daemon drop-in) come with E01-S05. Root never writes into the home of the agent; the shell proxy settings are in `/etc/environment`.
 - Provisioning installs a fixed toolchain as root (D17): git, openssh-client, curl, ca-certificates, jq, ripgrep, unzip (D20). The agent cannot install system packages: no `apt-get`, no system-wide `pip`. It uses user-space installs or a container. No `--privileged` containers.
@@ -175,7 +177,8 @@ The product brief is the decision record; the ids below point to it.
 | 2026-11-10 | Isolation before reuse of the host engine (D09, proposal) | The earlier `orb-sbx` design offered a trusted mode with the host engine socket and SSH agent forwarding. The owner then allowed opt-in, minimized Git credentials (R06, D10). | No host engine socket, ever (D12). The mechanism for D10 needs a spec. Git worktrees per agent, a YAML project file, and structured JSON logs from that design stay as later scope. |
 | 2026-11-10 | One sandbox per project directory; project-scoped commands (D18, D19) | Owner's choice: `n` worktrees run inside one sandbox. | `orbit init`, `shell`, `stop`, `start`, and `destroy` find the sandbox from the current directory. Agents in one sandbox are not isolated from each other. No `orbit run`: the user starts the client in `orbit shell`. |
 | 2026-11-10 | Host SSH agent forwarded by default (R08) | Owner's choice; `--no-ssh` turns it off. | The agent can use every key in the forwarded agent on every SSH host it can reach. Port 22 needs an allow path for Git hosts (Q15). Untested in an isolated machine (A06). |
-| 2026-11-10 | tinyproxy and nftables enforce egress; fixed default allowlist (D21, D22) | Both spikes proved the pair. The first version has no `orbit policy`. | `internal/proxy` and `internal/provision` generate configuration; they are pure functions with hostile-input tests. A new default destination needs the owner's yes. |
+| 2026-11-10 | tinyproxy and nftables enforce egress; fixed default allowlist (D21, superseded by D24 on 2026-11-11; D22) | Both spikes proved the pair. The first version has no `orbit policy`. | `internal/proxy` and `internal/provision` generate configuration; they are pure functions with hostile-input tests. A new default destination needs the owner's yes. |
 | 2026-11-10 | cobra for the CLI (D23) | Six commands need dispatch, help, and completion; cobra leaves error output and the exit code to the composition root with two settings. | The first third-party dependency (cobra and pflag are compiled in). Each slice exports a command constructor. `orbit completion` exists by default. |
 | 2026-11-10 | `provision` imports `proxy`; `cmd/orbit` injects `provision.Script` into the `init` handler (spec `.ai/specs/2026-11-10-sandbox-provisioning.md`, Q5) | The root script writes the tinyproxy files and the firewall from one source of the proxy port, user, and addresses. A slice may not import another module (dependency rule 2). | `proxy` imports `policy`; `provision` imports both. The `init` slice depends on a function field, not on `provision`. |
 | 2026-11-10 | OrbStack is the state store | No second source of truth to drift. | Every machine that Orbit creates carries the Orbit name prefix. |
+| 2026-11-11 | `cmd/orbit` injects the agent lookup into the `init` handler as `Agent func(name string) (sandbox.Agent, error)` (spec `.ai/specs/2026-11-11-claude-code-agent-definition.md`) | A slice may not import another module (dependency rule 2), and no slice compares an agent name (D16). | `sandbox.Agent` holds `Install` and `EgressDomains`. The handler resolves the agent and builds the provisioning script, with `policy.Allowlist`, before its first OrbStack call, and installs as the agent user through `RunAsAgent` after provisioning. |
