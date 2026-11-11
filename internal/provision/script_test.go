@@ -423,3 +423,50 @@ func lineIndex(t *testing.T, lines []string, want string) int {
 func modeString(file File) string {
 	return map[bool]string{true: "0755", false: "0644"}[file.Mode == 0o755]
 }
+
+// changesTheAgentUser reports whether line removes the agent user or alters
+// it with usermod, except the one change that adds the agent to the group
+// orbstack: the login of the agent lives in its home, which provisioning never
+// removes or recreates.
+func changesTheAgentUser(line string) bool {
+	if strings.Contains(line, "userdel") || strings.Contains(line, "deluser") {
+		return true
+	}
+	if strings.TrimSpace(line) == "usermod -aG orbstack agent" {
+		return false
+	}
+	return strings.Contains(line, "usermod") && strings.Contains(line, "agent")
+}
+
+func TestChangesTheAgentUserRefusesHostileLines(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"userdel agent", true},
+		{"userdel --remove agent", true},
+		{"deluser agent", true},
+		{"deluser --remove-home agent", true},
+		{"usermod -d /x agent", true},
+		{"usermod -aG sudo agent", true},
+		{"usermod -aG orbstack,sudo agent", true},
+		{"usermod -aG orbstack agent", false},
+		{"id -u agent >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --user-group agent", false},
+		{`[ "$(id -u agent)" -ge 1000 ] || fail "the uid of agent is below 1000"`, false},
+	}
+	for _, c := range cases {
+		if got := changesTheAgentUser(c.line); got != c.want {
+			t.Errorf("changesTheAgentUser(%q) = %v, want %v", c.line, got, c.want)
+		}
+	}
+}
+
+func TestScriptNeverRemovesOrAltersTheAgentUser(t *testing.T) {
+	for _, forward := range []bool{true, false} {
+		for _, line := range scriptFor(t, forward) {
+			if changesTheAgentUser(line) {
+				t.Errorf("forward %t: script changes or removes the agent user: %q", forward, line)
+			}
+		}
+	}
+}

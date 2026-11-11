@@ -120,3 +120,14 @@ The system SHALL create the machine of the project directory when it does not ex
 - THEN the machine is deleted and the error names the failed provisioning
 
 Source: .ai/specs/2026-11-10-sandbox-provisioning.md
+
+## Requirement: Provisioning keeps the agent and its home
+The system SHALL create the user `agent` only when it does not exist, and the root script SHALL NOT remove, move, or recreate the user or any directory under `/home`.
+
+### Scenario: Script content
+- WHEN the root script is rendered
+- THEN it holds no `userdel`, no `deluser`, no `usermod` of `agent`, and no line that names `/home` (besides the `/home/*)` pattern of the self-check)
+
+Frozen by: `internal/provision/script_test.go` (`TestScriptWritesNothingIntoAHome`, `TestScriptCreatesTheAgentOnceWithoutGroups`)
+
+Source: .ai/specs/2026-11-11-subscription-sign-in.md
