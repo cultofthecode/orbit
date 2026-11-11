@@ -1137,9 +1137,9 @@ var shellVariables = []string{"PWD", "OLDPWD", "SHLVL", "_"}
 // forbidden ones: credentials, endpoints of the host, values that orb
 // forwards, names near an allowed name, and ORBENV and WSLENV naming a
 // variable of the test process. It runs every operation of the client
-// against a fake orb that records its environment, and checks that every
-// command of orb, orb status included, gets every allowed variable and no
-// other one.
+// against a fake orb that records its environment, Shell included, and
+// checks that every command of orb, orb status included, gets every allowed
+// variable and no other one.
 func TestEveryCommandGetsOnlyAllowedVariables(t *testing.T) {
 	const machineName = "orbit-api-1d9b22c9"
 	dir := t.TempDir()
@@ -1168,6 +1168,7 @@ func TestEveryCommandGetsOnlyAllowedVariables(t *testing.T) {
 	_, mountsErr := client.Mounts(ctx)
 	_, activeMountsErr := client.ActiveMounts(ctx, machineName)
 	_, stateErr := client.State(ctx, machineName)
+	_, shellErr := client.Shell(ctx, machineName, "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	operations := map[string]error{
 		"Create":       client.Create(ctx, machineName, "/Users/dev/Project/api"),
 		"Exists":       existsErr,
@@ -1179,6 +1180,7 @@ func TestEveryCommandGetsOnlyAllowedVariables(t *testing.T) {
 		"Delete":       client.Delete(ctx, machineName),
 		"RunAsRoot":    client.RunAsRoot(ctx, machineName, []byte("true\n")),
 		"RunAsAgent":   client.RunAsAgent(ctx, machineName, []byte("true\n")),
+		"Shell":        shellErr,
 	}
 	for operation, err := range operations {
 		if err != nil {

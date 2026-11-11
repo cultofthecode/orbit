@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -62,6 +63,28 @@ echo "probes of the shell done with $failures failures" >&2
 exit %[2]d
 `
 
+// shellEnvironmentStatus is the status with which the script of
+// shellEnvironmentProbes exits when no probe failed.
+const shellEnvironmentStatus = 4
+
+// hostSecret is a variable of the test process that ORBENV names, so that
+// orb copies it into the machine unless the client removes ORBENV.
+const hostSecret = "ORBIT_IT_SECRET"
+
+// shellEnvironmentProbes is the script that checks that neither ORBENV nor
+// hostSecret nor its value reached the shell of the agent. Its first argument
+// is the value of hostSecret, its second shellEnvironmentStatus.
+const shellEnvironmentProbes = `set -u
+failures=0
+fail() { echo "PROBE FAILED: $*" >&2; failures=$((failures + 1)); }
+if [ -n "${ORBENV+set}" ]; then fail "ORBENV reached the shell"; fi
+if [ -n "${` + hostSecret + `+set}" ]; then fail "` + hostSecret + ` reached the shell"; fi
+if env | grep -qF '%[1]s'; then fail "the value of ` + hostSecret + ` reached the shell"; fi
+echo "probes of the environment done with $failures failures" >&2
+[ "$failures" -eq 0 ] || exit 1
+exit %[2]d
+`
+
 // removeMarker removes the provisioning marker.
 const removeMarker = "set -eu\nrm -f /etc/orbit/provisioned\n"
 
@@ -73,7 +96,8 @@ var restoreMarker = fmt.Sprintf("set -eu\nprintf '%%s\\n' %d > /etc/orbit/provis
 // input instead of a terminal, so that orb gets the same arguments as for
 // the interactive shell. The shell is the agent without a way to root, in
 // the project directory, with claude on PATH; a worktree it adds has the
-// same path on the host; its status passes through. Then the refusals: no
+// same path on the host; its status passes through; ORBENV and a secret of
+// the host do not reach it (R08, #76). Then the refusals: no
 // sandbox, an outdated or missing marker, and a stopped sandbox, which
 // stays stopped. The escape suite (#10) is not part of this test.
 func TestShellIsTheAgentInTheProjectDirectory(t *testing.T) {
@@ -89,6 +113,7 @@ func TestShellIsTheAgentInTheProjectDirectory(t *testing.T) {
 	handler := shell.Handler{Machines: client, ReadinessScript: provision.ReadinessScript}
 
 	checkShellProbes(ctx, t, handler, dir, name)
+	checkShellGetsNoHostSecret(ctx, t, handler, dir, name)
 	checkWorktreeOnTheHost(t, dir)
 	checkShellWithoutASandbox(ctx, t, handler, dir)
 	checkShellNotReady(ctx, t, client, handler, dir, name)
@@ -122,6 +147,27 @@ func checkShellProbes(ctx context.Context, t *testing.T, handler shell.Handler, 
 	t.Logf("shell in %s:\n%s", name, streams)
 	if err != nil || got != (shell.Output{Name: name, Dir: dir, Status: shellStatus}) {
 		t.Fatalf("shell = %+v, %v, want status %d of %s in %s", got, err, shellStatus, name, dir)
+	}
+}
+
+// checkShellGetsNoHostSecret exports hostSecret with a random value and
+// ORBENV naming it, runs shellEnvironmentProbes in the shell, and expects
+// shellEnvironmentStatus. orb run directly with the same environment prints
+// the value in the machine, so the check fails when the client stops
+// removing ORBENV for the shell.
+func checkShellGetsNoHostSecret(ctx context.Context, t *testing.T, handler shell.Handler, dir, name string) {
+	t.Helper()
+	secret := "orbit-it-secret-" + strings.ToLower(rand.Text()[:8])
+	t.Setenv(hostSecret, secret)
+	t.Setenv("ORBENV", hostSecret)
+	got, streams, err := openShell(ctx, handler, dir, fmt.Sprintf(shellEnvironmentProbes, secret, shellEnvironmentStatus))
+	t.Logf("shell with ORBENV=%s in %s:\n%s", hostSecret, name, streams)
+	if err != nil || got != (shell.Output{Name: name, Dir: dir, Status: shellEnvironmentStatus}) {
+		t.Errorf("shell with ORBENV=%s = %+v, %v, want status %d: ORBENV or the secret reached the shell", hostSecret, got, err, shellEnvironmentStatus)
+	}
+	direct, err := exec.CommandContext(ctx, "orb", "-m", name, "-u", "agent", "printenv", hostSecret).Output()
+	if err != nil || strings.TrimSpace(string(direct)) != secret {
+		t.Errorf("orb with ORBENV=%s printed %q, %v, want the secret: the check no longer proves the removal", hostSecret, direct, err)
 	}
 }
 
