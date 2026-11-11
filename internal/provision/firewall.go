@@ -72,7 +72,7 @@ type FirewallInput struct {
 // Firewall returns /etc/nftables.conf: one table, inet orbit_egress, that the
 // file replaces in one transaction. Its output chain rejects all traffic of
 // the default uid and of every uid from 1000 up, except TCP to the proxy and
-// loopback traffic, and lets the proxy user reach only port 443 on public
+// loopback traffic, and lets the proxy user reach only ports 80 and 443 on public
 // addresses and port 53 on the resolvers. Its input chain drops connections
 // to the proxy port that do not arrive on loopback. Firewall refuses input
 // that would weaken these rules.
@@ -166,7 +166,7 @@ func outputRules(in FirewallInput) []string {
 
 // proxyUserRules returns the rules for the proxy user: answers to its
 // clients, DNS to the resolvers, a refusal of every non-public address, and
-// port 443 only.
+// ports 80 and 443 only.
 func proxyUserRules(in FirewallInput) []string {
 	user := fmt.Sprintf("meta skuid %q", in.ProxyUser)
 	rules := []string{fmt.Sprintf(`%s oif "lo" tcp sport %d accept`, user, in.ProxyPort)}
@@ -176,7 +176,7 @@ func proxyUserRules(in FirewallInput) []string {
 	return append(rules,
 		user+" ip daddr @refused_ipv4 reject",
 		user+" ip6 daddr @refused_ipv6 reject",
-		user+" tcp dport 443 accept",
+		user+" tcp dport { 80, 443 } accept",
 		user+" reject",
 	)
 }

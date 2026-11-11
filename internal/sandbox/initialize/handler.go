@@ -58,6 +58,10 @@ type Handler struct {
 	// provision.Script through a function that fills its input; the slice
 	// does not import another module.
 	ProvisionScript func(defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error)
+	// DockerSetupScript returns the script that sets up the Docker client of
+	// the agent user in a provisioned machine. cmd/orbit passes
+	// provision.DockerSetupScript; the slice does not import another module.
+	DockerSetupScript func() []byte
 	// CurrentUser returns the user who runs Orbit, from the account
 	// database of the system. cmd/orbit passes user.Current. The handler
 	// trusts its uid and its home directory more than the environment.
@@ -80,6 +84,8 @@ type plan struct {
 	forwardSSHAgent bool
 	// provision is the root script.
 	provision []byte
+	// dockerSetup is the client setup script of the agent user.
+	dockerSetup []byte
 	// install is the install script of the agent, nil without an agent.
 	install []byte
 }
@@ -87,7 +93,7 @@ type plan struct {
 // Handle creates the machine of the project directory in.Dir, unless it
 // already exists, checks that the machine forwards the SSH agent as the
 // request says, which on an existing machine runs no command in it, checks
-// that the machine mounts exactly that directory, provisions it, also when it already existed, and then installs the agent
+// that the machine mounts exactly that directory, provisions it, also when it already existed, sets up the Docker client of the agent user, and then installs the agent
 // in.Agent as the agent user, when in.Agent is set. The allowlist of the
 // proxy is the base list plus the egress domains of in.Agent, so a run
 // without an agent removes the domains of an earlier one. It refuses an
@@ -95,7 +101,7 @@ type plan struct {
 // not accept, and a provisioning script that cannot be built before it asks
 // OrbStack anything, and a directory that is, lies inside, or contains the
 // project directory of another machine before it creates one. When the
-// forwarding check, the mount check, provisioning, or the install fails on a
+// forwarding check, the mount check, provisioning, the client setup, or the install fails on a
 // machine that this call created, it deletes that machine; it never deletes a machine that
 // existed before the call.
 func (h Handler) Handle(ctx context.Context, in Input) (Output, error) {
@@ -128,7 +134,7 @@ func (h Handler) prepare(in Input) (plan, error) {
 	if err != nil {
 		return plan{}, fmt.Errorf("provisioning script: %w", err)
 	}
-	p := plan{name: sandbox.MachineName(facts.Path), dir: facts.Path, forwardSSHAgent: !in.NoSSHForwarding, provision: script}
+	p := plan{name: sandbox.MachineName(facts.Path), dir: facts.Path, forwardSSHAgent: !in.NoSSHForwarding, provision: script, dockerSetup: h.DockerSetupScript()}
 	if in.Agent != "" {
 		p.install = installScript(agent.Install)
 	}
@@ -186,11 +192,15 @@ func (h Handler) setUp(ctx context.Context, p plan, created bool) error {
 	return h.discard(ctx, p.name, err)
 }
 
-// runScripts runs the root script of p and then, when p has an agent, its
-// install script as the agent user.
+// runScripts runs the root script of p, then the setup of the Docker client
+// as the agent user, and then, when p has an agent, its install script as the
+// agent user.
 func (h Handler) runScripts(ctx context.Context, p plan) error {
 	if err := h.Machines.RunAsRoot(ctx, p.name, p.provision); err != nil {
 		return fmt.Errorf("provision sandbox %s: %w", p.name, err)
+	}
+	if err := h.Machines.RunAsAgent(ctx, p.name, p.dockerSetup); err != nil {
+		return fmt.Errorf("set up the Docker client in sandbox %s: %w", p.name, err)
 	}
 	if p.install == nil {
 		return nil

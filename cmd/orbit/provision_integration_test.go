@@ -116,6 +116,7 @@ allowed "agent write in the project directory" as_agent sh -c 'echo "$2" > "$1"'
 
 for socket in /var/run/docker.sock /run/docker.sock; do blocked "agent sees $socket" as_agent test -e "$socket"; done
 for socket in $(find / \( -path /proc -o -path /sys \) -prune -o -type s -print 2>/dev/null); do
+  [ "$socket" != "/run/user/$(id -u agent)/docker.sock" ] || continue
   [ "$(as_agent curl -s -m 2 --unix-socket "$socket" http://engine/_ping 2>/dev/null)" != OK ] || fail "agent reached an engine on $socket"
 done
 
@@ -149,8 +150,10 @@ refused_by_proxy "agent proxy to github.com:22" as_agent curl -sSf -m 15 -x http
 blocked "proxy user to 169.254.169.254" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 http://169.254.169.254
 blocked "proxy user to 198.19.249.1" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 http://198.19.249.1
 blocked "proxy user to 127.0.0.1:22" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 telnet://127.0.0.1:22
-blocked "proxy user to port 80" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 http://1.1.1.1
+allowed "proxy user to port 80" as_uid tinyproxy curl -sS --noproxy '*' -m 5 -o /dev/null http://deb.debian.org
 allowed "proxy user to port 443" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 -k -o /dev/null https://1.1.1.1
+blocked "proxy user to port 22" as_uid tinyproxy curl -sS --noproxy '*' -m 5 telnet://1.1.1.1:22
+blocked "proxy user to port 8080" as_uid tinyproxy curl -sS --noproxy '*' -m 5 http://deb.debian.org:8080
 
 if [ "$MAC_PORT" -gt 0 ]; then
   MAC="http://` + macBridgeAddr + `:$MAC_PORT"

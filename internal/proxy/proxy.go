@@ -1,6 +1,6 @@
 // Package proxy renders the configuration of tinyproxy, the egress proxy that
 // root runs in a sandbox (D22). The proxy enforces the network policy: it
-// opens a CONNECT tunnel on port 443 only to a host of the allowlist. The
+// opens a CONNECT tunnel on port 443 only, and forwards plain HTTP, to a host of the allowlist. The
 // package is pure and does no I/O.
 package proxy
 

@@ -134,7 +134,7 @@ func TestEgressDomainsAreValidHosts(t *testing.T) {
 	}
 }
 
-func TestEgressDomainsAreTheClaudeCodeHostsOfD24(t *testing.T) {
+func TestEgressDomainsAreTheClaudeCodeHostsOfD26(t *testing.T) {
 	want := []string{
 		"api.anthropic.com", "browser-intake-us5-datadoghq.com", "claude.ai",
 		"code.claude.com", "downloads.claude.ai", "http-intake.logs.us5.datadoghq.com",
