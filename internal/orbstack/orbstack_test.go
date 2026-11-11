@@ -975,6 +975,96 @@ func TestRunAsAgentPutsNoCallerValueOnTheCommandLine(t *testing.T) {
 	}
 }
 
+// TestAllowedVariablesAreTheDecidedList pins the allowlist of #76 to its 13
+// names, so that a name added to or removed from allowedVariables fails a
+// test and a reviewer sees the change of the boundary (R08).
+func TestAllowedVariablesAreTheDecidedList(t *testing.T) {
+	want := []string{
+		"HOME", "PATH", "TMPDIR",
+		"TERM", "COLORTERM",
+		"LANG", "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC", "LC_TIME",
+	}
+	if !slices.Equal(allowedVariables, want) {
+		t.Errorf("allowedVariables = %q, want exactly %q", allowedVariables, want)
+	}
+}
+
+func TestAllowedEnvironment(t *testing.T) {
+	allowed := []string{
+		"HOME=/Users/dev", "PATH=/usr/bin:/bin", "TMPDIR=/var/folders/x/T/", "TERM=xterm-256color", "COLORTERM=truecolor",
+		"LANG=en_US.UTF-8", "LC_ALL=C.UTF-8", "LC_COLLATE=C", "LC_CTYPE=UTF-8", "LC_MESSAGES=C", "LC_MONETARY=C", "LC_NUMERIC=C", "LC_TIME=C",
+	}
+	tests := []struct {
+		name    string
+		environ []string
+		want    []string
+	}{
+		{
+			name:    "every allowed variable",
+			environ: allowed,
+			want:    allowed,
+		},
+		{
+			name:    "ORBENV and WSLENV naming a secret",
+			environ: []string{"HOME=/Users/dev", "ORBENV=TOKEN:HOME", "WSLENV=TOKEN/u", "TOKEN=secret"},
+			want:    []string{"HOME=/Users/dev"},
+		},
+		{
+			name: "credentials and endpoints of the host",
+			environ: []string{
+				"HTTP_PROXY=http://u:pw@p:1", "https_proxy=http://u:pw@p:1", "ALL_PROXY=socks5://u:pw@p:1", "NO_PROXY=localhost",
+				"DOCKER_HOST=ssh://u@host", "DOCKER_AUTH_CONFIG={\"auths\":{\"r\":{\"auth\":\"dTpwdw==\"}}}", "docker_host=x",
+				"ELECTRON_RUN_AS_NODE=1", "SSH_AUTH_SOCK=/private/tmp/agent", "GITHUB_TOKEN=ghp_x", "AWS_SECRET_ACCESS_KEY=x",
+				"ANTHROPIC_API_KEY=x", "CLAUDE_CODE_OAUTH_TOKEN=x", "HOME=/Users/dev",
+			},
+			want: []string{"HOME=/Users/dev"},
+		},
+		{
+			name: "values that orb forwards but that are not allowed",
+			environ: []string{
+				"TERM_PROGRAM=iTerm.app", "TERM_PROGRAM_VERSION=3", "ITERM_SESSION_ID=x", "WEZTERM_PANE=1",
+				"__CFBundleIdentifier=x", "__CF_USER_TEXT_ENCODING=0x1F5", "COMMAND_MODE=unix2003", "TERM=dumb",
+			},
+			want: []string{"TERM=dumb"},
+		},
+		{
+			name: "names near an allowed name",
+			environ: []string{
+				"home=/x", "Home=/x", "path=/x", "Term=x", "HOME_X=/x", "XHOME=/x", " HOME=/x", "HOME =/x",
+				"LC_X=x", "LC_=x", "LC_all=x", "LANGUAGE=x", "LANG_X=x", "TMP=/x", "TEMP=/x", "USER=dev", "LOGNAME=dev", "SHELL=/bin/zsh",
+			},
+			want: []string{},
+		},
+		{
+			name:    "allowed name in a value or without a name",
+			environ: []string{"NOTE=HOME=/x", "=HOME", "=PATH=/x", "ORBENV", "TOKEN"},
+			want:    []string{},
+		},
+		{
+			name:    "value that holds an equals sign and duplicates in order",
+			environ: []string{"TERM=a=b", "GITHUB_TOKEN=x", "TERM=", "HOME=/a", "HOME=/b"},
+			want:    []string{"TERM=a=b", "TERM=", "HOME=/a", "HOME=/b"},
+		},
+		{
+			name:    "empty environment",
+			environ: []string{},
+			want:    []string{},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			environ := slices.Clone(test.environ)
+			got := allowedEnvironment(environ)
+			if !slices.Equal(got, test.want) {
+				t.Errorf("allowedEnvironment(%q) = %q, want %q", test.environ, got, test.want)
+			}
+			if !slices.Equal(environ, test.environ) {
+				t.Errorf("allowedEnvironment changed its argument to %q", environ)
+			}
+		})
+	}
+}
+
 func TestStartArgs(t *testing.T) {
 	want := []string{"start", "orbit-api-1d9b22c9"}
 	if got := startArgs("orbit-api-1d9b22c9"); !slices.Equal(got, want) {
@@ -1028,6 +1118,86 @@ func TestStartAndStopRefuseHostileNamesBeforeAnyCommand(t *testing.T) {
 				t.Errorf("orb ran %q, %v, want no command", received, err)
 			}
 		})
+	}
+}
+
+// shellVariables are the variables that the shell of the fake orb sets by
+// itself, so they are in the environment that it records.
+var shellVariables = []string{"PWD", "OLDPWD", "SHLVL", "_"}
+
+// TestEveryCommandGetsOnlyAllowedVariables sets every allowed variable and
+// forbidden ones: credentials, endpoints of the host, values that orb
+// forwards, names near an allowed name, and ORBENV and WSLENV naming a
+// variable of the test process. It runs every operation of the client
+// against a fake orb that records its environment, and checks that every
+// command of orb, orb status included, gets every allowed variable and no
+// other one.
+func TestEveryCommandGetsOnlyAllowedVariables(t *testing.T) {
+	const machineName = "orbit-api-1d9b22c9"
+	dir := t.TempDir()
+	useBareFakeCLI(t, "/usr/bin/env > \"$(/usr/bin/mktemp '"+dir+"/env.XXXXXX')\"\n"+
+		reportsRunning+
+		"if [ \"$1\" = list ] && [ \"$2\" = --format ]; then echo '[]'; exit 0; fi\n"+
+		"if [ \"$5\" = cat ]; then echo '195 125 0:35 /p /p rw - virtiofs mac rw'; fi\n")
+	for _, name := range allowedVariables {
+		if name != "HOME" && name != "PATH" {
+			t.Setenv(name, "allowed-"+name)
+		}
+	}
+	forbidden := []string{
+		"ORBIT_TEST_SECRET", "HTTPS_PROXY", "http_proxy", "DOCKER_HOST", "DOCKER_AUTH_CONFIG", "ELECTRON_RUN_AS_NODE",
+		"SSH_AUTH_SOCK", "GITHUB_TOKEN", "TERM_PROGRAM", "__CFBundleIdentifier", "home", "HOME_X", "LC_X", "USER",
+	}
+	for _, name := range forbidden {
+		t.Setenv(name, "http://orbit:forwarding-marker@proxy.invalid:3128")
+	}
+	t.Setenv("ORBENV", "ORBIT_TEST_SECRET:HOME")
+	t.Setenv("WSLENV", "ORBIT_TEST_SECRET/u")
+	client := New(testPrefix)
+	ctx := context.Background()
+
+	_, existsErr := client.Exists(ctx, machineName)
+	_, mountsErr := client.Mounts(ctx)
+	_, activeMountsErr := client.ActiveMounts(ctx, machineName)
+	_, stateErr := client.State(ctx, machineName)
+	operations := map[string]error{
+		"Create":       client.Create(ctx, machineName, "/Users/dev/Project/api"),
+		"Exists":       existsErr,
+		"Mounts":       mountsErr,
+		"ActiveMounts": activeMountsErr,
+		"State":        stateErr,
+		"Start":        client.Start(ctx, machineName),
+		"Stop":         client.Stop(ctx, machineName),
+		"Delete":       client.Delete(ctx, machineName),
+		"RunAsRoot":    client.RunAsRoot(ctx, machineName, []byte("true\n")),
+		"RunAsAgent":   client.RunAsAgent(ctx, machineName, []byte("true\n")),
+	}
+	for operation, err := range operations {
+		if err != nil {
+			t.Errorf("%s = %v", operation, err)
+		}
+	}
+
+	records, err := filepath.Glob(filepath.Join(dir, "env.*"))
+	if err != nil || len(records) != 2*len(operations) {
+		t.Fatalf("recorded environments = %d, %v, want %d", len(records), err, 2*len(operations))
+	}
+	for _, record := range records {
+		content, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		environ := strings.Split(strings.TrimSpace(string(content)), "\n")
+		for _, entry := range environ {
+			if name, _, _ := strings.Cut(entry, "="); !slices.Contains(allowedVariables, name) && !slices.Contains(shellVariables, name) {
+				t.Errorf("orb got %q", entry)
+			}
+		}
+		for _, name := range allowedVariables {
+			if kept := name + "=" + os.Getenv(name); !slices.Contains(environ, kept) {
+				t.Errorf("orb did not get %q", kept)
+			}
+		}
 	}
 }
 

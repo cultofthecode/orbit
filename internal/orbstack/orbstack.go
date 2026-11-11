@@ -44,6 +44,29 @@ const (
 // stateDir is the directory under $HOME through which orb finds OrbStack.
 const stateDir = ".orbstack"
 
+// allowedVariables are the only host variables that execute passes to orb,
+// matched by exact name; it removes every other one. orb copies some host
+// variables into the command that it runs in a machine, as root and as the
+// agent, and ORBENV and WSLENV make it copy every host variable that they
+// name (OrbStack 2.2.5), so a host credential could otherwise enter a sandbox
+// without an opt-in (R08). The owner chose this allowlist over a list of
+// forbidden names (#76): a variable that a new version of OrbStack starts to
+// forward stays on the host.
+//
+// OrbStack 2.2.5, probed with only these variables set, runs every command of
+// the adapter with HOME alone and panics without it ("$HOME is not
+// defined"): orb finds OrbStack through $HOME/.orbstack (#70). PATH and
+// TMPDIR are what orb, a Go program, reads to find a program it starts and a
+// directory for temporary files; orb does not copy them into a machine. orb
+// copies TERM, COLORTERM, and the locale variables into the machine, where
+// a terminal needs them: without TERM a command in the machine gets
+// TERM=dumb.
+var allowedVariables = []string{
+	"HOME", "PATH", "TMPDIR",
+	"TERM", "COLORTERM",
+	"LANG", "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC", "LC_TIME",
+}
+
 // mountSeparator divides the source and the destination of a mount.
 const mountSeparator = ":"
 
@@ -591,11 +614,14 @@ func homeCause(h home) string {
 }
 
 // execute runs orb with args and stdin and returns its standard output, also
-// when the command fails. The error of a failed command carries the
-// standard error of orb.
+// when the command fails. orb gets only the variables of allowedVariables
+// (HOME, PATH, TMPDIR, TERM, COLORTERM, LANG, and the LC_ variables of POSIX)
+// from the environment of the process. The error of a failed command carries
+// the standard error of orb.
 func execute(ctx context.Context, args []string, stdin []byte) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, cli, args...)
+	cmd.Env = allowedEnvironment(os.Environ())
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -603,6 +629,21 @@ func execute(ctx context.Context, args []string, stdin []byte) (string, error) {
 		return stdout.String(), commandError(args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+// allowedEnvironment returns a copy of environ, a list of NAME=value entries,
+// with only the entries of allowedVariables, in their order. It removes a name
+// that differs from an allowed one only in letter case or by a prefix or a
+// suffix, because the names of the environment are case-sensitive.
+func allowedEnvironment(environ []string) []string {
+	return slices.DeleteFunc(slices.Clone(environ), isForbidden)
+}
+
+// isForbidden reports whether entry sets a variable that is not in
+// allowedVariables.
+func isForbidden(entry string) bool {
+	name, _, _ := strings.Cut(entry, "=")
+	return !slices.Contains(allowedVariables, name)
 }
 
 // commandError wraps the error of the failed orb subcommand and appends what
