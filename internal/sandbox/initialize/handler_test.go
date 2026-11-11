@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cultofthecode/orbit/internal/orbstack/orbstacktest"
 	"github.com/cultofthecode/orbit/internal/sandbox"
@@ -1193,6 +1194,37 @@ func TestHandleStopsOnSymlinksThatCannotBeFollowed(t *testing.T) {
 				t.Errorf("calls = %v, want none", fake.Calls)
 			}
 		})
+	}
+}
+
+// TestHandleFollowsALongDanglingChainOnce covers a dangling .ssh that
+// reaches its target through a long chain of relative symlinks. Each link has
+// two spellings on macOS; the handler must follow it once, not once per
+// spelling, or the work doubles with every hop and init hangs.
+func TestHandleFollowsALongDanglingChainOnce(t *testing.T) {
+	const hops = 24
+	home := newBareHome(t)
+	makeDirs(t, home, "links")
+	symlinkAt(t, filepath.Join("links", "l0"), filepath.Join(home, ".ssh"))
+	for i := range hops - 1 {
+		symlinkAt(t, "l"+strconv.Itoa(i+1), filepath.Join(home, "links", "l"+strconv.Itoa(i)))
+	}
+	symlinkAt(t, filepath.Join("..", "dotfiles", "ssh"), filepath.Join(home, "links", "l"+strconv.Itoa(hops-1)))
+	dir := filepath.Join(home, "dotfiles")
+	result := make(chan error, 1)
+
+	go func() {
+		_, err := newHandler(orbstacktest.New(sandbox.NamePrefix), account(home)).Handle(context.Background(), Input{Dir: dir})
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, sandbox.ErrProtectedAncestor) {
+			t.Errorf("Handle(%q) = %v, want %v", dir, err, sandbox.ErrProtectedAncestor)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Handle did not finish within 10s")
 	}
 }
 

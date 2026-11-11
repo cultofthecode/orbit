@@ -493,45 +493,65 @@ func followedSpellings(path string, hops int) ([]string, error) {
 }
 
 // followLinks returns the paths, with every path that is a symlink replaced
-// by the spellings of where its target would be created.
+// by the spellings of where its target would be created. The paths are
+// spellings of one path, so it follows each distinct target once.
 func followLinks(paths []string, hops int) ([]string, error) {
-	var followed []string
+	var kept, targets []string
 	for _, path := range paths {
-		spellings, err := followLink(path, hops)
+		target, err := danglingTarget(path)
+		if err != nil {
+			return nil, err
+		}
+		if target == "" {
+			kept = append(kept, path)
+		} else {
+			targets = append(targets, target)
+		}
+	}
+	followed, err := followTargets(distinct(targets), hops)
+	if err != nil {
+		return nil, err
+	}
+	return distinct(slices.Concat(kept, followed)), nil
+}
+
+// followTargets returns the spellings of where each of targets, reached
+// after hops symlinks, would be created.
+func followTargets(targets []string, hops int) ([]string, error) {
+	if len(targets) > 0 && hops == maxLinkHops {
+		return nil, fmt.Errorf("%w: %s", syscall.ELOOP, targets[0])
+	}
+	var followed []string
+	for _, target := range targets {
+		spellings, err := followedSpellings(target, hops+1)
 		if err != nil {
 			return nil, err
 		}
 		followed = append(followed, spellings...)
 	}
-	return distinct(followed), nil
+	return followed, nil
 }
 
-// followLink returns the spellings of where the target of path would be
-// created when path is a symlink, and path itself otherwise.
-func followLink(path string, hops int) ([]string, error) {
+// danglingTarget returns the target of path when path is a symlink, and ""
+// otherwise.
+func danglingTarget(path string) (string, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return []string{path}, nil
+		return "", nil
 	}
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	if info.Mode()&fs.ModeSymlink == 0 {
-		return []string{path}, nil
+		return "", nil
 	}
-	if hops == maxLinkHops {
-		return nil, fmt.Errorf("%w: %s", syscall.ELOOP, path)
-	}
-	target, err := linkTarget(path)
-	if err != nil {
-		return nil, err
-	}
-	return followedSpellings(target, hops+1)
+	return linkTarget(path)
 }
 
 // linkTarget returns the absolute, clean path that the symlink link points
-// to. It refuses a target that has ".." after another name
-// (errUnresolvableLink).
+// to, with a relative target joined to the canonical path of the directory
+// that holds the link, so that every spelling of link gives one target. It
+// refuses a target that has ".." after another name (errUnresolvableLink).
 func linkTarget(link string) (string, error) {
 	target, err := os.Readlink(link)
 	if err != nil {
@@ -543,7 +563,11 @@ func linkTarget(link string) (string, error) {
 	if filepath.IsAbs(target) {
 		return filepath.Clean(target), nil
 	}
-	return filepath.Join(filepath.Dir(link), target), nil
+	dir, err := realpath.Resolve(filepath.Dir(link))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, target), nil
 }
 
 // hasParentAfterName reports whether target has a ".." segment after a
