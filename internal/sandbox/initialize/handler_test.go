@@ -25,6 +25,20 @@ import (
 // directories to the root.
 const dataVolume = "/System/Volumes/Data"
 
+// relocatingVariables are the environment variables that move a protected
+// location. TestMain unsets them, so that the environment of the developer
+// does not change what a test protects.
+var relocatingVariables = []string{"CLAUDE_CONFIG_DIR", "GH_CONFIG_DIR", "GNUPGHOME", "XDG_CONFIG_HOME", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"}
+
+func TestMain(m *testing.M) {
+	for _, variable := range relocatingVariables {
+		if err := os.Unsetenv(variable); err != nil {
+			panic(err)
+		}
+	}
+	os.Exit(m.Run())
+}
+
 // newHome makes a home directory with a project, .ssh, and .claude in it,
 // makes it the home directory of the environment of the test, and returns
 // its canonical path.
@@ -1875,5 +1889,234 @@ func TestTruncatedInstallScriptFailsToParse(t *testing.T) {
 		if !errors.As(err, &exit) || exit.ExitCode() != 2 {
 			t.Errorf("bash with the script cut to %q = %v (%s), want the syntax error exit status 2", script[:cut], err, output)
 		}
+	}
+}
+
+// movedLocation is a protected location that an environment variable moves,
+// in a layout of the tests: the value of the variable and the location that
+// it names, both relative to the home directory and inside dotfiles, and
+// whether the location is a file.
+type movedLocation struct {
+	variable string
+	value    string
+	location string
+	file     bool
+}
+
+// movedLocations are the locations of every variable that moves one.
+var movedLocations = []movedLocation{
+	{variable: "CLAUDE_CONFIG_DIR", value: "dotfiles/claude", location: "dotfiles/claude"},
+	{variable: "GH_CONFIG_DIR", value: "dotfiles/gh", location: "dotfiles/gh"},
+	{variable: "GNUPGHOME", value: "dotfiles/gnupg", location: "dotfiles/gnupg"},
+	{variable: "XDG_CONFIG_HOME", value: "dotfiles/config", location: "dotfiles/config/gh"},
+	{variable: "AWS_CONFIG_FILE", value: "dotfiles/aws/config", location: "dotfiles/aws/config", file: true},
+	{variable: "AWS_SHARED_CREDENTIALS_FILE", value: "dotfiles/aws/credentials", location: "dotfiles/aws/credentials", file: true},
+}
+
+// create makes the location in home.
+func (m movedLocation) create(t *testing.T, home string) {
+	t.Helper()
+	m.createIn(t, home, "dotfiles")
+}
+
+// createIn makes the location in the directory dir of home instead of in
+// dotfiles.
+func (m movedLocation) createIn(t *testing.T, home, dir string) {
+	t.Helper()
+	location := filepath.Join(dir, inDotfiles(m.location))
+	if !m.file {
+		makeDirs(t, home, location)
+		return
+	}
+	makeDirs(t, home, filepath.Dir(location))
+	writeFile(t, filepath.Join(home, location))
+}
+
+// set sets the variable to path.
+func (m movedLocation) set(t *testing.T, path string) {
+	t.Setenv(m.variable, path)
+}
+
+// inDotfiles returns path, which is relative to home and inside dotfiles,
+// relative to dotfiles.
+func inDotfiles(path string) string {
+	return strings.TrimPrefix(path, "dotfiles/")
+}
+
+// containerErr is the error for a project directory that contains the
+// location.
+func (m movedLocation) containerErr() error {
+	if m.file {
+		return sandbox.ErrProtectedFile
+	}
+	return sandbox.ErrProtectedAncestor
+}
+
+// layouts returns the layouts in which the handler must refuse a project
+// directory because of the location.
+func (m movedLocation) layouts() []linkLayout {
+	layouts := []linkLayout{
+		{name: "location inside the project", want: m.containerErr(), layout: func(t *testing.T, home string) string {
+			m.create(t, home)
+			m.set(t, filepath.Join(home, m.value))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "symlink to a location inside the project", want: m.containerErr(), layout: func(t *testing.T, home string) string {
+			m.create(t, home)
+			symlinkAt(t, filepath.Join(home, m.value), filepath.Join(home, "linked"))
+			m.set(t, filepath.Join(home, "linked"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "dangling symlink to a location inside the project", want: m.containerErr(), layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join(home, m.value), filepath.Join(home, "linked"))
+			m.set(t, filepath.Join(home, "linked"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "location through a symlink in the project", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			m.createIn(t, home, "store")
+			symlinkAt(t, filepath.Join(home, "store", inDotfiles(m.value)), filepath.Join(home, "dotfiles", "cred"))
+			m.set(t, filepath.Join(home, "dotfiles", "cred"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "location through a symlinked directory in the project", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			m.createIn(t, home, "store")
+			symlinkAt(t, filepath.Join(home, "store"), filepath.Join(home, "dotfiles", "sub"))
+			m.set(t, filepath.Join(home, "dotfiles", "sub", inDotfiles(m.value)))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "missing location under a symlinked parent", want: m.containerErr(), layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join(home, "dotfiles"), filepath.Join(home, "links"))
+			m.set(t, filepath.Join(home, "links", inDotfiles(m.value)))
+			return filepath.Join(home, "dotfiles")
+		}},
+	}
+	if m.file {
+		return append(layouts, linkLayout{name: "project that holds the location", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			m.create(t, home)
+			m.set(t, filepath.Join(home, m.value))
+			return filepath.Dir(filepath.Join(home, m.location))
+		}})
+	}
+	return append(layouts,
+		linkLayout{name: "location equal to the project", want: sandbox.ErrProtectedDir, layout: func(t *testing.T, home string) string {
+			m.create(t, home)
+			m.set(t, filepath.Join(home, m.value))
+			return filepath.Join(home, m.location)
+		}},
+		linkLayout{name: "project inside the location", want: sandbox.ErrProtectedDir, layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, filepath.Join(m.location, "projects"))
+			m.set(t, filepath.Join(home, m.value))
+			return filepath.Join(home, m.location, "projects")
+		}},
+		linkLayout{name: "symlink in a location outside the project", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, filepath.Join("store", inDotfiles(m.location), "secret"), "dotfiles/secret")
+			m.set(t, filepath.Join(home, "store", inDotfiles(m.value)))
+			return filepath.Join(home, "dotfiles")
+		}},
+	)
+}
+
+// TestHandleRefusesLocationsThatTheEnvironmentMoves covers every variable
+// that moves a protected location into a project directory (#40). The
+// project directories outside the location stay accepted.
+func TestHandleRefusesLocationsThatTheEnvironmentMoves(t *testing.T) {
+	for _, moved := range movedLocations {
+		t.Run(moved.variable, func(t *testing.T) {
+			checkLinkLayouts(t, moved.layouts())
+		})
+	}
+}
+
+// TestHandleKeepsTheDefaultLocationsWhenTheEnvironmentMovesThem covers a
+// home directory whose default locations still exist while every variable
+// names a location elsewhere: both stay protected.
+func TestHandleKeepsTheDefaultLocationsWhenTheEnvironmentMovesThem(t *testing.T) {
+	home := newBareHome(t)
+	makeDirs(t, home, ".claude", ".config/gh", ".gnupg", ".aws")
+	for _, moved := range movedLocations {
+		moved.create(t, home)
+		moved.set(t, filepath.Join(home, moved.value))
+	}
+
+	checkRefusals(t, account(home), []refusal{
+		{name: ".claude", dir: filepath.Join(home, ".claude"), want: sandbox.ErrProtectedDir},
+		{name: ".config/gh", dir: filepath.Join(home, ".config", "gh"), want: sandbox.ErrProtectedDir},
+		{name: ".gnupg", dir: filepath.Join(home, ".gnupg"), want: sandbox.ErrProtectedDir},
+		{name: ".aws", dir: filepath.Join(home, ".aws"), want: sandbox.ErrProtectedDir},
+		{name: "dotfiles", dir: filepath.Join(home, "dotfiles"), want: sandbox.ErrProtectedAncestor},
+	})
+	t.Run("project", func(t *testing.T) {
+		checkCreates(t, account(home), filepath.Join(home, "work", "api"), filepath.Join(home, "work", "api"))
+	})
+}
+
+// TestHandleFailsClosedOnLocationsThatCannotBeProtected covers a variable
+// whose value names no absolute path, or a location that cannot be
+// resolved: init stops before it asks OrbStack anything and names the
+// variable.
+func TestHandleFailsClosedOnLocationsThatCannotBeProtected(t *testing.T) {
+	tests := []struct {
+		name  string
+		value func(t *testing.T, home string) string
+		want  string
+	}{
+		{name: "empty", want: sandbox.ErrRelocatedPath.Error(), value: func(*testing.T, string) string { return "" }},
+		{name: "relative", want: sandbox.ErrRelocatedPath.Error(), value: func(*testing.T, string) string { return "dotfiles/vim" }},
+		{name: "parent after a name", want: sandbox.ErrRelocatedPath.Error(), value: func(t *testing.T, home string) string {
+			return filepath.Join(home, "dotfiles") + "/../work"
+		}},
+		{name: "symlink loop", want: "protected location of", value: func(t *testing.T, home string) string {
+			symlinkAt(t, "loop", filepath.Join(home, "loop"))
+			return filepath.Join(home, "loop")
+		}},
+		{name: "dangling symlink with .. after a name", want: errUnresolvableLink.Error(), value: func(t *testing.T, home string) string {
+			symlinkAt(t, "dotfiles/gone/../store", filepath.Join(home, "linked"))
+			return filepath.Join(home, "linked")
+		}},
+	}
+	for _, moved := range movedLocations {
+		for _, test := range tests {
+			t.Run(moved.variable+" "+test.name, func(t *testing.T) {
+				home := newBareHome(t)
+				moved.set(t, test.value(t, home))
+				fake := orbstacktest.New(sandbox.NamePrefix)
+
+				_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: filepath.Join(home, "work", "api")})
+
+				if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), moved.variable) {
+					t.Errorf("Handle = %v, want an error that contains %q and %s", err, test.want, moved.variable)
+				}
+				if len(fake.Calls) != 0 {
+					t.Errorf("calls = %v, want none", fake.Calls)
+				}
+			})
+		}
+	}
+}
+
+// TestHandleFailsClosedOnADirectoryVariableThatNamesAFile covers a variable
+// that moves a protected directory to a path that is a file: the handler
+// cannot protect what the tool would put there, so init stops and names the
+// variable.
+func TestHandleFailsClosedOnADirectoryVariableThatNamesAFile(t *testing.T) {
+	for _, moved := range movedLocations {
+		if moved.file {
+			continue
+		}
+		t.Run(moved.variable, func(t *testing.T) {
+			home := newBareHome(t)
+			writeFile(t, filepath.Join(home, "dotfiles", "plain"))
+			moved.set(t, filepath.Join(home, "dotfiles", "plain"))
+			fake := orbstacktest.New(sandbox.NamePrefix)
+
+			_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: filepath.Join(home, "work", "api")})
+
+			if err == nil || !strings.Contains(err.Error(), "protected location of "+moved.variable) {
+				t.Errorf("Handle = %v, want an error that names %s", err, moved.variable)
+			}
+			if len(fake.Calls) != 0 {
+				t.Errorf("calls = %v, want none", fake.Calls)
+			}
+		})
 	}
 }
