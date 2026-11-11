@@ -3,8 +3,10 @@ package initialize
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
@@ -90,30 +92,72 @@ func account(home string) *user.User {
 	return &user.User{Uid: strconv.Itoa(os.Getuid()), HomeDir: home}
 }
 
+// testAgentName is the name of the only agent that lookupAgent knows.
+const testAgentName = "test-agent"
+
+// testAgent is the agent that lookupAgent returns for testAgentName.
+var testAgent = sandbox.Agent{
+	Install:       "curl -fsSL https://agent.example/install.sh | bash",
+	EgressDomains: []string{"agent.example", "downloads.agent.example"},
+}
+
+// errUnknownAgent is the error of lookupAgent for every other name.
+var errUnknownAgent = errors.New("unknown agent")
+
+// lookupAgent is the registry of the tests: it knows testAgent only.
+func lookupAgent(name string) (sandbox.Agent, error) {
+	if name != testAgentName {
+		return sandbox.Agent{}, fmt.Errorf("%w %q", errUnknownAgent, name)
+	}
+	return testAgent, nil
+}
+
 // newHandler returns a handler on fake that finds entry in the account
-// database and builds the root script with fakeScript.
+// database, knows testAgent, and builds the root script with fakeScript.
 func newHandler(fake *orbstacktest.Fake, entry *user.User) Handler {
 	return Handler{
 		Machines:        fake,
+		Agent:           lookupAgent,
 		ProvisionScript: fakeScript,
 		CurrentUser:     func() (*user.User, error) { return entry, nil },
 	}
 }
 
-// fakeScript returns a root script that names the default uid.
-func fakeScript(defaultUID uint32) ([]byte, error) {
-	return []byte(scriptFor(defaultUID)), nil
+// fakeScript returns a root script that names the default uid and the agent
+// domains.
+func fakeScript(defaultUID uint32, agentDomains []string) ([]byte, error) {
+	return []byte(scriptFor(defaultUID, agentDomains)), nil
 }
 
-// scriptFor returns the script that fakeScript builds for uid.
-func scriptFor(uid uint32) string {
-	return "provision with the default uid " + strconv.FormatUint(uint64(uid), 10) + "\n"
+// scriptFor returns the script that fakeScript builds for uid and
+// agentDomains.
+func scriptFor(uid uint32, agentDomains []string) string {
+	return "provision with the default uid " + strconv.FormatUint(uint64(uid), 10) + " and the agent domains [" + strings.Join(agentDomains, " ") + "]\n"
 }
 
 // ownScript returns the script that fakeScript builds for the user who runs
-// the test.
+// the test, without an agent.
 func ownScript() string {
-	return scriptFor(uint32(os.Getuid()))
+	return scriptFor(uint32(os.Getuid()), nil)
+}
+
+// ownAgentScript returns the script that fakeScript builds for the user who
+// runs the test, with testAgent.
+func ownAgentScript() string {
+	return scriptFor(uint32(os.Getuid()), testAgent.EgressDomains)
+}
+
+// testInstallScript is the install script of testAgent that the handler
+// runs as the agent user.
+const testInstallScript = "{\nset -euo pipefail\nset -a\n. /etc/environment\nset +a\ncurl -fsSL https://agent.example/install.sh | bash\n}\n"
+
+// agentCalls returns the calls that provision the machine name with
+// testAgent and install it.
+func agentCalls(name string) []orbstacktest.Call {
+	return []orbstacktest.Call{
+		{Op: orbstacktest.OpRunAsRoot, Name: name, Script: ownAgentScript()},
+		{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testInstallScript},
+	}
 }
 
 // requireSpelling stops the test when the file system does not accept path
@@ -1546,23 +1590,21 @@ func TestHandleKeepsAnExistingMachineWhenProvisioningFails(t *testing.T) {
 	}
 }
 
-func TestHandleDeletesANewMachineWhenTheScriptCannotBeBuilt(t *testing.T) {
+func TestHandleRefusesAScriptThatCannotBeBuiltBeforeItAsksOrbStack(t *testing.T) {
 	boom := errors.New("invalid provisioning input")
 	home := newHome(t)
 	project := filepath.Join(home, "work", "api")
-	name := sandbox.MachineName(project)
 	fake := orbstacktest.New(sandbox.NamePrefix)
 	handler := newHandler(fake, account(home))
-	handler.ProvisionScript = func(uint32) ([]byte, error) { return nil, boom }
+	handler.ProvisionScript = func(uint32, []string) ([]byte, error) { return nil, boom }
 
-	_, err := handler.Handle(context.Background(), Input{Dir: project})
+	_, err := handler.Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
 
 	if !errors.Is(err, boom) {
 		t.Errorf("Handle = %v, want %v", err, boom)
 	}
-	wantCalls := append(checkedCreateCalls(name, project), orbstacktest.Call{Op: orbstacktest.OpDelete, Name: name})
-	if !slices.Equal(fake.Calls, wantCalls) {
-		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+	if len(fake.Calls) != 0 {
+		t.Errorf("calls = %v, want none", fake.Calls)
 	}
 }
 
@@ -1644,6 +1686,209 @@ func TestHandleReportsAFailedDeletion(t *testing.T) {
 
 	if !errors.Is(err, sandbox.ErrMountMismatch) || !errors.Is(err, boom) {
 		t.Errorf("Handle = %v, want an error that wraps %v and %v", err, sandbox.ErrMountMismatch, boom)
+	}
+}
+
+func TestHandleInstallsTheAgentAfterProvisioning(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+	if err != nil {
+		t.Fatalf("Handle = %v", err)
+	}
+	if want := (Output{Name: name, Dir: project, Created: true}); got != want {
+		t.Errorf("Handle = %+v, want %+v", got, want)
+	}
+	wantCalls := append(checkedCreateCalls(name, project), agentCalls(name)...)
+	if !slices.Equal(fake.Calls, wantCalls) {
+		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+	}
+}
+
+func TestHandleWithoutAgentAsksForNoAgent(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	handler := newHandler(fake, account(home))
+	handler.Agent = func(name string) (sandbox.Agent, error) {
+		t.Errorf("Agent(%q) called without an agent", name)
+		return testAgent, nil
+	}
+
+	if _, err := handler.Handle(context.Background(), Input{Dir: project}); err != nil {
+		t.Fatalf("Handle = %v", err)
+	}
+	if !slices.Equal(fake.Calls, createCalls(name, project)) {
+		t.Errorf("calls = %v, want %v", fake.Calls, createCalls(name, project))
+	}
+}
+
+func TestHandleRefusesAnUnknownAgentBeforeItAsksOrbStack(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	for _, agent := range []string{"codex", "Test-Agent", " test-agent", "test-agent\n", "../test-agent"} {
+		t.Run(agent, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.Machines[sandbox.MachineName(project)] = map[string]string{project: project}
+			fake.Calls = nil
+
+			_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: agent})
+
+			if !errors.Is(err, errUnknownAgent) {
+				t.Errorf("Handle(%q) = %v, want %v", agent, err, errUnknownAgent)
+			}
+			if len(fake.Calls) != 0 {
+				t.Errorf("calls = %v, want none", fake.Calls)
+			}
+		})
+	}
+}
+
+// TestHandleRefusesAHostileAgentDomainBeforeItAsksOrbStack gives the
+// provisioning script the domains of the agent unchanged, and stops at its
+// refusal before the first call to OrbStack. provision.Script refuses such
+// a domain with policy.ErrInvalidHost; cmd/orbit tests that composition.
+func TestHandleRefusesAHostileAgentDomainBeforeItAsksOrbStack(t *testing.T) {
+	refused := errors.New("invalid host name for an allow rule")
+	hostile := sandbox.Agent{Install: testAgent.Install, EgressDomains: []string{"agent.example", "*.anthropic.com"}}
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	handler := newHandler(fake, account(home))
+	handler.Agent = func(string) (sandbox.Agent, error) { return hostile, nil }
+	var gotDomains []string
+	handler.ProvisionScript = func(_ uint32, agentDomains []string) ([]byte, error) {
+		gotDomains = agentDomains
+		return nil, refused
+	}
+
+	_, err := handler.Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+	if !errors.Is(err, refused) {
+		t.Errorf("Handle = %v, want %v", err, refused)
+	}
+	if !slices.Equal(gotDomains, hostile.EgressDomains) {
+		t.Errorf("agent domains of the script = %q, want %q", gotDomains, hostile.EgressDomains)
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("calls = %v, want none", fake.Calls)
+	}
+}
+
+func TestHandleDeletesANewMachineWhenTheInstallFails(t *testing.T) {
+	boom := errors.New("orb: install failed")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.RunAsAgentErr = boom
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "was deleted") {
+		t.Errorf("Handle = %v, want %v and the deletion in the text", err, boom)
+	}
+	if _, kept := fake.Machines[name]; kept {
+		t.Errorf("machines = %v, want the new machine deleted", fake.Machines)
+	}
+	wantCalls := slices.Concat(checkedCreateCalls(name, project), agentCalls(name), []orbstacktest.Call{{Op: orbstacktest.OpDelete, Name: name}})
+	if !slices.Equal(fake.Calls, wantCalls) {
+		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+	}
+}
+
+func TestHandleKeepsAnExistingMachineWhenTheInstallFails(t *testing.T) {
+	boom := errors.New("orb: install failed")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+	fake.RunAsAgentErr = boom
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+	if !errors.Is(err, boom) {
+		t.Errorf("Handle = %v, want %v", err, boom)
+	}
+	if _, kept := fake.Machines[name]; !kept {
+		t.Errorf("machines = %v, want the existing machine kept", fake.Machines)
+	}
+	wantCalls := append(checkedKeepCalls(name), agentCalls(name)...)
+	if !slices.Equal(fake.Calls, wantCalls) {
+		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+	}
+}
+
+func TestHandleInstallsNothingWhenProvisioningFails(t *testing.T) {
+	boom := errors.New("orb: script failed")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.RunAsRootErr = boom
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+	if !errors.Is(err, boom) {
+		t.Errorf("Handle = %v, want %v", err, boom)
+	}
+	wantCalls := slices.Concat(checkedCreateCalls(name, project), agentCalls(name)[:1], []orbstacktest.Call{{Op: orbstacktest.OpDelete, Name: name}})
+	if !slices.Equal(fake.Calls, wantCalls) {
+		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
+	}
+}
+
+func TestHandleWithoutAgentDropsTheDomainsOfAnEarlierAgent(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	handler := newHandler(fake, account(home))
+	if _, err := handler.Handle(context.Background(), Input{Dir: project, Agent: testAgentName}); err != nil {
+		t.Fatalf("Handle with the agent = %v", err)
+	}
+	fake.Calls = nil
+
+	got, err := handler.Handle(context.Background(), Input{Dir: project})
+
+	if err != nil || got.Created {
+		t.Fatalf("Handle without the agent = %+v, %v, want the existing machine", got, err)
+	}
+	if !slices.Equal(fake.Calls, keepCalls(name)) {
+		t.Errorf("calls = %v, want %v: the base list and no install", fake.Calls, keepCalls(name))
+	}
+}
+
+func TestInstallScriptIsOneGroupWithThePrelude(t *testing.T) {
+	install := "curl -fsSL https://agent.example/install.sh | bash\necho 'it is $HOME' \"$(id -u)\""
+	lines := strings.Split(string(installScript(install)), "\n")
+	want := slices.Concat([]string{"{", "set -euo pipefail", "set -a", ". /etc/environment", "set +a"}, strings.Split(install, "\n"), []string{"}", ""})
+	if !slices.Equal(lines, want) {
+		t.Errorf("installScript = %q, want %q", lines, want)
+	}
+}
+
+// TestTruncatedInstallScriptFailsToParse feeds bash every non-empty prefix
+// of an install script that lacks at least its last line. Without the group,
+// bash runs a prefix up to the cut and exits 0 when the cut falls between
+// two commands, or inside the URL of the installer.
+func TestTruncatedInstallScriptFailsToParse(t *testing.T) {
+	script := installScript("echo installed")
+	lastLine := strings.LastIndex(strings.TrimSuffix(string(script), "\n"), "\n") + 1
+	for cut := 1; cut <= lastLine; cut++ {
+		command := exec.Command("bash", "-s")
+		command.Stdin = strings.NewReader(string(script[:cut]))
+		output, err := command.CombinedOutput()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+			t.Errorf("bash with the script cut to %q = %v (%s), want the syntax error exit status 2", script[:cut], err, output)
+		}
 	}
 }
 

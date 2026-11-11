@@ -382,6 +382,15 @@ func TestGuardsRunNoCommand(t *testing.T) {
 	if err := client.RunAsRoot(ctx, "orbit-", []byte("true\n")); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("RunAsRoot in a machine named only by the prefix = %v, want %v", err, ErrForeignMachine)
 	}
+	if err := client.RunAsAgent(ctx, "ubuntu", []byte("true\n")); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("RunAsAgent in a foreign machine = %v, want %v", err, ErrForeignMachine)
+	}
+	if err := client.RunAsAgent(ctx, "orbit-", []byte("true\n")); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("RunAsAgent in a machine named only by the prefix = %v, want %v", err, ErrForeignMachine)
+	}
+	if err := New("").RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true\n")); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("RunAsAgent of a client without a prefix = %v, want %v", err, ErrForeignMachine)
+	}
 	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/.ssh:x"); !errors.Is(err, ErrMountPath) {
 		t.Errorf("Create with a colon in the directory = %v, want %v", err, ErrMountPath)
 	}
@@ -404,6 +413,7 @@ func TestFailedCommandCarriesStderr(t *testing.T) {
 		"ActiveMounts": activeMountsErr,
 		"Delete":       client.Delete(ctx, "orbit-api-1d9b22c9"),
 		"RunAsRoot":    client.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
+		"RunAsAgent":   client.RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
 	}
 
 	for operation, err := range failures {
@@ -512,5 +522,50 @@ func TestRunAsRootPassesTheScriptOnStdin(t *testing.T) {
 	args, err := os.ReadFile(out + ".args")
 	if err != nil || string(args) != "-m orbit-api-1d9b22c9 -u root bash -s\n" {
 		t.Errorf("arguments of orb = %q, %v", args, err)
+	}
+}
+
+func TestRunAsAgentArgs(t *testing.T) {
+	want := []string{"-m", "orbit-api-1d9b22c9", "-u", "agent", "bash", "-s"}
+	if got := runAsAgentArgs("orbit-api-1d9b22c9"); !slices.Equal(got, want) {
+		t.Errorf("runAsAgentArgs() = %q, want %q", got, want)
+	}
+}
+
+// TestRunAsAgentPutsNoCallerValueOnTheCommandLine runs RunAsAgent with
+// machine names and scripts that try to change the user or the command, and
+// checks that orb gets the fixed arguments and the script only on standard
+// input.
+func TestRunAsAgentPutsNoCallerValueOnTheCommandLine(t *testing.T) {
+	tests := []struct {
+		name    string
+		machine string
+		script  string
+	}{
+		{name: "plain", machine: "orbit-api-1d9b22c9", script: "id -un\n"},
+		{name: "user in the script", machine: "orbit-api-1d9b22c9", script: "-u root\n"},
+		{name: "flag in the name", machine: "orbit-x -u root", script: "true\n"},
+		{name: "second command in the name", machine: "orbit-x; bash", script: "true\n"},
+		{name: "quotes in the script", machine: "orbit-api-1d9b22c9", script: "echo 'it is $HOME' \"$(id -u)\"\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "received")
+			useFakeCLI(t, "for arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > '"+out+".args'\n/bin/cat > '"+out+"'\n")
+
+			if err := New(testPrefix).RunAsAgent(context.Background(), test.machine, []byte(test.script)); err != nil {
+				t.Fatalf("RunAsAgent = %v", err)
+			}
+
+			received, err := os.ReadFile(out)
+			if err != nil || string(received) != test.script {
+				t.Errorf("stdin of orb = %q, %v, want %q", received, err, test.script)
+			}
+			args, err := os.ReadFile(out + ".args")
+			want := strings.Join([]string{"-m", test.machine, "-u", "agent", "bash", "-s"}, "\n") + "\n"
+			if err != nil || string(args) != want {
+				t.Errorf("arguments of orb = %q, %v, want %q", args, err, want)
+			}
+		})
 	}
 }

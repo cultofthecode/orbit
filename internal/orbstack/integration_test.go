@@ -158,3 +158,22 @@ func TestRunAsRootRunsTheScriptAsRoot(t *testing.T) {
 		t.Errorf("RunAsRoot of a failing script = %v, want exit status 7", err)
 	}
 }
+
+// TestRunAsAgentRunsTheScriptAsTheAgent creates the agent user with
+// RunAsRoot first: the machine of this test is not provisioned.
+func TestRunAsAgentRunsTheScriptAsTheAgent(t *testing.T) {
+	client, name := newMachine(t, hostDir(t))
+	ctx := testContext(t)
+	if err := client.RunAsRoot(ctx, name, []byte("set -eu\nuseradd --create-home --shell /bin/bash --user-group "+AgentUser+"\n")); err != nil {
+		t.Fatalf("create the agent user: %v", err)
+	}
+	if err := client.RunAsAgent(ctx, name, []byte("set -eu\n[ \"$(id -un)\" = agent ]\necho done > \"$HOME/ran\"\n")); err != nil {
+		t.Fatalf("RunAsAgent = %v", err)
+	}
+	if output, err := inMachine(ctx, name, "stat", "-c", "%U %n", "/home/agent/ran"); err != nil || output != "agent /home/agent/ran" {
+		t.Errorf("the script did not run as the agent: %q, %v", output, err)
+	}
+	if err := client.RunAsAgent(ctx, name, []byte("exit 7\n")); err == nil || !strings.Contains(err.Error(), "exit status 7") {
+		t.Errorf("RunAsAgent of a failing script = %v, want exit status 7", err)
+	}
+}
