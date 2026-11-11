@@ -4,7 +4,7 @@ The sandbox module: the lifecycle of the sandbox of a project directory. Read th
 
 ## Layout
 
-- `sandbox.go` — the root package: `NamePrefix`, `MachineName`, `ProjectDir`, `ProtectedDirs`, `ValidateProjectDir`, `ValidateNotNested`, `ValidateMounts`. Pure functions, no I/O.
+- `sandbox.go` — the root package: `NamePrefix`, `MachineName`, `ProjectDir`, `ProtectedDirs`, `ProtectedFiles`, `ValidateProjectDir`, `ValidateNotNested`, `ValidateMounts`. Pure functions, no I/O.
 - `initialize/` — the slice of `orbit init`. The package is not named `init`, because Go refuses to import a package under that name. It creates the machine and provisions it as root with the script that `Handler.ProvisionScript` returns (`provision.Script`, injected by `cmd/orbit`). `NewCommand` is not registered in `cmd/orbit` until the agent is installed as well (story E01-S01).
 - `internal/realpath/` — private to the module: `Resolve` returns the canonical path of a directory, `ResolveWithOwner` that path and the owner from one open handle, and `ResolveNoFirmlink` its path on its own volume. Every slice resolves the project directory with `Resolve` or `ResolveWithOwner`.
 
@@ -12,10 +12,22 @@ The sandbox module: the lifecycle of the sandbox of a project directory. Read th
 
 - A decision about what a sandbox is or what enters it is a pure function in `sandbox.go`, with table tests that include hostile input. A handler loads the facts (`ProjectDir`) from the system, calls the function, and acts on the result. A fact that cannot be read is an error, never a default.
 - `ValidateProjectDir` applies two independent rules, and both must accept the directory (R08, R09). Do not add an exception, and do not drop one rule because the other covers a case.
-  - Paths: it refuses `/`; a home directory and every directory that contains one; a protected directory (`.claude` and `.ssh` of every home), every directory inside one, and every directory that contains one. It compares path components, not string prefixes.
+  - Paths: it refuses `/`; a home directory and every directory that contains one; a protected directory, every directory inside one, and every directory that contains one (`ErrProtectedDir`, `ErrProtectedAncestor`); and every directory that contains a protected file (`ErrProtectedFile`). It compares path components, not string prefixes.
+  - The protected set (#28). A change to it changes the sandbox boundary, so it needs the owner's yes.
+
+    | Path in every home | Kind | Holds |
+    |---|---|---|
+    | `.aws` | directory | AWS credentials and SSO cache |
+    | `.claude` | directory | Claude Code configuration and state |
+    | `.config/gh` | directory | GitHub CLI configuration and tokens |
+    | `.gnupg` | directory | GnuPG private keys |
+    | `.ssh` | directory | SSH keys and configuration |
+    | `.claude.json` | file | Claude Code configuration and state |
+
+    A protected file refuses the directory that holds it and every directory that contains that one, not the directories inside it: those do not contain the file. For `.claude.json` in the home directory itself, the home rules already refuse these.
   - Ownership: it refuses a directory that the user does not own. This covers system directories such as `/System`, `/.vol`, `/.nofollow`, and `/.resolve`.
 - The home directories are the one of `$HOME` and the one of the account database (`os/user`), each as its canonical path and as its path on its own volume. Both must exist. `$HOME` alone can name any directory, and on macOS the home directory `/Users/dev` is also `/System/Volumes/Data/Users/dev`, so `/System`, `/System/Volumes`, and `/System/Volumes/Data` contain it.
-- A protected directory can be a symlink. The handler resolves every path of `ProtectedDirs` that exists and passes every spelling of its target in `ProjectDir.Protected`. A protected path that exists and cannot be resolved stops `init`.
+- A protected directory can be a symlink, and so can a directory on its path (`.config`). The handler resolves every path of `ProtectedDirs` that exists and passes every spelling of its target in `ProjectDir.Protected`. A protected file can be a symlink too: the handler follows every path of `ProtectedFiles` that exists with `filepath.EvalSymlinks`, without opening the file (D08), and passes every spelling of the directory that holds the final target in `ProjectDir.ProtectedFileDirs`. A protected path that exists and cannot be resolved stops `init`; a broken symlink protects nothing.
 - Pass only canonical paths to `ValidateProjectDir` and `MachineName`. On macOS `filepath.EvalSymlinks` is not enough: `/users/DEV` and `/System/Volumes/Data/Users/dev` both name the home directory. Resolve every path with `realpath.Resolve` (`F_GETPATH` on macOS), in every slice, so that all slices compute the same machine name for a directory. On macOS the tests of the other spellings fail when the file system does not accept a spelling; they never skip there.
 - Read the canonical path and the owner of the project directory from one open handle (`realpath.ResolveWithOwner`: `open(O_SEARCH)`, `fstat`, `F_GETPATH`). Two lookups of the path can name two directories.
 - `orb` resolves the mount path again, at every start of the machine, and follows a symlink in it. So the check of the path alone cannot hold, and `init` has two more layers (#29). Keep both.

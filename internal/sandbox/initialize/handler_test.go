@@ -765,6 +765,160 @@ func TestHandleWithProtectedPathsThatAreNoDirectories(t *testing.T) {
 	})
 }
 
+// writeFile makes the empty file path.
+func writeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestHandleRefusesCredentialDirectories covers the protected directories of
+// AWS, GnuPG, and the GitHub CLI, and the file .claude.json, in the home
+// directory itself.
+func TestHandleRefusesCredentialDirectories(t *testing.T) {
+	home := newDir(t)
+	makeDirs(t, home, "work/api", ".aws/sso", ".gnupg/private-keys-v1.d", ".config/gh", ".config/nvim")
+	writeFile(t, filepath.Join(home, ".claude.json"))
+	t.Setenv("HOME", home)
+
+	checkRefusals(t, account(home), []refusal{
+		{name: ".aws", dir: filepath.Join(home, ".aws"), want: sandbox.ErrProtectedDir},
+		{name: "child of .aws", dir: filepath.Join(home, ".aws", "sso"), want: sandbox.ErrProtectedDir},
+		{name: "symlink to .aws", dir: symlink(t, filepath.Join(home, ".aws")), want: sandbox.ErrProtectedDir},
+		{name: ".gnupg", dir: filepath.Join(home, ".gnupg"), want: sandbox.ErrProtectedDir},
+		{name: "child of .gnupg", dir: filepath.Join(home, ".gnupg", "private-keys-v1.d"), want: sandbox.ErrProtectedDir},
+		{name: "symlink to the child of .gnupg", dir: symlink(t, filepath.Join(home, ".gnupg", "private-keys-v1.d")), want: sandbox.ErrProtectedDir},
+		{name: ".config/gh", dir: filepath.Join(home, ".config", "gh"), want: sandbox.ErrProtectedDir},
+		{name: "symlink to .config/gh", dir: symlink(t, filepath.Join(home, ".config", "gh")), want: sandbox.ErrProtectedDir},
+		{name: ".config", dir: filepath.Join(home, ".config"), want: sandbox.ErrProtectedAncestor},
+		{name: "symlink to .config", dir: symlink(t, filepath.Join(home, ".config")), want: sandbox.ErrProtectedAncestor},
+		{name: "home, which holds .claude.json", dir: home, want: sandbox.ErrHomeDir},
+	})
+	t.Run("sibling of .config/gh", func(t *testing.T) {
+		checkCreates(t, account(home), filepath.Join(home, ".config", "nvim"), filepath.Join(home, ".config", "nvim"))
+	})
+	t.Run("project", func(t *testing.T) {
+		checkCreates(t, account(home), filepath.Join(home, "work", "api"), filepath.Join(home, "work", "api"))
+	})
+}
+
+// TestHandleRefusesLinkedCredentials covers a home directory in which .aws
+// is a symlink to a directory outside the home directory, .gnupg a symlink to
+// a directory inside it, .config a symlink that moves .config/gh, and
+// .claude.json a symlink to a file in another directory.
+func TestHandleRefusesLinkedCredentials(t *testing.T) {
+	home := newDir(t)
+	vault := newDir(t)
+	store := newDir(t)
+	makeDirs(t, home, "work/api", "dotfiles/gnupg/private-keys-v1.d", "dotfiles/config/gh", "dotfiles/config/nvim", "dotfiles/vim")
+	makeDirs(t, vault, "aws/sso", "notes")
+	makeDirs(t, store, "state/projects", "other")
+	writeFile(t, filepath.Join(store, "state", "claude.json"))
+	symlinkAt(t, filepath.Join(vault, "aws"), filepath.Join(home, ".aws"))
+	symlinkAt(t, filepath.Join("dotfiles", "gnupg"), filepath.Join(home, ".gnupg"))
+	symlinkAt(t, filepath.Join(home, "dotfiles", "config"), filepath.Join(home, ".config"))
+	symlinkAt(t, filepath.Join(store, "state", "claude.json"), filepath.Join(home, ".claude.json"))
+	t.Setenv("HOME", home)
+
+	checkRefusals(t, account(home), []refusal{
+		{name: ".aws", dir: filepath.Join(home, ".aws"), want: sandbox.ErrProtectedDir},
+		{name: "target of .aws", dir: filepath.Join(vault, "aws"), want: sandbox.ErrProtectedDir},
+		{name: "child of the target of .aws", dir: filepath.Join(vault, "aws", "sso"), want: sandbox.ErrProtectedDir},
+		{name: "directory that holds the target of .aws", dir: vault, want: sandbox.ErrProtectedAncestor},
+		{name: "target of .gnupg by a relative symlink", dir: filepath.Join(home, "dotfiles", "gnupg"), want: sandbox.ErrProtectedDir},
+		{name: "child of the target of .gnupg", dir: filepath.Join(home, "dotfiles", "gnupg", "private-keys-v1.d"), want: sandbox.ErrProtectedDir},
+		{name: "directory that holds the target of .gnupg", dir: filepath.Join(home, "dotfiles"), want: sandbox.ErrProtectedAncestor},
+		{name: ".config/gh through the linked .config", dir: filepath.Join(home, ".config", "gh"), want: sandbox.ErrProtectedDir},
+		{name: "target of .config/gh", dir: filepath.Join(home, "dotfiles", "config", "gh"), want: sandbox.ErrProtectedDir},
+		{name: "target of .config", dir: filepath.Join(home, "dotfiles", "config"), want: sandbox.ErrProtectedAncestor},
+		{name: "linked .config", dir: filepath.Join(home, ".config"), want: sandbox.ErrProtectedAncestor},
+		{name: "directory that holds the target of .claude.json", dir: filepath.Join(store, "state"), want: sandbox.ErrProtectedFile},
+		{name: "symlink to the directory that holds the target of .claude.json", dir: symlink(t, filepath.Join(store, "state")), want: sandbox.ErrProtectedFile},
+		{name: "ancestor of the target of .claude.json", dir: store, want: sandbox.ErrProtectedFile},
+	})
+	accepted := []string{
+		filepath.Join(vault, "notes"),
+		filepath.Join(home, "dotfiles", "vim"),
+		filepath.Join(home, "dotfiles", "config", "nvim"),
+		filepath.Join(store, "state", "projects"),
+		filepath.Join(store, "other"),
+		filepath.Join(home, "work", "api"),
+	}
+	for _, dir := range accepted {
+		t.Run("accepts "+dir, func(t *testing.T) {
+			checkCreates(t, account(home), dir, dir)
+		})
+	}
+}
+
+// TestHandleResolvesTheProtectedFile covers a .claude.json that reaches its
+// file through more than one symlink, and other spellings of the directory
+// that holds that file.
+func TestHandleResolvesTheProtectedFile(t *testing.T) {
+	home := newDir(t)
+	links := newDir(t)
+	store := newDir(t)
+	makeDirs(t, home, "work/api")
+	makeDirs(t, store, "state")
+	writeFile(t, filepath.Join(store, "state", "claude.json"))
+	symlinkAt(t, filepath.Join("..", filepath.Base(store), "state", "claude.json"), filepath.Join(links, "claude.json"))
+	symlinkAt(t, filepath.Join(links, "claude.json"), filepath.Join(home, ".claude.json"))
+	t.Setenv("HOME", home)
+	state := filepath.Join(store, "state")
+
+	checkRefusals(t, account(home), []refusal{
+		{name: "directory that holds the final target", dir: state, want: sandbox.ErrProtectedFile},
+	})
+	spellings := []struct {
+		name  string
+		spell func(path string) string
+	}{
+		{name: "upper case", spell: strings.ToUpper},
+		{name: "data volume", spell: func(path string) string { return dataVolume + path }},
+	}
+	for _, spelling := range spellings {
+		t.Run(spelling.name, func(t *testing.T) {
+			requireSpelling(t, spelling.spell(state))
+			checkRefusals(t, account(home), []refusal{
+				{name: "directory that holds the final target", dir: spelling.spell(state), want: sandbox.ErrProtectedFile},
+			})
+		})
+	}
+	t.Run("project", func(t *testing.T) {
+		checkCreates(t, account(home), filepath.Join(home, "work", "api"), filepath.Join(home, "work", "api"))
+	})
+}
+
+// TestHandleWithProtectedFilesThatLeadNowhere covers a .claude.json that is
+// a broken symlink, which protects nothing, and one that cannot be resolved,
+// which stops init.
+func TestHandleWithProtectedFilesThatLeadNowhere(t *testing.T) {
+	t.Run("broken symlink", func(t *testing.T) {
+		home := newDir(t)
+		makeDirs(t, home, "work/api")
+		symlinkAt(t, filepath.Join(home, "missing", "claude.json"), filepath.Join(home, ".claude.json"))
+		t.Setenv("HOME", home)
+		checkCreates(t, account(home), filepath.Join(home, "work", "api"), filepath.Join(home, "work", "api"))
+	})
+	t.Run("symlink loop", func(t *testing.T) {
+		home := newDir(t)
+		makeDirs(t, home, "work/api")
+		symlinkAt(t, ".claude.json", filepath.Join(home, ".claude.json"))
+		t.Setenv("HOME", home)
+		fake := orbstacktest.New(sandbox.NamePrefix)
+
+		_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: filepath.Join(home, "work", "api")})
+
+		if err == nil || !strings.Contains(err.Error(), "protected file") {
+			t.Errorf("Handle = %v, want an error about the protected file", err)
+		}
+		if len(fake.Calls) != 0 {
+			t.Errorf("calls = %v, want none", fake.Calls)
+		}
+	})
+}
+
 // TestHandleTrustsNoSingleHome covers an environment and an account database
 // that name different home directories: both are home directories.
 func TestHandleTrustsNoSingleHome(t *testing.T) {
