@@ -52,8 +52,11 @@ internal/
     sandbox.go             public API of the module: types and errors that other modules may use
     initialize/            slice of orbit init: contract.go, handler.go, command.go, handler_test.go
                            (Go refuses to import a package that is named init)
-    shell/  stop/  start/  destroy/  list/
+    stop/                  slice of orbit stop
+    start/                 slice of orbit start: the only slice that starts a machine
+    shell/  destroy/  list/
     internal/              private to the module (enforced by the Go compiler)
+      hostcheck/           host-side checks before a machine is created or started, shared by init and start
       realpath/            canonical path of a directory; every slice resolves the project directory with it
   policy/                  module: policy.go (pure matching rules); allow/, deny/, list/ are later scope (D19)
   agent/                   module: agent definitions, one package per agent (claude/)
@@ -74,7 +77,7 @@ internal/
 | Credential | `internal/credential` | Which host credentials a sandbox may get, and in which form. By default only the forwarded SSH agent socket, which `--no-ssh-forwarding` removes (R08). | `kernel` |
 | Provision | `internal/provision` | The root-owned setup of a machine: the agent user without sudo, the firewall, the proxy service, rootless Docker, the fixed toolchain. Owns the firewall rules as a pure function. | `policy`, `kernel` |
 | Proxy | `internal/proxy` | The configuration of tinyproxy, the egress proxy that root runs in the machine (D22). The proxy enforces the policy. | `policy`, `kernel` |
-| OrbStack adapter | `internal/orbstack` | The only package with OrbStack-specific code: create, start, run a command in, stop, remove, and list isolated machines (R07). | — |
+| OrbStack adapter | `internal/orbstack` | The only package with OrbStack-specific code: create, start (`Start`), run a command in, stop (`Stop`), remove, list, and read the state (`State`) of isolated machines (R07). `Start` and `Stop` always name one machine. | — |
 | Kernel | `internal/kernel` | Shared error and result types. Stays small. | nothing in this repository |
 
 ### Slice anatomy
@@ -182,3 +185,4 @@ The product brief is the decision record; the ids below point to it.
 | 2026-11-10 | `provision` imports `proxy`; `cmd/orbit` injects `provision.Script` into the `init` handler (spec `.ai/specs/2026-11-10-sandbox-provisioning.md`, Q5) | The root script writes the tinyproxy files and the firewall from one source of the proxy port, user, and addresses. A slice may not import another module (dependency rule 2). | `proxy` imports `policy`; `provision` imports both. The `init` slice depends on a function field, not on `provision`. |
 | 2026-11-10 | OrbStack is the state store | No second source of truth to drift. | Every machine that Orbit creates carries the Orbit name prefix. |
 | 2026-11-11 | `cmd/orbit` injects the agent lookup into the `init` handler as `Agent func(name string) (sandbox.Agent, error)` (spec `.ai/specs/2026-11-11-claude-code-agent-definition.md`) | A slice may not import another module (dependency rule 2), and no slice compares an agent name (D16). | `sandbox.Agent` holds `Install` and `EgressDomains`. The handler resolves the agent and builds the provisioning script, with `policy.Allowlist`, before its first OrbStack call, and installs as the agent user through `RunAsAgent` after provisioning. |
+| 2026-11-11 | `orbit start` re-runs the host-side checks of `init` before every start, and `cmd/orbit` injects `provision.BootCheckScript` and `provision.MarkerCheckScript` into the `start` handler (spec `.ai/specs/2026-11-11-orbit-stop-start.md`, Q4, Q5, Q8) | OrbStack resolves the stored mount path again at every start and follows a symlink in it; the protected set can change after `init`. A slice may not import another slice or module (dependency rule 2). | The checks moved from `initialize` into `internal/sandbox/internal/hostcheck`, which both slices call. After the start, a failed boot check or kernel mount check stops the machine again; a failed marker check leaves it running and names `orbit init`. `start` does not probe egress (Q6). |

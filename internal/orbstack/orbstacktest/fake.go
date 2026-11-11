@@ -9,6 +9,7 @@ import (
 	"maps"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // The fake refuses what the adapter refuses, with errors of its own.
@@ -22,10 +23,25 @@ var (
 	// ErrNoMachine reports a machine that does not exist, where orb fails
 	// with "machine not found".
 	ErrNoMachine = errors.New("machine not found")
+	// ErrMachineName reports a machine name with white space.
+	ErrMachineName = errors.New("machine name holds white space")
+	// ErrStopped reports a command in a machine that is not running. orb
+	// would start the machine for it, and a handler must never start a
+	// machine that way.
+	ErrStopped = errors.New("machine is not running; the command would start it")
+)
+
+// States of a machine that the fake knows.
+const (
+	StateRunning = "running"
+	StateStopped = "stopped"
 )
 
 // Operations that a Fake records.
 const (
+	OpState        = "state"
+	OpStart        = "start"
+	OpStop         = "stop"
 	OpExists       = "exists"
 	OpCreate       = "create"
 	OpMounts       = "mounts"
@@ -53,6 +69,18 @@ type Fake struct {
 	// differ from the configured ones: what a machine mounts after its path
 	// was swapped.
 	Active map[string]map[string]string
+	// States maps the name of a machine to its state. A machine without an
+	// entry is running. Create sets StateRunning, Start StateRunning, and
+	// Stop StateStopped.
+	States map[string]string
+	// StateErr, when set, is the result of every State call.
+	StateErr error
+	// StartErr, when set, is the result of every Start call, which then
+	// changes no state.
+	StartErr error
+	// StopErr, when set, is the result of every Stop call, which then
+	// changes no state.
+	StopErr error
 	// ExistsErr, when set, is the result of every Exists call.
 	ExistsErr error
 	// CreateErr, when set, is the result of every Create call.
@@ -76,7 +104,73 @@ type Fake struct {
 // New returns a fake with no machines that creates only machines whose names
 // start with prefix.
 func New(prefix string) *Fake {
-	return &Fake{Machines: map[string]map[string]string{}, Active: map[string]map[string]string{}, prefix: prefix}
+	return &Fake{Machines: map[string]map[string]string{}, Active: map[string]map[string]string{}, States: map[string]string{}, prefix: prefix}
+}
+
+// State returns the state of the machine name, or "" when it does not
+// exist. It refuses a name without the prefix of the fake.
+func (f *Fake) State(_ context.Context, name string) (string, error) {
+	f.Calls = append(f.Calls, Call{Op: OpState, Name: name})
+	if err := f.checkOwned(name); err != nil {
+		return "", err
+	}
+	if f.StateErr != nil {
+		return "", f.StateErr
+	}
+	return f.state(name), nil
+}
+
+// Start sets the machine name running. It refuses a name that the adapter
+// refuses and a machine that does not exist.
+func (f *Fake) Start(_ context.Context, name string) error {
+	f.Calls = append(f.Calls, Call{Op: OpStart, Name: name})
+	return f.setState(name, StateRunning, f.StartErr)
+}
+
+// Stop sets the machine name stopped. It refuses a name that the adapter
+// refuses and a machine that does not exist.
+func (f *Fake) Stop(_ context.Context, name string) error {
+	f.Calls = append(f.Calls, Call{Op: OpStop, Name: name})
+	return f.setState(name, StateStopped, f.StopErr)
+}
+
+// setState sets the machine name to state, unless the name is refused, the
+// machine does not exist, or failure is set, which it then returns.
+func (f *Fake) setState(name, state string, failure error) error {
+	if err := f.checkExists(name); err != nil {
+		return err
+	}
+	if strings.ContainsFunc(name, unicode.IsSpace) {
+		return fmt.Errorf("%w: %q", ErrMachineName, name)
+	}
+	if failure != nil {
+		return failure
+	}
+	f.States[name] = state
+	return nil
+}
+
+// state returns the state of the machine name, or "" when it does not exist.
+func (f *Fake) state(name string) string {
+	if _, exists := f.Machines[name]; !exists {
+		return ""
+	}
+	if state, set := f.States[name]; set {
+		return state
+	}
+	return StateRunning
+}
+
+// checkRunning refuses a name without the prefix of the fake and a machine
+// that is not running.
+func (f *Fake) checkRunning(name string) error {
+	if err := f.checkOwned(name); err != nil {
+		return err
+	}
+	if f.state(name) != StateRunning {
+		return fmt.Errorf("%w: %q", ErrStopped, name)
+	}
+	return nil
 }
 
 // Exists reports whether the machine name exists.
@@ -104,6 +198,7 @@ func (f *Fake) Create(_ context.Context, name, dir string) error {
 		return f.CreateErr
 	}
 	f.Machines[name] = map[string]string{dir: dir}
+	f.States[name] = StateRunning
 	return nil
 }
 
@@ -122,10 +217,14 @@ func (f *Fake) Mounts(_ context.Context) (map[string]map[string]string, error) {
 
 // ActiveMounts returns a copy of the active mounts of the machine name: those
 // in Active, or else the configured ones. It refuses a name without the
-// prefix of the fake and a machine that does not exist.
+// prefix of the fake, a machine that does not exist, and a machine that is
+// not running.
 func (f *Fake) ActiveMounts(_ context.Context, name string) (map[string]string, error) {
 	f.Calls = append(f.Calls, Call{Op: OpActiveMounts, Name: name})
 	if err := f.checkExists(name); err != nil {
+		return nil, err
+	}
+	if err := f.checkRunning(name); err != nil {
 		return nil, err
 	}
 	if f.ActiveMountsErr != nil {
@@ -149,6 +248,7 @@ func (f *Fake) Delete(_ context.Context, name string) error {
 	}
 	delete(f.Machines, name)
 	delete(f.Active, name)
+	delete(f.States, name)
 	return nil
 }
 
@@ -174,21 +274,34 @@ func (f *Fake) checkOwned(name string) error {
 }
 
 // RunAsRoot records script for the machine name. It refuses a name without
-// the prefix of the fake.
+// the prefix of the fake and a machine that exists and is not running.
 func (f *Fake) RunAsRoot(_ context.Context, name string, script []byte) error {
 	f.Calls = append(f.Calls, Call{Op: OpRunAsRoot, Name: name, Script: string(script)})
-	if err := f.checkOwned(name); err != nil {
+	if err := f.checkNotStopped(name); err != nil {
 		return err
 	}
 	return f.RunAsRootErr
 }
 
 // RunAsAgent records script for the machine name. It refuses a name without
-// the prefix of the fake.
+// the prefix of the fake and a machine that exists and is not running.
 func (f *Fake) RunAsAgent(_ context.Context, name string, script []byte) error {
 	f.Calls = append(f.Calls, Call{Op: OpRunAsAgent, Name: name, Script: string(script)})
-	if err := f.checkOwned(name); err != nil {
+	if err := f.checkNotStopped(name); err != nil {
 		return err
 	}
 	return f.RunAsAgentErr
+}
+
+// checkNotStopped refuses a name without the prefix of the fake and a machine
+// that exists and is not running. Handler tests may run a script in a
+// machine that they did not add.
+func (f *Fake) checkNotStopped(name string) error {
+	if err := f.checkOwned(name); err != nil {
+		return err
+	}
+	if state := f.state(name); state != "" && state != StateRunning {
+		return fmt.Errorf("%w: %q", ErrStopped, name)
+	}
+	return nil
 }
