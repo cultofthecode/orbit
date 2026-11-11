@@ -975,89 +975,61 @@ func TestRunAsAgentPutsNoCallerValueOnTheCommandLine(t *testing.T) {
 	}
 }
 
-func TestWithoutStrippedVariables(t *testing.T) {
+func TestAllowedEnvironment(t *testing.T) {
+	allowed := []string{
+		"HOME=/Users/dev", "PATH=/usr/bin:/bin", "TMPDIR=/var/folders/x/T/", "TERM=xterm-256color", "COLORTERM=truecolor",
+		"LANG=en_US.UTF-8", "LC_ALL=C.UTF-8", "LC_COLLATE=C", "LC_CTYPE=UTF-8", "LC_MESSAGES=C", "LC_MONETARY=C", "LC_NUMERIC=C", "LC_TIME=C",
+	}
 	tests := []struct {
 		name    string
 		environ []string
 		want    []string
 	}{
 		{
-			name:    "no stripped variable",
-			environ: []string{"HOME=/Users/dev", "PATH=/usr/bin"},
-			want:    []string{"HOME=/Users/dev", "PATH=/usr/bin"},
+			name:    "every allowed variable",
+			environ: allowed,
+			want:    allowed,
 		},
 		{
-			name:    "ORBENV naming a secret",
-			environ: []string{"HOME=/Users/dev", "ORBENV=TOKEN", "TOKEN=secret"},
-			want:    []string{"HOME=/Users/dev", "TOKEN=secret"},
-		},
-		{
-			name:    "WSLENV naming a secret with a flag",
-			environ: []string{"WSLENV=TOKEN/u:HOME", "TOKEN=secret"},
-			want:    []string{"TOKEN=secret"},
-		},
-		{
-			name:    "both, twice, and empty",
-			environ: []string{"ORBENV=", "ORBENV=TOKEN", "WSLENV=TOKEN", "TOKEN=secret", "WSLENV="},
-			want:    []string{"TOKEN=secret"},
-		},
-		{
-			name: "proxy URLs with a user name and a password",
-			environ: []string{
-				"HTTP_PROXY=http://u:pw@p:1", "HTTPS_PROXY=http://u:pw@p:1", "ALL_PROXY=socks5://u:pw@p:1", "FTP_PROXY=http://u:pw@p:1",
-				"http_proxy=http://u:pw@p:1", "https_proxy=http://u:pw@p:1", "all_proxy=socks5://u:pw@p:1", "ftp_proxy=http://u:pw@p:1",
-				"HOME=/Users/dev",
-			},
-			want: []string{"HOME=/Users/dev"},
-		},
-		{
-			name:    "DOCKER_HOST and ELECTRON_RUN_AS_NODE",
-			environ: []string{"DOCKER_HOST=ssh://u@host", "ELECTRON_RUN_AS_NODE=1", "HOME=/Users/dev"},
+			name:    "ORBENV and WSLENV naming a secret",
+			environ: []string{"HOME=/Users/dev", "ORBENV=TOKEN:HOME", "WSLENV=TOKEN/u", "TOKEN=secret"},
 			want:    []string{"HOME=/Users/dev"},
 		},
 		{
-			name: "every name with the DOCKER_ prefix",
+			name: "credentials and endpoints of the host",
 			environ: []string{
-				"DOCKER_AUTH_CONFIG={\"auths\":{\"r\":{\"auth\":\"dTpwdw==\"}}}", "DOCKER_CONFIG=/Users/dev/.docker",
-				"DOCKER_CONTEXT=remote", "DOCKER_CERT_PATH=/Users/dev/.docker/certs", "DOCKER_TLS_VERIFY=1",
-				"DOCKER_X=x", "DOCKER_=x", "DOCKER_ORBENV=TOKEN", "HOME=/Users/dev",
+				"HTTP_PROXY=http://u:pw@p:1", "https_proxy=http://u:pw@p:1", "ALL_PROXY=socks5://u:pw@p:1", "NO_PROXY=localhost",
+				"DOCKER_HOST=ssh://u@host", "DOCKER_AUTH_CONFIG={\"auths\":{\"r\":{\"auth\":\"dTpwdw==\"}}}", "docker_host=x",
+				"ELECTRON_RUN_AS_NODE=1", "SSH_AUTH_SOCK=/private/tmp/agent", "GITHUB_TOKEN=ghp_x", "AWS_SECRET_ACCESS_KEY=x",
+				"ANTHROPIC_API_KEY=x", "CLAUDE_CODE_OAUTH_TOKEN=x", "HOME=/Users/dev",
 			},
 			want: []string{"HOME=/Users/dev"},
 		},
 		{
-			name:    "a stripped variable twice with different values",
-			environ: []string{"HTTPS_PROXY=http://a@p:1", "HTTPS_PROXY=http://u:pw@p:1", "DOCKER_HOST=", "DOCKER_HOST=tcp://h:2375"},
+			name: "values that orb forwards but that are not allowed",
+			environ: []string{
+				"TERM_PROGRAM=iTerm.app", "TERM_PROGRAM_VERSION=3", "ITERM_SESSION_ID=x", "WEZTERM_PANE=1",
+				"__CFBundleIdentifier=x", "__CF_USER_TEXT_ENCODING=0x1F5", "COMMAND_MODE=unix2003", "TERM=dumb",
+			},
+			want: []string{"TERM=dumb"},
+		},
+		{
+			name: "names near an allowed name",
+			environ: []string{
+				"home=/x", "Home=/x", "path=/x", "Term=x", "HOME_X=/x", "XHOME=/x", " HOME=/x", "HOME =/x",
+				"LC_X=x", "LC_=x", "LC_all=x", "LANGUAGE=x", "LANG_X=x", "TMP=/x", "TEMP=/x", "USER=dev", "LOGNAME=dev", "SHELL=/bin/zsh",
+			},
+			want: []string{},
+		},
+		{
+			name:    "allowed name in a value or without a name",
+			environ: []string{"NOTE=HOME=/x", "=HOME", "=PATH=/x", "ORBENV", "TOKEN"},
 			want:    []string{},
 		},
 		{
-			name:    "entry without a value",
-			environ: []string{"ORBENV", "WSLENV", "HTTP_PROXY", "DOCKER_HOST", "TOKEN=secret"},
-			want:    []string{"TOKEN=secret"},
-		},
-		{
-			name:    "value that holds an equals sign",
-			environ: []string{"ORBENV=TOKEN=x", "ALL_PROXY=http://u:p=w@p:1", "TOKEN=secret"},
-			want:    []string{"TOKEN=secret"},
-		},
-		{
-			name: "similar names that orb does not read",
-			environ: []string{
-				"orbenv=TOKEN", "Wslenv=TOKEN", "ORBENV_X=TOKEN", "XORBENV=TOKEN", " ORBENV=TOKEN", "ORBENV =TOKEN",
-				"Http_Proxy=http://u:pw@p:1", "HTTP_proxy=http://u:pw@p:1", "XHTTP_PROXY=x", "HTTP_PROXY_X=x",
-				"NO_PROXY=localhost", "no_proxy=localhost", "docker_host=x", "electron_run_as_node=1",
-				"docker_config=x", "Docker_Auth_Config=x", "DOCKERX=x", "DOCKER=x", "XDOCKER_HOST=x", " DOCKER_HOST=x", "COMPOSE_PROJECT_NAME=x",
-			},
-			want: []string{
-				"orbenv=TOKEN", "Wslenv=TOKEN", "ORBENV_X=TOKEN", "XORBENV=TOKEN", " ORBENV=TOKEN", "ORBENV =TOKEN",
-				"Http_Proxy=http://u:pw@p:1", "HTTP_proxy=http://u:pw@p:1", "XHTTP_PROXY=x", "HTTP_PROXY_X=x",
-				"NO_PROXY=localhost", "no_proxy=localhost", "docker_host=x", "electron_run_as_node=1",
-				"docker_config=x", "Docker_Auth_Config=x", "DOCKERX=x", "DOCKER=x", "XDOCKER_HOST=x", " DOCKER_HOST=x", "COMPOSE_PROJECT_NAME=x",
-			},
-		},
-		{
-			name:    "stripped name in a value",
-			environ: []string{"NOTE=ORBENV=TOKEN", "=ORBENV", "NOTE2=HTTP_PROXY=http://u:pw@p:1", "=DOCKER_HOST", "NOTE3=DOCKER_X=x"},
-			want:    []string{"NOTE=ORBENV=TOKEN", "=ORBENV", "NOTE2=HTTP_PROXY=http://u:pw@p:1", "=DOCKER_HOST", "NOTE3=DOCKER_X=x"},
+			name:    "value that holds an equals sign and duplicates in order",
+			environ: []string{"TERM=a=b", "GITHUB_TOKEN=x", "TERM=", "HOME=/a", "HOME=/b"},
+			want:    []string{"TERM=a=b", "TERM=", "HOME=/a", "HOME=/b"},
 		},
 		{
 			name:    "empty environment",
@@ -1068,12 +1040,12 @@ func TestWithoutStrippedVariables(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			environ := slices.Clone(test.environ)
-			got := withoutStrippedVariables(environ)
+			got := allowedEnvironment(environ)
 			if !slices.Equal(got, test.want) {
-				t.Errorf("withoutStrippedVariables(%q) = %q, want %q", test.environ, got, test.want)
+				t.Errorf("allowedEnvironment(%q) = %q, want %q", test.environ, got, test.want)
 			}
 			if !slices.Equal(environ, test.environ) {
-				t.Errorf("withoutStrippedVariables changed its argument to %q", environ)
+				t.Errorf("allowedEnvironment changed its argument to %q", environ)
 			}
 		})
 	}
@@ -1135,39 +1107,53 @@ func TestStartAndStopRefuseHostileNamesBeforeAnyCommand(t *testing.T) {
 	}
 }
 
-// TestNoCommandCarriesAStrippedVariable sets every stripped variable and
-// variables with the DOCKER_ prefix, with ORBENV and WSLENV naming a
-// variable of the test process, runs every
-// operation of the client against a fake orb that records its environment,
-// and checks that no command of orb, orb status included, gets a stripped
-// variable, and that every command keeps the rest of the environment.
-func TestNoCommandCarriesAStrippedVariable(t *testing.T) {
+// shellVariables are the variables that the shell of the fake orb sets by
+// itself, so they are in the environment that it records.
+var shellVariables = []string{"PWD", "OLDPWD", "SHLVL", "_"}
+
+// TestEveryCommandGetsOnlyAllowedVariables sets every allowed variable and
+// forbidden ones: credentials, endpoints of the host, values that orb
+// forwards, names near an allowed name, and ORBENV and WSLENV naming a
+// variable of the test process. It runs every operation of the client
+// against a fake orb that records its environment, and checks that every
+// command of orb, orb status included, gets every allowed variable and no
+// other one.
+func TestEveryCommandGetsOnlyAllowedVariables(t *testing.T) {
 	const machineName = "orbit-api-1d9b22c9"
 	dir := t.TempDir()
 	useBareFakeCLI(t, "/usr/bin/env > \"$(/usr/bin/mktemp '"+dir+"/env.XXXXXX')\"\n"+
 		reportsRunning+
 		"if [ \"$1\" = list ] && [ \"$2\" = --format ]; then echo '[]'; exit 0; fi\n"+
 		"if [ \"$5\" = cat ]; then echo '195 125 0:35 /p /p rw - virtiofs mac rw'; fi\n")
-	strippedNames := append([]string{"DOCKER_HOST", "DOCKER_AUTH_CONFIG", "DOCKER_CONFIG", "DOCKER_X"}, strippedVariables...)
-	for _, name := range strippedNames {
+	for _, name := range allowedVariables {
+		if name != "HOME" && name != "PATH" {
+			t.Setenv(name, "allowed-"+name)
+		}
+	}
+	forbidden := []string{
+		"ORBIT_TEST_SECRET", "HTTPS_PROXY", "http_proxy", "DOCKER_HOST", "DOCKER_AUTH_CONFIG", "ELECTRON_RUN_AS_NODE",
+		"SSH_AUTH_SOCK", "GITHUB_TOKEN", "TERM_PROGRAM", "__CFBundleIdentifier", "home", "HOME_X", "LC_X", "USER",
+	}
+	for _, name := range forbidden {
 		t.Setenv(name, "http://orbit:forwarding-marker@proxy.invalid:3128")
 	}
-	t.Setenv("ORBIT_TEST_SECRET", "forwarding-marker")
 	t.Setenv("ORBENV", "ORBIT_TEST_SECRET:HOME")
 	t.Setenv("WSLENV", "ORBIT_TEST_SECRET/u")
-	t.Setenv("NO_PROXY", "localhost")
-	t.Setenv("docker_config", "kept")
 	client := New(testPrefix)
 	ctx := context.Background()
 
 	_, existsErr := client.Exists(ctx, machineName)
 	_, mountsErr := client.Mounts(ctx)
 	_, activeMountsErr := client.ActiveMounts(ctx, machineName)
+	_, stateErr := client.State(ctx, machineName)
 	operations := map[string]error{
 		"Create":       client.Create(ctx, machineName, "/Users/dev/Project/api"),
 		"Exists":       existsErr,
 		"Mounts":       mountsErr,
 		"ActiveMounts": activeMountsErr,
+		"State":        stateErr,
+		"Start":        client.Start(ctx, machineName),
+		"Stop":         client.Stop(ctx, machineName),
 		"Delete":       client.Delete(ctx, machineName),
 		"RunAsRoot":    client.RunAsRoot(ctx, machineName, []byte("true\n")),
 		"RunAsAgent":   client.RunAsAgent(ctx, machineName, []byte("true\n")),
@@ -1189,12 +1175,12 @@ func TestNoCommandCarriesAStrippedVariable(t *testing.T) {
 		}
 		environ := strings.Split(strings.TrimSpace(string(content)), "\n")
 		for _, entry := range environ {
-			if name, _, _ := strings.Cut(entry, "="); slices.Contains(strippedNames, name) {
+			if name, _, _ := strings.Cut(entry, "="); !slices.Contains(allowedVariables, name) && !slices.Contains(shellVariables, name) {
 				t.Errorf("orb got %q", entry)
 			}
 		}
-		for _, kept := range []string{"ORBIT_TEST_SECRET=forwarding-marker", "NO_PROXY=localhost", "docker_config=kept", "HOME=" + os.Getenv("HOME")} {
-			if !slices.Contains(environ, kept) {
+		for _, name := range allowedVariables {
+			if kept := name + "=" + os.Getenv(name); !slices.Contains(environ, kept) {
 				t.Errorf("orb did not get %q", kept)
 			}
 		}

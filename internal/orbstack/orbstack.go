@@ -44,24 +44,28 @@ const (
 // stateDir is the directory under $HOME through which orb finds OrbStack.
 const stateDir = ".orbstack"
 
-// strippedVariables are the host variables that execute removes from the
-// environment of orb, by exact name. OrbStack 2.2.5 copies each of them into
-// the command that it runs in a machine, as root and as the agent. ORBENV and
-// WSLENV hold a colon-separated list of names, and orb also copies every host
-// variable that they name. A proxy URL can hold a user name and a password.
-var strippedVariables = []string{
-	"ORBENV", "WSLENV",
-	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY",
-	"http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
-	"ELECTRON_RUN_AS_NODE",
+// allowedVariables are the only host variables that execute passes to orb,
+// matched by exact name; it removes every other one. orb copies some host
+// variables into the command that it runs in a machine, as root and as the
+// agent, and ORBENV and WSLENV make it copy every host variable that they
+// name (OrbStack 2.2.5), so a host credential could otherwise enter a sandbox
+// without an opt-in (R08). The owner chose this allowlist over a list of
+// forbidden names (#76): a variable that a new version of OrbStack starts to
+// forward stays on the host.
+//
+// OrbStack 2.2.5, probed with only these variables set, runs every command of
+// the adapter with HOME alone and panics without it ("$HOME is not
+// defined"): orb finds OrbStack through $HOME/.orbstack (#70). PATH and
+// TMPDIR are what orb, a Go program, reads to find a program it starts and a
+// directory for temporary files; orb does not copy them into a machine. orb
+// copies TERM, COLORTERM, and the locale variables into the machine, where
+// a terminal needs them: without TERM a command in the machine gets
+// TERM=dumb.
+var allowedVariables = []string{
+	"HOME", "PATH", "TMPDIR",
+	"TERM", "COLORTERM",
+	"LANG", "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC", "LC_TIME",
 }
-
-// strippedPrefix starts the names of the other host variables that execute
-// removes from the environment of orb, matched with this exact letter case.
-// OrbStack 2.2.5 copies every variable whose name starts with it into a
-// machine. DOCKER_HOST points the Docker client in the machine at an endpoint
-// of the host, and DOCKER_AUTH_CONFIG can hold registry credentials.
-const strippedPrefix = "DOCKER_"
 
 // mountSeparator divides the source and the destination of a mount.
 const mountSeparator = ":"
@@ -610,19 +614,14 @@ func homeCause(h home) string {
 }
 
 // execute runs orb with args and stdin and returns its standard output, also
-// when the command fails. orb gets the environment of the process without
-// strippedVariables, ORBENV, WSLENV, HTTP_PROXY, HTTPS_PROXY, ALL_PROXY,
-// FTP_PROXY and their lowercase forms, and ELECTRON_RUN_AS_NODE, and without
-// every variable whose name starts with strippedPrefix, DOCKER_ in uppercase
-// (DOCKER_HOST, DOCKER_AUTH_CONFIG, DOCKER_CONFIG, and any other). orb still
-// copies the other host variables that it forwards by itself into the
-// machine: terminal values (TERM, TERM_PROGRAM, COLORTERM, and similar),
-// locale values (LANG, LC_*), __CF* values, and COMMAND_MODE (OrbStack
-// 2.2.5). The error of a failed command carries the standard error of orb.
+// when the command fails. orb gets only the variables of allowedVariables
+// (HOME, PATH, TMPDIR, TERM, COLORTERM, LANG, and the LC_ variables of POSIX)
+// from the environment of the process. The error of a failed command carries
+// the standard error of orb.
 func execute(ctx context.Context, args []string, stdin []byte) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, cli, args...)
-	cmd.Env = withoutStrippedVariables(os.Environ())
+	cmd.Env = allowedEnvironment(os.Environ())
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -632,19 +631,19 @@ func execute(ctx context.Context, args []string, stdin []byte) (string, error) {
 	return stdout.String(), nil
 }
 
-// withoutStrippedVariables returns a copy of environ, a list of NAME=value
-// entries, without every entry of a stripped variable. It keeps every other
-// entry, also a name that differs from a stripped variable or from
-// strippedPrefix only in letter case, because orb reads the names exactly.
-func withoutStrippedVariables(environ []string) []string {
-	return slices.DeleteFunc(slices.Clone(environ), isStripped)
+// allowedEnvironment returns a copy of environ, a list of NAME=value entries,
+// with only the entries of allowedVariables, in their order. It removes a name
+// that differs from an allowed one only in letter case or by a prefix or a
+// suffix, because the names of the environment are case-sensitive.
+func allowedEnvironment(environ []string) []string {
+	return slices.DeleteFunc(slices.Clone(environ), isForbidden)
 }
 
-// isStripped reports whether entry sets a variable of strippedVariables or
-// one whose name starts with strippedPrefix.
-func isStripped(entry string) bool {
+// isForbidden reports whether entry sets a variable that is not in
+// allowedVariables.
+func isForbidden(entry string) bool {
 	name, _, _ := strings.Cut(entry, "=")
-	return slices.Contains(strippedVariables, name) || strings.HasPrefix(name, strippedPrefix)
+	return !slices.Contains(allowedVariables, name)
 }
 
 // commandError wraps the error of the failed orb subcommand and appends what
