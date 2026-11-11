@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -35,9 +36,10 @@ var forbiddenIdentifiers = []string{
 }
 
 // forbiddenNames returns the forbidden names that the Go source src uses in
-// a string literal or an identifier. A name in a comment passes. It is a
-// tripwire, not a proof: a name built at run time passes it. It returns an
-// error when src does not parse.
+// a string literal, in a "+" chain of string literals (which the compiler
+// folds into one constant), or an identifier. A name in a comment passes. It
+// is a tripwire, not a proof: a name built at run time passes it. It returns
+// an error when src does not parse.
 func forbiddenNames(src []byte) ([]string, error) {
 	file, err := parser.ParseFile(token.NewFileSet(), "", src, 0)
 	if err != nil {
@@ -46,6 +48,11 @@ func forbiddenNames(src []byte) ([]string, error) {
 	var found []string
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch n := node.(type) {
+		case *ast.BinaryExpr:
+			if value, ok := foldedString(n); ok {
+				found = append(found, forbiddenInValue(value)...)
+				return false
+			}
 		case *ast.BasicLit:
 			if n.Kind == token.STRING {
 				found = append(found, forbiddenInLiteral(n.Value)...)
@@ -60,24 +67,60 @@ func forbiddenNames(src []byte) ([]string, error) {
 	return found, nil
 }
 
+// foldedString returns the value of expr when it is a "+" chain of string
+// literals, and whether it is one.
+func foldedString(expr ast.Expr) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind != token.STRING {
+			return "", false
+		}
+		value, err := strconv.Unquote(e.Value)
+		return value, err == nil
+	case *ast.BinaryExpr:
+		left, leftOK := foldedString(e.X)
+		right, rightOK := foldedString(e.Y)
+		return left + right, e.Op == token.ADD && leftOK && rightOK
+	case *ast.ParenExpr:
+		return foldedString(e.X)
+	}
+	return "", false
+}
+
 // forbiddenInLiteral returns the forbidden names in the Go string literal
-// quoted, including the Keychain tool: a literal that is "security" or
-// starts with "security ".
+// quoted.
 func forbiddenInLiteral(quoted string) []string {
 	value, err := strconv.Unquote(quoted)
 	if err != nil {
 		return []string{quoted}
 	}
+	return forbiddenInValue(value)
+}
+
+// forbiddenInValue returns the forbidden names in value, including the
+// Keychain tool: a first word that is "security", or any word that is a path
+// ending in "/security".
+func forbiddenInValue(value string) []string {
 	var found []string
 	for _, name := range forbiddenSubstrings {
 		if strings.Contains(value, name) {
 			found = append(found, name)
 		}
 	}
-	if value == "security" || strings.HasPrefix(value, "security ") {
+	if namesKeychainTool(value) {
 		found = append(found, "security")
 	}
 	return found
+}
+
+func namesKeychainTool(value string) bool {
+	for i, word := range strings.Fields(value) {
+		word = strings.Trim(word, `'"`)
+		if path.Base(word) == "security" && (i == 0 || strings.Contains(word, "/")) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestForbiddenNamesRefusesHostileSources(t *testing.T) {
@@ -91,6 +134,12 @@ func TestForbiddenNamesRefusesHostileSources(t *testing.T) {
 		{"keychain entry", `package p; var s = "Claude Code-credentials"`, []string{"Claude Code-credentials"}},
 		{"keychain query", `package p; var c = "security find-generic-password -s x"`, []string{"find-generic-password", "security"}},
 		{"keychain tool", `package p; import "os/exec"; var c = exec.Command("security", "dump-keychain")`, []string{"security"}},
+		{"keychain tool by absolute path", `package p; import "os/exec"; var c = exec.Command("/usr/bin/security", "dump-keychain")`, []string{"security"}},
+		{"keychain tool in a shell line", `package p; var c = "sh -c '/usr/bin/security dump-keychain'"`, []string{"security"}},
+		{"api key split in a constant", `package p; import "os"; var k = os.Getenv("ANTHROPIC_" + "API_KEY")`, []string{"ANTHROPIC_API_KEY"}},
+		{"credential file split in a constant", `package p; var f = "~/.claude/" + ".credentials" + ".json"`, []string{".credentials.json"}},
+		{"split in parentheses", `package p; var f = ("ANTHROPIC_" + ("AUTH_" + "TOKEN"))`, []string{"ANTHROPIC_AUTH_TOKEN"}},
+		{"concatenation with a variable", `package p; var f = prefix + "security review"`, []string{"security"}},
 		{"api key", `package p; import "os"; var k = os.Getenv("ANTHROPIC_API_KEY")`, []string{"ANTHROPIC_API_KEY"}},
 		{"auth token", `package p; var k = "ANTHROPIC_AUTH_TOKEN=x"`, []string{"ANTHROPIC_AUTH_TOKEN"}},
 		{"oauth token", `package p; var k = "CLAUDE_CODE_OAUTH_TOKEN"`, []string{"CLAUDE_CODE_OAUTH_TOKEN"}},
