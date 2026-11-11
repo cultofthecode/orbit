@@ -1010,6 +1010,12 @@ func unreadable(t *testing.T, path string) {
 // file file has another hard link, and that the error names file.
 func checkHardLinkRefusal(t *testing.T, home, dir, file string) {
 	t.Helper()
+	_ = refuseHardLink(t, home, dir, file)
+}
+
+// refuseHardLink runs checkHardLinkRefusal and returns the refusal.
+func refuseHardLink(t *testing.T, home, dir, file string) error {
+	t.Helper()
 	fake := orbstacktest.New(sandbox.NamePrefix)
 
 	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: dir})
@@ -1023,6 +1029,7 @@ func checkHardLinkRefusal(t *testing.T, home, dir, file string) {
 	if len(fake.Calls) != 0 {
 		t.Errorf("calls = %v, want none", fake.Calls)
 	}
+	return err
 }
 
 // TestHandleRefusesAHardLinkedProtectedFile covers a .claude.json with
@@ -1063,15 +1070,9 @@ func TestHandleRefusesAHardLinkedProtectedFile(t *testing.T) {
 		walked := filepath.Join(home, ".claude", "claude.json.bak")
 		writeFile(t, filepath.Join(home, ".claude", "settings.json"))
 		hardLink(t, file, walked)
-		fake := orbstacktest.New(sandbox.NamePrefix)
-
-		_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: filepath.Join(home, "work", "api")})
-
-		if !errors.Is(err, sandbox.ErrHardLinkedFile) {
-			t.Fatalf("Handle() = %v, want %v", err, sandbox.ErrHardLinkedFile)
-		}
-		if !strings.Contains(err.Error(), file) || strings.Contains(err.Error(), walked) {
-			t.Errorf("Handle() = %v, want it to name %s and not %s", err, file, walked)
+		err := refuseHardLink(t, home, filepath.Join(home, "work", "api"), file)
+		if strings.Contains(err.Error(), walked) {
+			t.Errorf("Handle() = %v, want it not to name %s", err, walked)
 		}
 	})
 	t.Run("single link", func(t *testing.T) {
