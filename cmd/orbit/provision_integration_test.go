@@ -27,9 +27,15 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
 )
 
-// provisionTimeout bounds the provisioning test: two runs of the root
-// script, each with a package install, and the probes.
+// provisionTimeout bounds the provisioning of one test, from the moment
+// the test holds the capacity lock: two runs of the root script, each with
+// a package install, and the probes.
 const provisionTimeout = 10 * time.Minute
+
+// capacityLockPath is the file whose exclusive lock lets one test of any
+// run on the host provision at a time, so that the deadline of a test
+// measures its own work and not the load of other runs on one OrbStack.
+const capacityLockPath = "/tmp/orbit-integration-capacity.lock"
 
 // initLockPath is the file that serializes the integration runs on one
 // host: TestActiveMountsShowASwappedPath in internal/orbstack holds an
@@ -197,8 +203,7 @@ blocked "agent direct to 1.1.1.1 after the attempts of the agent" as_agent curl 
 
 func TestInitProvisionsTheSandbox(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
@@ -243,6 +248,28 @@ func waitToRunInit(t *testing.T) {
 	}
 }
 
+// provisionContext waits for the exclusive lock on capacityLockPath, holds
+// it until the end of t, and then returns a context that ends after
+// provisionTimeout. Call it after waitToRunInit, as the integration tests
+// of internal/orbstack lock in the same order.
+func provisionContext(t *testing.T) context.Context {
+	t.Helper()
+	file, err := os.OpenFile(capacityLockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Logf("waiting for the provisioning of another run (%s)", capacityLockPath)
+		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+			t.Fatalf("lock %s: %v", capacityLockPath, err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // otherMachines returns the names of the machines on the host besides
 // name, for the failure message of an init test: init checks the mounts of
 // every machine, so a machine that the test did not create can make it
@@ -279,8 +306,7 @@ systemctl is-active --quiet systemd-user-sessions.service
 // of systemd allows (#66).
 func TestInitRunsAgainAfterRepeatedRuns(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))

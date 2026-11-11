@@ -22,9 +22,16 @@ import (
 // tests, so that the client under test can touch no other machine.
 const integrationPrefix = "orbit-it-"
 
-// createTimeout bounds the creation of one machine. On a cold OrbStack,
-// orb create alone can take most of three minutes.
+// createTimeout bounds the creation of one machine, from the moment the
+// test holds the capacity lock. On a cold OrbStack, orb create alone can
+// take most of three minutes.
 const createTimeout = 5 * time.Minute
+
+// capacityLockPath is the file whose exclusive lock lets one test of any
+// run on the host provision or create a machine at a time, so that a
+// deadline measures its own work and not the load of other runs on one
+// OrbStack. The tests in cmd/orbit lock the same path.
+const capacityLockPath = "/tmp/orbit-integration-capacity.lock"
 
 // integrationTimeout bounds the steps of one integration test after its
 // machine exists.
@@ -56,6 +63,24 @@ func blockInit(t *testing.T) {
 	}
 }
 
+// lockCapacity waits for the exclusive lock on capacityLockPath and returns
+// the function that releases it.
+func lockCapacity(t *testing.T) (release func()) {
+	t.Helper()
+	file, err := os.OpenFile(capacityLockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Logf("waiting for the provisioning of another run (%s)", capacityLockPath)
+		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+			_ = file.Close()
+			t.Fatalf("lock %s: %v", capacityLockPath, err)
+		}
+	}
+	return func() { _ = file.Close() }
+}
+
 // testContext returns a context that ends after integrationTimeout.
 func testContext(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
@@ -83,6 +108,7 @@ func newMachine(t *testing.T, dir string) (*Client, string) {
 // forward names.
 func newForwardingMachine(t *testing.T, dir string, forward bool) (*Client, string) {
 	t.Helper()
+	defer lockCapacity(t)()
 	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
 	defer cancel()
 	client := New(integrationPrefix)
