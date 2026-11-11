@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -51,6 +52,44 @@ func TestOrbitRegistersStop(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Stop the sandbox of the current directory") {
 		t.Errorf("orbit stop --help = %q, want the command", stdout.String())
+	}
+}
+
+func TestOrbitRegistersStart(t *testing.T) {
+	root, err := newOrbit()
+	if err != nil {
+		t.Fatalf("newOrbit = %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), root, []string{"start", "--help"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("orbit start --help = %d, %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Start the sandbox of the current directory") {
+		t.Errorf("orbit start --help = %q, want the command", stdout.String())
+	}
+}
+
+func TestStartRunsTheCheckScriptsOfProvisioning(t *testing.T) {
+	project := projectInWorkingDir(t)
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+	fake.States[name] = orbstacktest.StateStopped
+	var stdout, stderr bytes.Buffer
+
+	code := run(context.Background(), newRoot(startCommand(fake)), []string{"start"}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("orbit start = %d, %s", code, stderr.String())
+	}
+	var scripts []string
+	for _, call := range fake.Calls {
+		if call.Op == orbstacktest.OpRunAsRoot {
+			scripts = append(scripts, call.Script)
+		}
+	}
+	if want := []string{string(provision.BootCheckScript()), string(provision.MarkerCheckScript())}; !slices.Equal(scripts, want) {
+		t.Errorf("root scripts = %q, want the boot check and the marker check of provisioning", scripts)
 	}
 }
 
