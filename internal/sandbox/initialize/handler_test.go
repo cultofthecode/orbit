@@ -1828,3 +1828,30 @@ func TestHandleFailsClosedOnLocationsThatCannotBeProtected(t *testing.T) {
 		}
 	}
 }
+
+// TestHandleFailsClosedOnADirectoryVariableThatNamesAFile covers a variable
+// that moves a protected directory to a path that is a file: the handler
+// cannot protect what the tool would put there, so init stops and names the
+// variable.
+func TestHandleFailsClosedOnADirectoryVariableThatNamesAFile(t *testing.T) {
+	for _, moved := range movedLocations {
+		if moved.file {
+			continue
+		}
+		t.Run(moved.variable, func(t *testing.T) {
+			home := newBareHome(t)
+			writeFile(t, filepath.Join(home, "dotfiles", "plain"))
+			moved.set(t, filepath.Join(home, "dotfiles", "plain"))
+			fake := orbstacktest.New(sandbox.NamePrefix)
+
+			_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: filepath.Join(home, "work", "api")})
+
+			if err == nil || !strings.Contains(err.Error(), "protected location of "+moved.variable) {
+				t.Errorf("Handle = %v, want an error that names %s", err, moved.variable)
+			}
+			if len(fake.Calls) != 0 {
+				t.Errorf("calls = %v, want none", fake.Calls)
+			}
+		})
+	}
+}
