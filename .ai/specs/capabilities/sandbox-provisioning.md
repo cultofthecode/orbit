@@ -105,19 +105,25 @@ The system SHALL install git, openssh-client, curl, ca-certificates, jq, ripgrep
 - THEN it fails, and `git`, `ssh`, `curl`, `jq`, `rg`, and `unzip` run
 
 ## Requirement: Init of a project directory
-The system SHALL create the machine of the project directory when it does not exist, and SHALL then provision it, also when it already existed. When provisioning fails on a machine that the same call created, the system SHALL delete that machine and report the failure.
+The system SHALL create the machine of the project directory when it does not exist, and SHALL then provision it and set up the Docker client of `agent`, also when it already existed. When provisioning or the client setup fails on a machine that the same call created, the system SHALL delete that machine and report the failure.
 
 ### Scenario: First init
 - WHEN `init` runs in a project directory without a machine
-- THEN the machine is created and provisioned, and `Created` is true
+- THEN the machine is created and provisioned, the client setup runs as `agent`, and `Created` is true
 
 ### Scenario: Init of an existing machine
 - WHEN `init` runs in a project directory whose machine exists
-- THEN the machine is provisioned again and is not created or deleted, and `Created` is false
+- THEN the machine is provisioned again and the client setup runs again, `~/.docker/config.json` keeps its other keys, the machine is not created or deleted, and `Created` is false
 
 ### Scenario: Provisioning fails on a new machine
 - WHEN provisioning fails on a machine that this call created
 - THEN the machine is deleted and the error names the failed provisioning
+
+### Scenario: Client setup fails on a new machine
+- WHEN the client setup fails on a machine that this call created
+- THEN the machine is deleted, the agent is not installed, and the error names the client setup
+
+Source: .ai/specs/2026-11-11-rootless-docker.md
 
 Source: .ai/specs/2026-11-10-sandbox-provisioning.md
 
