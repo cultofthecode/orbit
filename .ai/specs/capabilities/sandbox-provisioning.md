@@ -3,11 +3,17 @@
 Root provisions a sandbox machine so that the agent runs without privileges behind a root-owned firewall and egress proxy.
 
 ## Requirement: Agent user without privileges
-The system SHALL create the user `agent` with a uid from 1000 up, no sudo rule, and no privileged group (`sudo`, `admin`, `adm`, `docker`, `lxd`, `disk`, `shadow`). Provisioning adds the agent to no group; E01-S04 adds `orbstack` for the forwarded SSH agent socket (R08).
+The system SHALL create the user `agent` with a uid from 1000 up, no sudo rule, and no privileged group (`sudo`, `admin`, `adm`, `docker`, `lxd`, `disk`, `shadow`). The system SHALL add `agent` to the group `orbstack` exactly when the machine forwards the host SSH agent, and to no other group.
 
 ### Scenario: The agent tries to become root
 - WHEN a process of `agent` runs `sudo -n true`, `su root`, or `su <default user>`
 - THEN each command fails
+
+### Scenario: Group of the forwarded socket
+- WHEN provisioning runs on a machine that forwards the agent, and again on one that does not
+- THEN `id -nG agent` holds `orbstack` on the first and not on the second
+
+Frozen by: `internal/provision/script_test.go` (`TestScriptCreatesTheAgentOnceWithOnlyTheSocketGroup`)
 
 ## Requirement: Default user without sudo
 The system SHALL leave no sudo rule, no membership in `sudo`, `admin`, or `adm`, and no usable password for any account except root, also after a restart of the machine.

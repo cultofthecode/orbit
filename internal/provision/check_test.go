@@ -18,7 +18,7 @@ func checkScripts() map[string][]byte {
 
 func TestReadinessScriptChecksTheMarkerTheTableAndEveryBoundaryUnit(t *testing.T) {
 	lines := scriptLines(ReadinessScript())
-	lineIndex(t, lines, `printf '%s\n' 1 | cmp -s - /etc/orbit/provisioned || fail "/etc/orbit/provisioned does not hold provisioning version 1"`)
+	lineIndex(t, lines, `printf '%s\n' 2 | cmp -s - /etc/orbit/provisioned || fail "/etc/orbit/provisioned does not hold provisioning version 2"`)
 	lineIndex(t, lines, `nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`)
 	units := lineIndex(t, lines, "for unit in nftables.service orbit-proxy-address.service tinyproxy.service orbit-harden.service systemd-user-sessions.service; do")
 	lineIndex(t, lines, `  systemctl is-active --quiet "$unit" || fail "$unit is not active"`)
@@ -83,7 +83,7 @@ func TestBootCheckScriptMatchesTheSelfCheckOfScript(t *testing.T) {
 
 func TestMarkerCheckScriptComparesTheMarkerWithTheVersion(t *testing.T) {
 	lines := scriptLines(MarkerCheckScript())
-	lineIndex(t, lines, `printf '%s\n' 1 | cmp -s - /etc/orbit/provisioned || fail "/etc/orbit/provisioned does not hold provisioning version 1"`)
+	lineIndex(t, lines, `printf '%s\n' 2 | cmp -s - /etc/orbit/provisioned || fail "/etc/orbit/provisioned does not hold provisioning version 2"`)
 	if strings.Contains(string(MarkerCheckScript()), "systemctl") {
 		t.Error("the marker check checks units, want only the marker")
 	}

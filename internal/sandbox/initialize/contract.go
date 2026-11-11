@@ -13,6 +13,11 @@ type Input struct {
 	// Agent is the name of the agent to install, or empty for none. The
 	// allowlist of the proxy holds the egress domains of this agent only.
 	Agent string
+	// NoSSHForwarding leaves the SSH agent of the host out of the sandbox.
+	// The zero value forwards it (R08, D25). OrbStack fixes the setting when
+	// it creates the machine, so a machine whose setting differs fails with
+	// sandbox.ErrSSHForwardingMismatch.
+	NoSSHForwarding bool
 }
 
 // Output is the sandbox of the project directory.
@@ -35,7 +40,8 @@ type Output struct {
 // fs.ErrNotExist, a variable that moves a protected location to a path that
 // Orbit cannot protect with sandbox.ErrRelocatedPath, and a machine that
 // mounts something else than the project directory with
-// sandbox.ErrMountMismatch.
+// sandbox.ErrMountMismatch, and a machine whose SSH agent forwarding differs
+// from the request with sandbox.ErrSSHForwardingMismatch.
 var ErrNotDirectory = sandbox.ErrNotDirectory
 
 // ErrLinkedSandboxDir reports another machine whose stored mount path passes
@@ -43,3 +49,8 @@ var ErrNotDirectory = sandbox.ErrNotDirectory
 // every project directory until the user fixes the path or deletes that
 // machine.
 var ErrLinkedSandboxDir = sandbox.ErrLinkedSandboxDir
+
+// ErrSSHForwardingMismatch reports an existing machine whose SSH agent
+// forwarding differs from the request, which init refuses before it runs a
+// command in the machine. It is sandbox.ErrSSHForwardingMismatch.
+var ErrSSHForwardingMismatch = sandbox.ErrSSHForwardingMismatch
