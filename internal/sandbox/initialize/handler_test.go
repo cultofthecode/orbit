@@ -1132,8 +1132,9 @@ func checkHardLinkLayouts(t *testing.T, layouts []hardLinkLayout) {
 // TestHandleRefusesHardLinkedFilesInProtectedDirectories covers a regular
 // file in a protected directory with a hard link outside every protected
 // location (#69): the agent could read and rewrite it through a link in its
-// project directory. Every file is unreadable, so the test fails when the
-// handler opens one (D08).
+// project directory. A link next to the target of a per-file symlink counts
+// as outside too, because the walk does not list that directory. Every file
+// is unreadable, so the test fails when the handler opens one (D08).
 func TestHandleRefusesHardLinkedFilesInProtectedDirectories(t *testing.T) {
 	layouts := []hardLinkLayout{
 		{name: "settings of Claude Code in the project", layout: func(t *testing.T, home string) string {
@@ -1174,6 +1175,12 @@ func TestHandleRefusesHardLinkedFilesInProtectedDirectories(t *testing.T) {
 			file := linkedIntoProject(t, home, "dotfiles/ssh/config")
 			symlinkAt(t, filepath.Join(home, "dotfiles"), filepath.Join(home, "links"))
 			symlinkAt(t, filepath.Join(home, "links", "ssh", "config"), filepath.Join(home, ".ssh", "config"))
+			return file
+		}},
+		{name: "link next to the target of a per-file symlink", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			file := linkedCredential(t, home, "dotfiles/ssh/config", filepath.Join(home, "dotfiles", "ssh", "config.bak"))
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "config"))
 			return file
 		}},
 	}
@@ -1246,13 +1253,48 @@ func TestHandleCountsEachPathOfAHardLinkedFileOnce(t *testing.T) {
 			symlinkAt(t, strings.ToUpper(file), filepath.Join(home, ".claude", "ssh-config"))
 			return file
 		}},
+		{name: "symlinks to two names of one file outside", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			file := linkedOutside(t, home, "dotfiles/ssh/a")
+			hardLink(t, file, filepath.Join(home, "dotfiles", "ssh", "b"))
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "a"))
+			symlinkAt(t, filepath.Join(home, "dotfiles", "ssh", "b"), filepath.Join(home, ".ssh", "b"))
+			return file
+		}},
 	}
 	checkHardLinkLayouts(t, layouts)
 }
 
+// TestHandleStopsOnASymlinkToAnUnlistedNameOfSeveralLinks covers a symlink
+// that ends at a name that its directory does not list, in another case,
+// while that directory holds more than one link of the file: the handler
+// cannot tell which path the symlink names, and counting it as a path of
+// its own would hide the link in the project directory, so init stops with
+// an error that names the directory and makes no OrbStack call.
+func TestHandleStopsOnASymlinkToAnUnlistedNameOfSeveralLinks(t *testing.T) {
+	home := newBareHome(t)
+	claude := filepath.Join(home, ".claude")
+	file := linkedIntoProject(t, home, ".claude/a")
+	hardLink(t, file, filepath.Join(claude, "b"))
+	requireSpelling(t, filepath.Join(claude, "A"))
+	symlinkAt(t, filepath.Join(claude, "A"), filepath.Join(claude, "x"))
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: filepath.Join(home, "work", "api")})
+
+	want := "A names one of 2 hard links in " + claude + "; point the symlink at a name that the directory lists"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("Handle = %v, want an error that contains %q", err, want)
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("calls = %v, want none", fake.Calls)
+	}
+}
+
 // TestHandleAcceptsHardLinksInsideTheProtectedLocations covers files whose
 // every hard link lies in the protected locations, as Claude Code and GnuPG
-// make them, and a subdirectory, which always has more than one link.
+// make them, a subdirectory, which always has more than one link, and a
+// directory where a file that must have one link is expected.
 func TestHandleAcceptsHardLinksInsideTheProtectedLocations(t *testing.T) {
 	checkHardLinkLayouts(t, []hardLinkLayout{
 		{name: "snapshots of Claude Code", layout: func(t *testing.T, home string) string {
@@ -1291,6 +1333,15 @@ func TestHandleAcceptsHardLinksInsideTheProtectedLocations(t *testing.T) {
 		}},
 		{name: "hard link of a file outside the protected locations", layout: func(t *testing.T, home string) string {
 			linkedCredential(t, home, "dotfiles/vim/vimrc", filepath.Join(home, "work", "api", "vimrc"))
+			return ""
+		}},
+		{name: "directory named .claude.json", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".claude.json/one", ".claude.json/two")
+			return ""
+		}},
+		{name: "directory named by AWS_CONFIG_FILE", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, "dotfiles/aws/config/one", "dotfiles/aws/config/two")
+			t.Setenv("AWS_CONFIG_FILE", filepath.Join(home, "dotfiles", "aws", "config"))
 			return ""
 		}},
 	})

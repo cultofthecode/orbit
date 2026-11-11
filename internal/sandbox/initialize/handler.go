@@ -775,7 +775,7 @@ func listedName(dir, name string, id fileID) (string, error) {
 	case len(names) == 1:
 		return names[0], nil
 	}
-	return "", fmt.Errorf("%s names one of %d hard links in %s", name, len(names), dir)
+	return "", fmt.Errorf("%s names one of %d hard links in %s; point the symlink at a name that the directory lists", name, len(names), dir)
 }
 
 // namesOf returns the names in the directory dir of the regular file id.
