@@ -41,12 +41,12 @@ The system SHALL let the engine of `agent`, its builds, and its containers reach
 - THEN each connection fails
 
 ### Scenario: Daemon replaced by the agent, in the network namespace of the machine
-- WHEN `agent` stops its `docker.service`, starts `dockerd-rootless.sh` itself with `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=host` (rootlesskit `--net=host`) and without any proxy environment, and runs a container with `--network host --user 100001` that connects to a public address directly and to an allowed host through `172.31.255.1:3128`
-- THEN the container shares the network namespace of PID 1 and runs as a sub-uid of `agent` (the test checks both first, so that it exercises the leak path of the spike, A05), the direct connection fails, and only the connection through the proxy succeeds
+- WHEN `agent` stops its `docker.service`, starts `dockerd-rootless.sh` itself with `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=host` (rootlesskit `--net=host`) and without any proxy environment, and starts a process with `rootlesskit --net=host` and `setpriv --reuid=1000` that connects to a public address directly and to an allowed host through `172.31.255.1:3128`
+- THEN the process runs as a sub-uid of `agent` in the network namespace of PID 1 (the test checks both first, so that it exercises the leak path of the spike, A05), the direct connection fails, and only the connection through the proxy succeeds; a `docker run --network host` attempt is only logged
 
 ### Scenario: Agent-owned unit at boot
 - WHEN `agent` writes `~/.config/systemd/user/docker.service` that starts the daemon of the previous scenario, and the machine restarts
-- THEN that unit starts only after `orbit-boundary-gate.service` is active, and a direct connection from its `--network host --user 100001` container fails
+- THEN that unit starts only after `orbit-boundary-gate.service` is active, and the same sub-uid process probe, run after the restart, finds that a direct connection fails
 
 ### Scenario: Refused host through the proxy
 - WHEN a container with the proxy settings of `config.json` requests `https://example.org`
