@@ -92,11 +92,14 @@ type ProjectDir struct {
 	// its canonical path and as its path on its own volume.
 	Homes []string
 	// Protected holds every spelling of the directory that each path of
-	// ProtectedDirs resolves to, for the paths that exist.
+	// ProtectedDirs resolves to, or of the path where its target would be
+	// created when it does not exist, and of every directory that a
+	// symlink in one of those directories leads to or would create.
 	Protected []string
 	// ProtectedFileDirs holds every spelling of the directory that holds
-	// the file that each path of ProtectedFiles resolves to, for the paths
-	// that exist.
+	// the file that each path of ProtectedFiles resolves to, or would be
+	// created in, and of the directory that holds each file that a symlink
+	// in a protected directory leads to.
 	ProtectedFileDirs []string
 }
 
