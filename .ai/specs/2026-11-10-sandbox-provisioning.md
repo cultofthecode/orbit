@@ -201,8 +201,8 @@ The uid floor (1000) is a constant, not an input. Rule 9 lets filtered uids reac
 - `orbit-proxy-address.service`: oneshot, `RemainAfterExit=yes`, creates `orbit0` when it is missing and sets the address; `Before=network-pre.target tinyproxy.service systemd-user-sessions.service`.
 - `nftables.service` drop-in: `Before=systemd-user-sessions.service`. The Ubuntu unit already runs before `network-pre.target`. The script never restarts this unit (its `ExecStop` flushes the ruleset).
 - `tinyproxy.service` drop-in: `Requires=` and `After=` both units above, `Before=systemd-user-sessions.service`, `StartLimitIntervalSec=0` (the spike hit the start limit on rapid restarts).
-- `orbit-harden.service`: oneshot, runs `/usr/local/libexec/orbit-harden` (root-owned, 0755), `Before=systemd-user-sessions.service`.
-- `systemd-user-sessions.service` drop-in: `Requires=` and `After=` on `nftables.service`, `orbit-proxy-address.service`, `tinyproxy.service`, and `orbit-harden.service`. Ordering alone would let sessions start when one of them fails; with `Requires=`, logins stay disabled instead.
+- `orbit-harden.service`: oneshot, runs `/usr/local/libexec/orbit-harden` (root-owned, 0755), `Before=systemd-user-sessions.service`, `StartLimitIntervalSec=0` (every run of the script restarts it; #66).
+- `systemd-user-sessions.service` drop-in: `Requires=` and `After=` on `nftables.service`, `orbit-proxy-address.service`, `tinyproxy.service`, and `orbit-harden.service`, and `StartLimitIntervalSec=0` (each restart of a required unit restarts it too; #66). Ordering alone would let sessions start when one of them fails; with `Requires=`, logins stay disabled instead. The script starts this unit after the restarts, because a propagated restart does not start it again after it failed, and the self-check requires it to be active.
 
 `orbit-proxy-address.service`, `orbit-harden.service`, `nftables.service`, and `tinyproxy.service` are enabled for `multi-user.target`.
 
@@ -230,7 +230,7 @@ No user-visible contract changes: `orbit init` stays unregistered. Internal cont
 | OrbStack restores `/etc/sudoers.d/orbstack` on start | `orbit-harden.service` removes it again before user sessions. Unknown whether OrbStack does this; QA checks it after `orb restart`. |
 | An agent process starts before the units (OrbStack runs `orb -m -u agent` outside logind) | Not known. QA runs a direct connection as `agent` right after `orb restart`. A failure here is a blocker for the story, not for this task, and is reported in the PR. |
 | Deleting a failed new machine fails | `Handle` returns both errors joined; the message names the machine so that the user can delete it. |
-| tinyproxy restarts often | `StartLimitIntervalSec=0` keeps it from staying down; while it is down, egress fails closed. |
+| tinyproxy, `orbit-harden`, or user sessions restart often (rapid `init` runs) | `StartLimitIntervalSec=0` on all three keeps them from staying down; while one is down, egress or logins fail closed. |
 
 ## 📝 Risks & Impact Review
 
