@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cultofthecode/orbit/internal/orbstack/orbstacktest"
 	"github.com/cultofthecode/orbit/internal/sandbox"
@@ -739,8 +740,9 @@ func TestHandleRefusesLinkedProtectedDirectories(t *testing.T) {
 }
 
 // TestHandleWithProtectedPathsThatAreNoDirectories covers a protected path
-// that leads nowhere, which protects nothing, and one that is a file, which
-// the handler cannot resolve and so refuses to go on.
+// that leads nowhere, which protects only where its target would be created,
+// and one that is a file, which the handler cannot resolve and so refuses to
+// go on.
 func TestHandleWithProtectedPathsThatAreNoDirectories(t *testing.T) {
 	t.Run("broken symlink", func(t *testing.T) {
 		home := newDir(t)
@@ -924,8 +926,8 @@ func TestHandleResolvesTheProtectedFile(t *testing.T) {
 }
 
 // TestHandleWithProtectedFilesThatLeadNowhere covers a .claude.json that is
-// a broken symlink, which protects nothing, and one that cannot be resolved,
-// which stops init.
+// a broken symlink, which protects only the directory where its target would
+// be created, and one that cannot be resolved, which stops init.
 func TestHandleWithProtectedFilesThatLeadNowhere(t *testing.T) {
 	t.Run("broken symlink", func(t *testing.T) {
 		home := newDir(t)
@@ -950,6 +952,334 @@ func TestHandleWithProtectedFilesThatLeadNowhere(t *testing.T) {
 			t.Errorf("calls = %v, want none", fake.Calls)
 		}
 	})
+}
+
+// newBareHome makes a home directory with only work/api and dotfiles/vim in
+// it, makes it the home directory of the environment of the test, and
+// returns its canonical path.
+func newBareHome(t *testing.T) string {
+	t.Helper()
+	home := newDir(t)
+	makeDirs(t, home, "work/api", "dotfiles/vim")
+	t.Setenv("HOME", home)
+	return home
+}
+
+// linkLayout is a layout of symlinks in a bare home directory and the
+// project directory that the handler must refuse for it.
+type linkLayout struct {
+	name   string
+	layout func(t *testing.T, home string) (dir string)
+	want   error
+}
+
+// checkLinkLayouts builds each layout in a new bare home directory and
+// checks that the handler refuses its project directory and still accepts
+// work/api and dotfiles/vim.
+func checkLinkLayouts(t *testing.T, layouts []linkLayout) {
+	t.Helper()
+	for _, test := range layouts {
+		t.Run(test.name, func(t *testing.T) {
+			home := newBareHome(t)
+			dir := test.layout(t, home)
+			checkRefusals(t, account(home), []refusal{{name: "refuses", dir: dir, want: test.want}})
+			for _, accepted := range []string{filepath.Join(home, "work", "api"), filepath.Join(home, "dotfiles", "vim")} {
+				t.Run("accepts "+filepath.Base(accepted), func(t *testing.T) {
+					checkCreates(t, account(home), accepted, accepted)
+				})
+			}
+		})
+	}
+}
+
+// TestHandleRefusesTargetsOfDanglingProtectedPaths covers every protected
+// path as a symlink whose target does not exist yet. The tool that owns the
+// path creates its credentials at that target, so the directory where the
+// target would be created is protected (#27).
+func TestHandleRefusesTargetsOfDanglingProtectedPaths(t *testing.T) {
+	checkLinkLayouts(t, []linkLayout{
+		{name: ".ssh", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join(home, "dotfiles", "ssh"), filepath.Join(home, ".ssh"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: ".claude by a relative symlink", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join("dotfiles", "claude"), filepath.Join(home, ".claude"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: ".aws", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join(home, "dotfiles", "aws"), filepath.Join(home, ".aws"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: ".gnupg", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join(home, "dotfiles", "gnupg"), filepath.Join(home, ".gnupg"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: ".config/gh", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".config")
+			symlinkAt(t, filepath.Join(home, "dotfiles", "gh"), filepath.Join(home, ".config", "gh"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: ".config to a missing directory", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join(home, "dotfiles", "config"), filepath.Join(home, ".config"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: ".config to a missing directory by a relative symlink", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join("dotfiles", "config"), filepath.Join(home, ".config"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: ".ssh below a missing directory", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join(home, "dotfiles", "keys", "ssh"), filepath.Join(home, ".ssh"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: ".ssh through a chain of dangling symlinks", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, "links")
+			symlinkAt(t, filepath.Join(home, "links", "ssh"), filepath.Join(home, ".ssh"))
+			symlinkAt(t, filepath.Join(home, "dotfiles", "ssh"), filepath.Join(home, "links", "ssh"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: ".ssh below a linked directory", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, "elsewhere")
+			symlinkAt(t, filepath.Join(home, "elsewhere"), filepath.Join(home, "dotfiles", "linked"))
+			symlinkAt(t, filepath.Join(home, "dotfiles", "linked", "ssh"), filepath.Join(home, ".ssh"))
+			return filepath.Join(home, "elsewhere")
+		}},
+		{name: ".ssh in upper case", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join(home, "dotfiles", "ssh"), filepath.Join(home, ".ssh"))
+			requireSpelling(t, strings.ToUpper(filepath.Join(home, "dotfiles")))
+			return strings.ToUpper(filepath.Join(home, "dotfiles"))
+		}},
+		{name: ".config on the data volume", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join(home, "dotfiles", "config"), filepath.Join(home, ".config"))
+			requireSpelling(t, dataVolume+filepath.Join(home, "dotfiles"))
+			return dataVolume + filepath.Join(home, "dotfiles")
+		}},
+		{name: ".claude.json", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join(home, "dotfiles", "claude.json"), filepath.Join(home, ".claude.json"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: ".claude.json below a missing directory", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			symlinkAt(t, filepath.Join(home, "dotfiles", "state", "claude.json"), filepath.Join(home, ".claude.json"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: ".claude.json through a chain of relative symlinks", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, "links")
+			symlinkAt(t, filepath.Join("links", "claude.json"), filepath.Join(home, ".claude.json"))
+			symlinkAt(t, filepath.Join("..", "dotfiles", "claude.json"), filepath.Join(home, "links", "claude.json"))
+			return filepath.Join(home, "dotfiles")
+		}},
+	})
+}
+
+// TestHandleRefusesTargetsOfSymlinksInProtectedDirectories covers a
+// protected directory that holds a symlink to a file or a directory
+// elsewhere, as a per-file dotfiles layout makes it (#27).
+func TestHandleRefusesTargetsOfSymlinksInProtectedDirectories(t *testing.T) {
+	checkLinkLayouts(t, []linkLayout{
+		{name: "file in .ssh", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, ".ssh/id_ed25519", "dotfiles/ssh/id_ed25519")
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "file in .ssh, directory that holds the target", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, ".ssh/id_ed25519", "dotfiles/ssh/id_ed25519")
+			return filepath.Join(home, "dotfiles", "ssh")
+		}},
+		{name: "file in .claude", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, ".claude/settings.json", "dotfiles/claude/settings.json")
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "file in .aws", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, ".aws/credentials", "dotfiles/aws/credentials")
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "file in .gnupg by a relative symlink", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".gnupg", "dotfiles/gnupg")
+			writeFile(t, filepath.Join(home, "dotfiles", "gnupg", "gpg.conf"))
+			symlinkAt(t, filepath.Join("..", "dotfiles", "gnupg", "gpg.conf"), filepath.Join(home, ".gnupg", "gpg.conf"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "file in .config/gh", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, ".config/gh/hosts.yml", "dotfiles/gh/hosts.yml")
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "file in a subdirectory of .ssh", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, ".ssh/config.d/work", "dotfiles/ssh/work")
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "file through a chain of symlinks", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, "links/id_ed25519", "dotfiles/ssh/id_ed25519")
+			makeDirs(t, home, ".ssh")
+			symlinkAt(t, filepath.Join(home, "links", "id_ed25519"), filepath.Join(home, ".ssh", "id_ed25519"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "file through a chain of symlinks, directory of the first hop", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, "links/id_ed25519", "dotfiles/ssh/id_ed25519")
+			makeDirs(t, home, ".ssh")
+			symlinkAt(t, filepath.Join(home, "links", "id_ed25519"), filepath.Join(home, ".ssh", "id_ed25519"))
+			return filepath.Join(home, "links")
+		}},
+		{name: "file in .ssh through a symlink in the project", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, "proj/config", "vault/config")
+			makeDirs(t, home, ".ssh")
+			symlinkAt(t, filepath.Join(home, "proj", "config"), filepath.Join(home, ".ssh", "config"))
+			return filepath.Join(home, "proj")
+		}},
+		{name: "file in .ssh through a symlink in the project by a relative symlink", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, "proj/config", "vault/config")
+			makeDirs(t, home, ".ssh")
+			symlinkAt(t, filepath.Join("..", "proj", "config"), filepath.Join(home, ".ssh", "config"))
+			return filepath.Join(home, "proj")
+		}},
+		{name: "directory in .claude through a symlink in the project", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkDirInto(t, home, "proj/cmds", "vault/cmds")
+			makeDirs(t, home, ".claude")
+			symlinkAt(t, filepath.Join(home, "proj", "cmds"), filepath.Join(home, ".claude", "commands"))
+			return filepath.Join(home, "proj")
+		}},
+		{name: "dangling symlink in .ssh through a symlink in the project", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh", "proj", "vault")
+			symlinkAt(t, filepath.Join(home, "vault", "id_new"), filepath.Join(home, "proj", "id_new"))
+			symlinkAt(t, filepath.Join(home, "proj", "id_new"), filepath.Join(home, ".ssh", "id_new"))
+			return filepath.Join(home, "proj")
+		}},
+		{name: "file in .ssh through a linked directory in the project", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkDirInto(t, home, "proj/link", "vault")
+			writeFile(t, filepath.Join(home, "vault", "config"))
+			makeDirs(t, home, ".ssh")
+			symlinkAt(t, filepath.Join(home, "proj", "link", "config"), filepath.Join(home, ".ssh", "config"))
+			return filepath.Join(home, "proj")
+		}},
+		{name: "directory in .claude", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			linkDirInto(t, home, ".claude/commands", "dotfiles/commands")
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "directory in .claude, the target", want: sandbox.ErrProtectedDir, layout: func(t *testing.T, home string) string {
+			linkDirInto(t, home, ".claude/commands", "dotfiles/commands")
+			return filepath.Join(home, "dotfiles", "commands")
+		}},
+		{name: "file in a linked directory in .claude", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkDirInto(t, home, ".claude/commands", "dotfiles/commands")
+			linkFileInto(t, home, "dotfiles/commands/review.md", "vault/review.md")
+			return filepath.Join(home, "vault")
+		}},
+		{name: "file in the target of a linked .ssh", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkDirInto(t, home, ".ssh", "keys")
+			linkFileInto(t, home, "keys/id_ed25519", "vault/id_ed25519")
+			return filepath.Join(home, "vault")
+		}},
+		{name: "directory in .claude that links back to .claude", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".claude")
+			symlinkAt(t, filepath.Join(home, ".claude"), filepath.Join(home, ".claude", "loop"))
+			linkFileInto(t, home, ".claude/settings.json", "dotfiles/claude/settings.json")
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "dangling symlink in .ssh", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh", "dotfiles/ssh")
+			symlinkAt(t, filepath.Join(home, "dotfiles", "ssh", "id_new"), filepath.Join(home, ".ssh", "id_new"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "dangling symlink in .gnupg below a missing directory", want: sandbox.ErrProtectedAncestor, layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".gnupg")
+			symlinkAt(t, filepath.Join(home, "dotfiles", "gnupg", "pubring.kbx"), filepath.Join(home, ".gnupg", "pubring.kbx"))
+			return filepath.Join(home, "dotfiles")
+		}},
+		{name: "file in .ssh, in upper case", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, ".ssh/id_ed25519", "dotfiles/ssh/id_ed25519")
+			requireSpelling(t, strings.ToUpper(filepath.Join(home, "dotfiles")))
+			return strings.ToUpper(filepath.Join(home, "dotfiles"))
+		}},
+		{name: "file in .aws, on the data volume", want: sandbox.ErrProtectedFile, layout: func(t *testing.T, home string) string {
+			linkFileInto(t, home, ".aws/credentials", "dotfiles/aws/credentials")
+			requireSpelling(t, dataVolume+filepath.Join(home, "dotfiles"))
+			return dataVolume + filepath.Join(home, "dotfiles")
+		}},
+	})
+}
+
+// TestHandleStopsOnSymlinksThatCannotBeFollowed covers a symlink in a
+// protected directory that loops, and a dangling protected path whose target
+// has ".." after a name, which a lexical join could resolve wrongly. The
+// handler cannot tell what they protect, so init stops.
+func TestHandleStopsOnSymlinksThatCannotBeFollowed(t *testing.T) {
+	tests := []struct {
+		name   string
+		layout func(t *testing.T, home string)
+		want   string
+	}{
+		{name: "symlink loop in .ssh", want: "symlink in a protected directory", layout: func(t *testing.T, home string) {
+			makeDirs(t, home, ".ssh")
+			symlinkAt(t, "loop", filepath.Join(home, ".ssh", "loop"))
+		}},
+		{name: "dangling .ssh with .. after a name", want: errUnresolvableLink.Error(), layout: func(t *testing.T, home string) {
+			symlinkAt(t, "dotfiles/gone/../ssh", filepath.Join(home, ".ssh"))
+		}},
+		{name: "dangling .claude.json with .. after a name", want: errUnresolvableLink.Error(), layout: func(t *testing.T, home string) {
+			symlinkAt(t, "dotfiles/gone/../claude.json", filepath.Join(home, ".claude.json"))
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := newBareHome(t)
+			test.layout(t, home)
+			fake := orbstacktest.New(sandbox.NamePrefix)
+
+			_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: filepath.Join(home, "work", "api")})
+
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Errorf("Handle = %v, want an error that contains %q", err, test.want)
+			}
+			if len(fake.Calls) != 0 {
+				t.Errorf("calls = %v, want none", fake.Calls)
+			}
+		})
+	}
+}
+
+// TestHandleFollowsALongDanglingChainOnce covers a dangling .ssh that
+// reaches its target through a long chain of relative symlinks. Each link has
+// two spellings on macOS; the handler must follow it once, not once per
+// spelling, or the work doubles with every hop and init hangs.
+func TestHandleFollowsALongDanglingChainOnce(t *testing.T) {
+	const hops = 24
+	home := newBareHome(t)
+	makeDirs(t, home, "links")
+	symlinkAt(t, filepath.Join("links", "l0"), filepath.Join(home, ".ssh"))
+	for i := range hops - 1 {
+		symlinkAt(t, "l"+strconv.Itoa(i+1), filepath.Join(home, "links", "l"+strconv.Itoa(i)))
+	}
+	symlinkAt(t, filepath.Join("..", "dotfiles", "ssh"), filepath.Join(home, "links", "l"+strconv.Itoa(hops-1)))
+	dir := filepath.Join(home, "dotfiles")
+	result := make(chan error, 1)
+
+	go func() {
+		_, err := newHandler(orbstacktest.New(sandbox.NamePrefix), account(home)).Handle(context.Background(), Input{Dir: dir})
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, sandbox.ErrProtectedAncestor) {
+			t.Errorf("Handle(%q) = %v, want %v", dir, err, sandbox.ErrProtectedAncestor)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Handle did not finish within 10s")
+	}
+}
+
+// linkFileInto makes the empty file target and the symlink link to it, both
+// relative to home, with their parent directories.
+func linkFileInto(t *testing.T, home, link, target string) {
+	t.Helper()
+	makeDirs(t, home, filepath.Dir(link), filepath.Dir(target))
+	writeFile(t, filepath.Join(home, target))
+	symlinkAt(t, filepath.Join(home, target), filepath.Join(home, link))
+}
+
+// linkDirInto makes the directory target and the symlink link to it, both
+// relative to home, with the parent directory of link.
+func linkDirInto(t *testing.T, home, link, target string) {
+	t.Helper()
+	makeDirs(t, home, filepath.Dir(link), target)
+	symlinkAt(t, filepath.Join(home, target), filepath.Join(home, link))
 }
 
 // TestHandleTrustsNoSingleHome covers an environment and an account database
