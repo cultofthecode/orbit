@@ -98,8 +98,9 @@ type ProjectDir struct {
 	Protected []string
 	// ProtectedFileDirs holds every spelling of the directory that holds
 	// the file that each path of ProtectedFiles resolves to, or would be
-	// created in, and of the directory that holds each file that a symlink
-	// in a protected directory leads to.
+	// created in, of the directory that holds each file that a symlink in
+	// a protected directory leads to, and of each directory that holds a
+	// symlink on the chain of such a symlink.
 	ProtectedFileDirs []string
 }
 

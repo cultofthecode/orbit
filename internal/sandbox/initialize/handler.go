@@ -587,7 +587,8 @@ func hasParentAfterName(target string) bool {
 
 // linkedSpellings returns what the symlinks in the protected directories
 // lead to, and in every directory that one of them leads to: every spelling
-// of each directory, and of the directory that holds each file. A symlink
+// of each directory, of the directory that holds each file, and of each
+// directory that holds a symlink on the way (linkSpellings). A symlink
 // that leads nowhere protects the path where its target would be created,
 // as a directory. It reads only metadata and never opens a file (D08). A
 // protected path that does not exist has nothing in it.
@@ -633,25 +634,104 @@ func linksIn(root string) ([]string, []string, error) {
 	return dirs, fileDirs, err
 }
 
-// linkSpellings returns every spelling of the directory that the symlink
-// link leads to, or of the directory that holds the file that it leads to.
-// For a symlink that leads nowhere, it returns the spellings of where its
-// target would be created, as a directory.
+// linkSpellings returns what the chain of the symlink link leads to, as the
+// kernel resolves it one name at a time. The first list has every spelling of
+// the directory that the chain ends at, or of where its target would be
+// created, as a directory, when it leads nowhere. The second has every
+// spelling of each directory that holds a symlink on the chain, every hop
+// included, and of the directory that holds the file that the chain ends at.
+// The agent could replace a hop in a mounted directory, so each of them is
+// protected as the holder of a protected file.
 func linkSpellings(link string) ([]string, []string, error) {
-	info, err := os.Stat(link)
-	if errors.Is(err, fs.ErrNotExist) {
-		dirs, err := targetSpellings(link)
-		return dirs, nil, err
+	walk := chainWalk{resolved: string(filepath.Separator), rest: pathNames(link)}
+	for len(walk.rest) > 0 {
+		missing, err := walk.step()
+		if err != nil {
+			return nil, nil, err
+		}
+		if missing {
+			return walk.missingSpellings()
+		}
 	}
+	return walk.endSpellings()
+}
+
+// chainWalk resolves a path one name at a time, as the kernel does, and keeps
+// every spelling of each directory that holds a symlink on the way.
+type chainWalk struct {
+	resolved string
+	rest     []string
+	hops     int
+	holders  []string
+}
+
+// step resolves the next name of the path. It reports whether that name does
+// not exist.
+func (w *chainWalk) step() (bool, error) {
+	next := filepath.Join(w.resolved, w.rest[0])
+	info, err := os.Lstat(next)
+	if errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return false, w.follow(next)
+	}
+	w.resolved, w.rest = next, w.rest[1:]
+	return false, nil
+}
+
+// follow replaces the symlink link, which is the next name of the path, with
+// its target, and keeps the directory that holds link. It follows at most
+// maxLinkHops symlinks.
+func (w *chainWalk) follow(link string) error {
+	if w.hops == maxLinkHops {
+		return fmt.Errorf("%w: %s", syscall.ELOOP, link)
+	}
+	target, err := linkTarget(link)
+	if err != nil {
+		return err
+	}
+	holders, err := dirSpellings(w.resolved)
+	if err != nil {
+		return err
+	}
+	w.holders = append(w.holders, holders...)
+	w.resolved, w.rest, w.hops = string(filepath.Separator), slices.Concat(pathNames(target), w.rest[1:]), w.hops+1
+	return nil
+}
+
+// missingSpellings returns every spelling of where the target of a path that
+// leads nowhere would be created, as a directory, and the holders.
+func (w *chainWalk) missingSpellings() ([]string, []string, error) {
+	spellings, err := dirSpellings(w.resolved)
+	if err != nil {
+		return nil, nil, err
+	}
+	return joinAll(spellings, filepath.Join(w.rest...)), w.holders, nil
+}
+
+// endSpellings returns every spelling of the directory that the path ends at,
+// and the holders, with the directory that holds the file that the path ends
+// at.
+func (w *chainWalk) endSpellings() ([]string, []string, error) {
+	info, err := os.Lstat(w.resolved)
 	if err != nil {
 		return nil, nil, err
 	}
 	if info.IsDir() {
-		dirs, err := dirSpellings(link)
-		return dirs, nil, err
+		dirs, err := dirSpellings(w.resolved)
+		return dirs, w.holders, err
 	}
-	fileDirs, err := fileDirSpellings(link)
-	return nil, fileDirs, err
+	fileDirs, err := dirSpellings(filepath.Dir(w.resolved))
+	return nil, slices.Concat(w.holders, fileDirs), err
+}
+
+// pathNames returns the names in the absolute, clean path.
+func pathNames(path string) []string {
+	return strings.FieldsFunc(path, func(r rune) bool { return r == filepath.Separator })
 }
 
 // protectedPaths returns the protected paths of every home in homes.
