@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -434,7 +435,7 @@ func TestMissingCLIIsWrapped(t *testing.T) {
 	if !errors.Is(err, exec.ErrNotFound) {
 		t.Fatalf("Exists without orb = %v, want %v", err, exec.ErrNotFound)
 	}
-	if want := `list machines: orb list: exec: "orb": executable file not found in $PATH`; err.Error() != want {
+	if want := `list machines: orb status: exec: "orb": executable file not found in $PATH`; err.Error() != want {
 		t.Errorf("Exists without orb = %q, want %q", err.Error(), want)
 	}
 }
@@ -490,8 +491,19 @@ func TestExistsReadsTheList(t *testing.T) {
 	}
 }
 
+// reportsRunning makes a fake orb report a running OrbStack to orb status.
+const reportsRunning = "if [ \"$1\" = status ]; then echo Running; exit 0; fi\n"
+
 // useFakeCLI makes a shell script with the given body the only orb on PATH.
+// The script reports a running OrbStack to orb status.
 func useFakeCLI(t *testing.T, body string) {
+	t.Helper()
+	useBareFakeCLI(t, reportsRunning+body)
+}
+
+// useBareFakeCLI makes a shell script with the given body, and nothing else,
+// the only orb on PATH.
+func useBareFakeCLI(t *testing.T, body string) {
 	t.Helper()
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" + body
@@ -499,6 +511,91 @@ func useFakeCLI(t *testing.T, body string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
+}
+
+func TestStatusArgs(t *testing.T) {
+	if got, want := statusArgs(), []string{"status"}; !slices.Equal(got, want) {
+		t.Errorf("statusArgs() = %q, want %q", got, want)
+	}
+}
+
+func TestStatusError(t *testing.T) {
+	failed := errors.New("orb status: exit status 1")
+	tests := []struct {
+		name        string
+		status      string
+		err         error
+		wantRunning bool
+		wantStopped bool
+	}{
+		{name: "running", status: "Running", wantRunning: true},
+		{name: "stopped", status: "Stopped", err: failed, wantStopped: true},
+		{name: "starting", status: "Starting", err: errors.New("orb status: exit status 2"), wantStopped: true},
+		{name: "stopped with exit status 0", status: "Stopped", wantStopped: true},
+		{name: "running with a failed command", status: "Running", err: failed},
+		{name: "nothing printed", status: ""},
+		{name: "nothing printed and a failed command", status: "", err: failed},
+		{name: "lower case", status: "running"},
+		{name: "running with more text", status: "Running\nStopped"},
+		{name: "unknown state", status: "Paused"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := statusError(test.status, test.err)
+			if (err == nil) != test.wantRunning {
+				t.Errorf("statusError(%q, %v) = %v, want running %v", test.status, test.err, err, test.wantRunning)
+			}
+			if errors.Is(err, ErrNotRunning) != test.wantStopped {
+				t.Errorf("statusError(%q, %v) = %v, want %v: %v", test.status, test.err, err, ErrNotRunning, test.wantStopped)
+			}
+		})
+	}
+}
+
+// TestNoCallStartsAStoppedOrbStack checks that every operation fails with
+// ErrNotRunning while orb status reports a stopped or starting OrbStack, and
+// that it runs no orb command other than orb status: orb starts a stopped
+// OrbStack by itself.
+func TestNoCallStartsAStoppedOrbStack(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		exit   int
+	}{
+		{name: "stopped", status: "Stopped", exit: 1},
+		{name: "starting", status: "Starting", exit: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := filepath.Join(t.TempDir(), "calls")
+			useBareFakeCLI(t, "printf '%s\\n' \"$1\" >> '"+calls+"'\n"+
+				"if [ \"$1\" = status ]; then echo "+test.status+"; exit "+strconv.Itoa(test.exit)+"; fi\n")
+			client := New(testPrefix)
+			ctx := context.Background()
+			_, existsErr := client.Exists(ctx, "orbit-api-1d9b22c9")
+			_, mountsErr := client.Mounts(ctx)
+			_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
+			results := map[string]error{
+				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
+				"Exists":       existsErr,
+				"Mounts":       mountsErr,
+				"ActiveMounts": activeMountsErr,
+				"Delete":       client.Delete(ctx, "orbit-api-1d9b22c9"),
+				"RunAsRoot":    client.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
+				"RunAsAgent":   client.RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
+			}
+
+			for operation, err := range results {
+				if !errors.Is(err, ErrNotRunning) || !strings.Contains(err.Error(), "start OrbStack") {
+					t.Errorf("%s = %v, want %v with the advice to start OrbStack", operation, err, ErrNotRunning)
+				}
+			}
+			received, err := os.ReadFile(calls)
+			if want := strings.Repeat("status\n", len(results)); err != nil || string(received) != want {
+				t.Errorf("orb ran %q, %v, want only orb status, once for each operation", received, err)
+			}
+		})
+	}
 }
 
 func TestRunAsRootArgs(t *testing.T) {

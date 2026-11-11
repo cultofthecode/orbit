@@ -31,9 +31,10 @@ type Output struct {
 // agent fails with the error of Handler.Agent. A refused project directory
 // fails with one of the errors of sandbox.ValidateProjectDir,
 // sandbox.ErrNestedProjectDir, sandbox.ErrContainsProjectDir, or
-// ErrLinkedSandboxDir, a missing one with fs.ErrNotExist, and a machine that
-// mounts something else than the project directory with
-// sandbox.ErrMountMismatch.
+// ErrLinkedSandboxDir, a missing one with fs.ErrNotExist, a variable that
+// moves a protected location to a path that Orbit cannot protect with
+// sandbox.ErrRelocatedPath, and a machine that mounts something else than
+// the project directory with sandbox.ErrMountMismatch.
 var ErrNotDirectory = errors.New("project path is not a directory")
 
 // ErrLinkedSandboxDir reports another machine whose stored mount path passes

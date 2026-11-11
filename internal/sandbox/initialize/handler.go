@@ -427,22 +427,101 @@ func (h Handler) loadFacts(path string) (sandbox.ProjectDir, error) {
 }
 
 // loadProtected returns every spelling of the protected directories of homes
-// and of the directories that hold a protected file, together with what the
-// symlinks in those protected directories lead to.
+// and of the environment, and of the directories that hold a protected file,
+// together with what the symlinks in those protected directories lead to.
 func loadProtected(homes []string) ([]string, []string, error) {
-	protected, err := protectedSpellings(homes)
+	protected, err := allProtectedSpellings(homes)
 	if err != nil {
-		return nil, nil, fmt.Errorf("protected directory: %w", err)
+		return nil, nil, err
 	}
-	fileDirs, err := protectedFileDirSpellings(homes)
+	fileDirs, err := allFileDirSpellings(homes)
 	if err != nil {
-		return nil, nil, fmt.Errorf("protected file: %w", err)
+		return nil, nil, err
 	}
 	linkedDirs, linkedFileDirs, err := linkedSpellings(protected)
 	if err != nil {
 		return nil, nil, fmt.Errorf("symlink in a protected directory: %w", err)
 	}
 	return distinct(slices.Concat(protected, linkedDirs)), distinct(slices.Concat(fileDirs, linkedFileDirs)), nil
+}
+
+// allProtectedSpellings returns every spelling of the directories that the
+// protected paths of homes and the protected directories that the
+// environment moves resolve to, or where their targets would be created.
+func allProtectedSpellings(homes []string) ([]string, error) {
+	protected, err := protectedSpellings(homes)
+	if err != nil {
+		return nil, fmt.Errorf("protected directory: %w", err)
+	}
+	relocated, err := relocatedSpellings(sandbox.RelocatedDirs, targetSpellings)
+	if err != nil {
+		return nil, err
+	}
+	return distinct(slices.Concat(protected, relocated)), nil
+}
+
+// allFileDirSpellings returns every spelling of the directories that hold
+// the protected files of homes and the protected files that the environment
+// moves, or would be created in, and of the directories that hold a symlink
+// on the path of a location that the environment moves.
+func allFileDirSpellings(homes []string) ([]string, error) {
+	fileDirs, err := protectedFileDirSpellings(homes)
+	if err != nil {
+		return nil, fmt.Errorf("protected file: %w", err)
+	}
+	relocated, err := relocatedSpellings(sandbox.RelocatedFiles, fileDirSpellings)
+	if err != nil {
+		return nil, err
+	}
+	hops, err := relocatedHopSpellings()
+	if err != nil {
+		return nil, err
+	}
+	return distinct(slices.Concat(fileDirs, relocated, hops)), nil
+}
+
+// relocatedHopSpellings returns every spelling of each directory that holds
+// a symlink on the path of a protected location that the environment moves,
+// as linkSpellings walks it. A variable can name a path through a project
+// directory, where the agent could replace that symlink and redirect the
+// tool on the host.
+func relocatedHopSpellings() ([]string, error) {
+	dirHops, err := relocatedSpellings(sandbox.RelocatedDirs, chainHolders)
+	if err != nil {
+		return nil, err
+	}
+	fileHops, err := relocatedSpellings(sandbox.RelocatedFiles, chainHolders)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Concat(dirHops, fileHops), nil
+}
+
+// chainHolders returns the second result of linkSpellings for path: every
+// spelling of each directory that holds a symlink on its chain.
+func chainHolders(path string) ([]string, error) {
+	_, holders, err := linkSpellings(path)
+	return holders, err
+}
+
+// relocatedSpellings returns what resolve returns for each protected
+// location that locate finds in the environment of the user who runs Orbit.
+// It reads only the values of the variables, never a file that they name
+// (D08), and names the variable of a location that cannot be resolved.
+func relocatedSpellings(locate func(func(string) (string, bool)) ([]sandbox.Relocated, error), resolve func(string) ([]string, error)) ([]string, error) {
+	relocated, err := locate(os.LookupEnv)
+	if err != nil {
+		return nil, err
+	}
+	var spellings []string
+	for _, location := range relocated {
+		found, err := resolve(location.Path)
+		if err != nil {
+			return nil, fmt.Errorf("protected location of %s: %w", location.Variable, err)
+		}
+		spellings = append(spellings, found...)
+	}
+	return spellings, nil
 }
 
 // loadUser returns the uid of the user who runs Orbit and every spelling of
