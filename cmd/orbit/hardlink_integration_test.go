@@ -68,6 +68,15 @@ func (m accountHomeMachines) Mounts(ctx context.Context) (map[string]map[string]
 	return mounts, err
 }
 
+func (m accountHomeMachines) State(ctx context.Context, name string) (string, error) {
+	var state string
+	err := m.withAccountHome(func() (err error) {
+		state, err = m.machines.State(ctx, name)
+		return err
+	})
+	return state, err
+}
+
 func (m accountHomeMachines) ActiveMounts(ctx context.Context, name string) (map[string]string, error) {
 	var mounts map[string]string
 	err := m.withAccountHome(func() (err error) {
@@ -86,8 +95,17 @@ func (m accountHomeMachines) Exists(ctx context.Context, name string) (bool, err
 	return exists, err
 }
 
-func (m accountHomeMachines) Create(ctx context.Context, name, dir string) error {
-	return m.withAccountHome(func() error { return m.machines.Create(ctx, name, dir) })
+func (m accountHomeMachines) SSHAgentForwarded(ctx context.Context, name string) (bool, error) {
+	var forwarded bool
+	err := m.withAccountHome(func() (err error) {
+		forwarded, err = m.machines.SSHAgentForwarded(ctx, name)
+		return err
+	})
+	return forwarded, err
+}
+
+func (m accountHomeMachines) Create(ctx context.Context, name, dir string, forwardSSHAgent bool) error {
+	return m.withAccountHome(func() error { return m.machines.Create(ctx, name, dir, forwardSSHAgent) })
 }
 
 func (m accountHomeMachines) RunAsRoot(ctx context.Context, name string, script []byte) error {
@@ -121,8 +139,7 @@ func writeHardLinkedFile(t *testing.T, path, link string) {
 // between the snapshots of Claude Code in .claude/file-history keep it
 // accepted.
 func TestInitRefusesAHardLinkedCredentialFile(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	home, accountHome := temporaryHome(t)

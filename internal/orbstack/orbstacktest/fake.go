@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -39,17 +41,35 @@ const (
 
 // Operations that a Fake records.
 const (
-	OpState        = "state"
-	OpStart        = "start"
-	OpStop         = "stop"
-	OpExists       = "exists"
-	OpCreate       = "create"
-	OpMounts       = "mounts"
-	OpActiveMounts = "active-mounts"
-	OpDelete       = "delete"
-	OpRunAsRoot    = "run-as-root"
-	OpRunAsAgent   = "run-as-agent"
+	OpState             = "state"
+	OpStart             = "start"
+	OpStop              = "stop"
+	OpExists            = "exists"
+	OpCreate            = "create"
+	OpSSHAgentForwarded = "ssh-agent-forwarded"
+	OpMounts            = "mounts"
+	OpList              = "list"
+	OpActiveMounts      = "active-mounts"
+	OpDelete            = "delete"
+	OpRunAsRoot         = "run-as-root"
+	OpRunAsAgent        = "run-as-agent"
+	OpShell             = "shell"
 )
+
+// Machine is one machine as List reports it. The fake has its own type
+// because it imports nothing from the adapter or from a slice.
+type Machine struct {
+	Name   string
+	State  string
+	Mounts []Mount
+}
+
+// Mount is one stored mount of a Machine: the host directory and the path in
+// the machine.
+type Mount struct {
+	Source      string
+	Destination string
+}
 
 // Call is one call that a Fake received.
 type Call struct {
@@ -57,6 +77,8 @@ type Call struct {
 	Name   string
 	Dir    string
 	Script string
+	// Forward is the SSH agent forwarding that a Create call asked for.
+	Forward bool
 }
 
 // Fake keeps machines in memory and records every call.
@@ -69,6 +91,13 @@ type Fake struct {
 	// differ from the configured ones: what a machine mounts after its path
 	// was swapped.
 	Active map[string]map[string]string
+	// Forwarded maps the name of a machine to its SSH agent forwarding. A
+	// machine without an entry does not forward. Create sets the entry.
+	Forwarded map[string]bool
+	// CreatedForwarded, when set, is the forwarding that Create stores
+	// instead of the requested one: a machine that reports another setting
+	// than the one it was created with.
+	CreatedForwarded *bool
 	// States maps the name of a machine to its state. A machine without an
 	// entry is running. Create sets StateRunning, Start StateRunning, and
 	// Stop StateStopped.
@@ -83,8 +112,18 @@ type Fake struct {
 	StopErr error
 	// ExistsErr, when set, is the result of every Exists call.
 	ExistsErr error
+	// SSHAgentForwardedErr, when set, is the result of every
+	// SSHAgentForwarded call.
+	SSHAgentForwardedErr error
 	// CreateErr, when set, is the result of every Create call.
 	CreateErr error
+	// Listed holds raw entries that List returns after the machines of the
+	// fake, as they are: foreign names, no state, odd mounts. The real
+	// client drops foreign names; a test of a handler seeds them to check
+	// that it drops them again.
+	Listed []Machine
+	// ListErr, when set, is the result of every List call.
+	ListErr error
 	// MountsErr, when set, is the result of every Mounts call.
 	MountsErr error
 	// ActiveMountsErr, when set, is the result of every ActiveMounts call.
@@ -95,6 +134,10 @@ type Fake struct {
 	RunAsRootErr error
 	// RunAsAgentErr, when set, is the result of every RunAsAgent call.
 	RunAsAgentErr error
+	// ShellStatus is the exit status of every Shell call that succeeds.
+	ShellStatus int
+	// ShellErr, when set, is the result of every Shell call.
+	ShellErr error
 	// Calls holds the received calls, in order.
 	Calls []Call
 
@@ -104,7 +147,7 @@ type Fake struct {
 // New returns a fake with no machines that creates only machines whose names
 // start with prefix.
 func New(prefix string) *Fake {
-	return &Fake{Machines: map[string]map[string]string{}, Active: map[string]map[string]string{}, States: map[string]string{}, prefix: prefix}
+	return &Fake{Machines: map[string]map[string]string{}, Active: map[string]map[string]string{}, Forwarded: map[string]bool{}, States: map[string]string{}, prefix: prefix}
 }
 
 // State returns the state of the machine name, or "" when it does not
@@ -183,11 +226,11 @@ func (f *Fake) Exists(_ context.Context, name string) (bool, error) {
 	return exists, nil
 }
 
-// Create adds the machine name with dir mounted at its own path. It refuses
-// a name without the prefix of the fake, and a directory that the adapter
-// cannot mount at its own path.
-func (f *Fake) Create(_ context.Context, name, dir string) error {
-	f.Calls = append(f.Calls, Call{Op: OpCreate, Name: name, Dir: dir})
+// Create adds the machine name with dir mounted at its own path and the SSH
+// agent forwarding forwardSSHAgent. It refuses a name without the prefix of
+// the fake, and a directory that the adapter cannot mount at its own path.
+func (f *Fake) Create(_ context.Context, name, dir string, forwardSSHAgent bool) error {
+	f.Calls = append(f.Calls, Call{Op: OpCreate, Name: name, Dir: dir, Forward: forwardSSHAgent})
 	if err := f.checkOwned(name); err != nil {
 		return err
 	}
@@ -199,7 +242,25 @@ func (f *Fake) Create(_ context.Context, name, dir string) error {
 	}
 	f.Machines[name] = map[string]string{dir: dir}
 	f.States[name] = StateRunning
+	f.Forwarded[name] = forwardSSHAgent
+	if f.CreatedForwarded != nil {
+		f.Forwarded[name] = *f.CreatedForwarded
+	}
 	return nil
+}
+
+// SSHAgentForwarded returns the SSH agent forwarding of the machine name. It
+// refuses a name without the prefix of the fake and a machine that does not
+// exist, and it runs nothing in the machine.
+func (f *Fake) SSHAgentForwarded(_ context.Context, name string) (bool, error) {
+	f.Calls = append(f.Calls, Call{Op: OpSSHAgentForwarded, Name: name})
+	if err := f.checkExists(name); err != nil {
+		return false, err
+	}
+	if f.SSHAgentForwardedErr != nil {
+		return false, f.SSHAgentForwardedErr
+	}
+	return f.Forwarded[name], nil
 }
 
 // Mounts returns a copy of the configured mounts of every machine.
@@ -213,6 +274,25 @@ func (f *Fake) Mounts(_ context.Context) (map[string]map[string]string, error) {
 		mounts[name] = maps.Clone(machineMounts)
 	}
 	return mounts, nil
+}
+
+// List returns every machine of the fake, sorted by name, with its state and
+// its configured mounts sorted by mount point, followed by the entries of
+// Listed. It records only OpList and never changes a state.
+func (f *Fake) List(_ context.Context) ([]Machine, error) {
+	f.Calls = append(f.Calls, Call{Op: OpList})
+	if f.ListErr != nil {
+		return nil, f.ListErr
+	}
+	var machines []Machine
+	for _, name := range slices.Sorted(maps.Keys(f.Machines)) {
+		machine := Machine{Name: name, State: f.state(name)}
+		for _, point := range slices.Sorted(maps.Keys(f.Machines[name])) {
+			machine.Mounts = append(machine.Mounts, Mount{Source: f.Machines[name][point], Destination: point})
+		}
+		machines = append(machines, machine)
+	}
+	return append(machines, f.Listed...), nil
 }
 
 // ActiveMounts returns a copy of the active mounts of the machine name: those
@@ -237,9 +317,15 @@ func (f *Fake) ActiveMounts(_ context.Context, name string) (map[string]string, 
 }
 
 // Delete removes the machine name. It refuses a name without the prefix of
-// the fake and a machine that does not exist.
+// the fake, a name with white space, and a machine that does not exist.
 func (f *Fake) Delete(_ context.Context, name string) error {
 	f.Calls = append(f.Calls, Call{Op: OpDelete, Name: name})
+	if err := f.checkOwned(name); err != nil {
+		return err
+	}
+	if strings.ContainsFunc(name, unicode.IsSpace) {
+		return fmt.Errorf("%w: %q", ErrMachineName, name)
+	}
 	if err := f.checkExists(name); err != nil {
 		return err
 	}
@@ -248,6 +334,7 @@ func (f *Fake) Delete(_ context.Context, name string) error {
 	}
 	delete(f.Machines, name)
 	delete(f.Active, name)
+	delete(f.Forwarded, name)
 	delete(f.States, name)
 	return nil
 }
@@ -291,6 +378,24 @@ func (f *Fake) RunAsAgent(_ context.Context, name string, script []byte) error {
 		return err
 	}
 	return f.RunAsAgentErr
+}
+
+// Shell records the shell of the agent user in the machine name, in the
+// directory dir, and returns ShellStatus. It refuses a name without the
+// prefix of the fake, a directory that the adapter cannot pass, and a
+// machine that exists and is not running. It does not use the streams.
+func (f *Fake) Shell(_ context.Context, name, dir string, _ io.Reader, _, _ io.Writer) (int, error) {
+	f.Calls = append(f.Calls, Call{Op: OpShell, Name: name, Dir: dir})
+	if err := f.checkNotStopped(name); err != nil {
+		return 0, err
+	}
+	if !filepath.IsAbs(dir) || strings.ContainsAny(dir, ":,") {
+		return 0, fmt.Errorf("%w: %q", ErrMountPath, dir)
+	}
+	if f.ShellErr != nil {
+		return 0, f.ShellErr
+	}
+	return f.ShellStatus, nil
 }
 
 // checkNotStopped refuses a name without the prefix of the fake and a machine
