@@ -42,7 +42,7 @@ Upstream references: cli/cli#11983 (`gh pr edit` aborts without any project flag
 - PRs open as **drafts** when a skill says so; a human (or **mark-pr-ready**) promotes them.
 - GitHub ownership is the create-only `refs/om-locks/{kind}-{number}` ref. Acquire it first, then retain run/comment ids and the lock SHA in a `🤖` claim comment, assign when supported, and verify guarded `in-progress` as the second check. Same-login runs still compete. Assignees, labels and legacy active comments remain additional conflict signals. The `ci-monitoring` label is **not** a claim signal — it marks work that is finished and reported while its CI-result follow-up is still owed, and never makes another skill back off.
 - Long, multi-line comment bodies are posted with `--body-file` (or a heredoc via process substitution) so formatting is preserved.
-- CI status truth comes from **get-pr-checks**; the set of *required* checks comes from **get-required-checks** (branch protection). When branch protection is not readable (404), treat every reported check as required.
+- CI status truth comes from **get-pr-checks**; the set of *required* checks comes from **get-required-checks** (branch protection). When branch protection is not readable (404 or 403), treat every reported check as required.
 - **A short `get-pr-checks` result is not evidence of green.** It reports *check runs*, and a workflow run GitHub has already created contributes no rows until its jobs register — so on a freshly pushed head the list is legitimately partial, and every job still to appear is neither passing nor pending but simply absent. Before concluding "green" or "nothing pending", cross-check the workflow level: **list-runs** on the PR head branch, keep the runs whose `headSha` is the PR head SHA, and count any whose `status` is not `completed` as PENDING. Green requires both — every reported check passing *and* every workflow run at that SHA completed. A workflow that has not been created at all is indistinguishable from one the path filters skipped; that residue is disclosed as pending CI, never resolved by guessing.
 
 ## Label guards
@@ -615,7 +615,7 @@ gh pr checks {prNumber} --json name,state,link
 ```
 
 #### get-required-checks
-Base branch → the set of required status checks. A 404 means branch protection is not readable — treat all reported checks as required.
+Base branch → the set of required status checks. A 404 or a 403 (branch protection is not available on this plan: "Upgrade to GitHub Pro or make this repository public") means branch protection is not readable — treat all reported checks as required.
 ```bash
 gh api repos/{owner}/{repo}/branches/{baseRefName}/protection/required_status_checks --jq '.contexts[]' 2>/dev/null
 ```

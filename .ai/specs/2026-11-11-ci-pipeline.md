@@ -1,4 +1,4 @@
-# CI pipeline: the validation gate on GitHub Actions, integration tests, and mutation testing
+# CI pipeline on GitHub Actions, manual integration tests, and mutation-testing research
 
 Issue: #99. Related: #97 / PR #98 (Homebrew distribution, merged as `.ai/specs/2026-11-11-homebrew-distribution.md`; its milestone M1, E06-S01, is "CI with the validation gate").
 No prior spec covers CI. This spec owns the CI design and **replaces milestone M1 of the Homebrew spec** (Q11): #99 is the M1 work, and the Homebrew spec's macOS arm64 runner for the gate is superseded by `ubuntu-24.04` (Q1).

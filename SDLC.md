@@ -187,6 +187,8 @@ CI does not run the integration tests or the escape suite, and there is no self-
 - **A release:** the Maintainer runs them on the exact commit to be tagged and puts the transcript, with the OrbStack version, into the release notes (`.ai/specs/2026-11-11-homebrew-distribution.md`, Q14).
 - **From time to time on `main`:** for example after several merges that touch `internal/orbstack`, provisioning, or a slice that runs `init`. A failure becomes an issue.
 
+CI runs the same five commands (`.github/workflows/ci.yml`, job `gate` on GitHub-hosted `ubuntu-24.04`), then `GOOS=darwin golangci-lint run`, `GOOS=darwin go vet -tags integration ./...`, and `GOOS=darwin GOARCH=arm64 go build ./...`, on every PR and on every push to `main`. `.github/workflows/darwin.yml` runs the unit tests on GitHub-hosted `macos-26` by hand and weekly. **`gate` must be green on the PR head before merge.** GitHub cannot enforce it while the repository is private on the Free plan (branch protection answers 403), so this rule is the enforcement until a ruleset that requires `gate` lands with the public release (`.ai/specs/2026-11-11-ci-pipeline.md`, Q6).
+
 Any non-zero exit fails the gate and blocks the PR. The implementing skills run the gate before they open a PR. `om-check-and-commit` runs it before it pushes a branch that a human worked on. The command list lives in `.ai/agentic.config.json`. When the list changes, update it there and in this section together.
 
 ## Amending this process

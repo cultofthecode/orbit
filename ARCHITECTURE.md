@@ -161,7 +161,8 @@ Orbit has no database.
 - **Testing strategy:**
   - Unit tests for the pure security functions, with table tests that include hostile input (symlinks out of the workspace, `..` paths, wildcard domains).
   - Handler tests against `orbstacktest`, with no OrbStack running.
-  - Integration tests behind the `integration` build tag, against a real OrbStack.
+  - Integration tests behind the `integration` build tag, against a real OrbStack. They run by hand on a Mac with OrbStack, not in CI (`SDLC.md`, Validation gate).
+  - CI (`.github/workflows/ci.yml`, job `gate`, GitHub-hosted `ubuntu-24.04`) runs the unit and handler tests and the lint on every PR and push to `main`, and compiles, vets, and lints the code for `GOOS=darwin`, including the integration tests, without running them. `.github/workflows/darwin.yml` runs the unit tests on `macos-26`, by hand and weekly. A unit test must not depend on the OrbStack state of the host: `go test ./...` passes where OrbStack never ran.
   - QA and integration runs from different worktrees or agent sessions are independent and run in parallel: no machine-wide lock serializes them, and each test takes its deadline from `t.Deadline()`. The only coordination is the init lock of `SDLC.md` (shared for tests that run `init`, exclusive only while a test's machine makes `init` refuse). Owner decision, 2026-11-11 10:21.
   - An escape suite: tests that run inside a real sandbox and must fail to read a host path outside the workspace, reach the host engine socket, reach the macOS host, reach a destination with no allow rule (from the agent user, from a rootless container, and over DNS), become root, or reach another sandbox. Every change to the sandbox boundary runs it (see `SDLC.md`).
 

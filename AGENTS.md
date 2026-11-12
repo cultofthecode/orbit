@@ -25,7 +25,7 @@ Before you work on a task of a given kind, read the files in **Read first**. Loc
 | Tests | `ARCHITECTURE.md` (Testing strategy) | Tests sit next to the code. Tests that need a real OrbStack carry the `integration` build tag. Do not weaken a test to make it pass. |
 | Pipeline configuration | `.ai/agentic.config.json`, `.ai/trackers/github.md`, `.ai/browsers/agent-browser.md` | Change the config and `SDLC.md` together. Run `om-setup-agent-pipeline` again when the toolchain or the labels change. |
 | Specs and design docs | `.ai/specs/` | Filenames: `{YYYY-MM-DD}-{kebab-case-title}.md`. Handoff briefs go under `.ai/specs/briefs/`. |
-| CI | TODO (`.github/workflows/`) | TODO: no workflow exists yet. |
+| CI | `.github/workflows/ci.yml`, `.github/workflows/darwin.yml`, `.ai/specs/2026-11-11-ci-pipeline.md` | `ci.yml` runs the gate on GitHub-hosted `ubuntu-24.04` as the check `gate`; `darwin.yml` runs the unit tests on `macos-26` by hand and weekly. CI runs no integration tests. Pin every action by full commit SHA with the version in a comment; keep `contents: read`; no secrets; no self-hosted runner. |
 
 ## Code conventions
 
@@ -46,7 +46,7 @@ go test ./...
 go build ./...
 ```
 
-Integration tests and the escape suite need a running OrbStack: `go test -tags integration -p 1 -timeout 60m ./...`. They are not part of the default gate. Run the packages one at a time (`-p 1`): `init` refuses every directory while another machine's stored mount passes through a symlink, and `internal/orbstack` creates such a machine on purpose.
+Integration tests and the escape suite need a running OrbStack: `go test -tags integration -p 1 -timeout 60m ./...`. They are not part of the default gate, and CI does not run them: they run by hand on a Mac with OrbStack (`SDLC.md`, Validation gate). CI (`.github/workflows/ci.yml`) runs the five commands above on every PR and on every push to `main`, then the darwin lint, vet, and build pass. Run the packages one at a time (`-p 1`): `init` refuses every directory while another machine's stored mount passes through a symlink, and `internal/orbstack` creates such a machine on purpose.
 
 ## Always / Ask first / Never
 
