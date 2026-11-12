@@ -203,8 +203,8 @@ func TestStopAndStartTheSandbox(t *testing.T) {
 		t.Errorf("probes after the start of %s:\n%v", s.nameA, err)
 	} else {
 		t.Logf("probes after the start of %s passed", s.nameA)
-		logBootProcesses(ctx, t, s)
 	}
+	logBootProcesses(ctx, t, s)
 	checkNoSandbox(ctx, t, s)
 	checkBoundaryFailureStopsAgain(ctx, t, s)
 	checkOutdatedMarkerStaysRunning(ctx, t, s)
@@ -217,7 +217,7 @@ func TestStopAndStartTheSandbox(t *testing.T) {
 }
 
 // logBootProcesses logs the report that afterStartProbes left in sandbox a,
-// which the agent can read: it is the evidence of a passing run.
+// which the agent can read: it is the evidence of a run, passing or failing.
 func logBootProcesses(ctx context.Context, t *testing.T, s sandboxes) {
 	t.Helper()
 	var out bytes.Buffer
