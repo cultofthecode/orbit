@@ -141,32 +141,27 @@ func checkAnAllowRuleDoesNotOpenTheMac(ctx context.Context, t *testing.T, rig es
 }
 
 // checkTheWeakenedBoundaryIsDetected is M01 (Q6): with the firewall
-// weakened to the agent uid, the detector of E06 reports reach.
+// weakened to the agent uid, the sub-uid detector of E06 reports reach. M01
+// requires only this detector (owner, 2026-11-12). A container with
+// --network host --user 65534 does not detect the weakening on this stack:
+// Ubuntu's rootlesskit 2.0.2 runs dockerd in a network namespace of its own,
+// so "host" is that namespace, and the traffic leaves the machine through
+// slirp4netns, a process of the agent uid, which the weakened rule still
+// filters (spec, Weakened boundary).
 func checkTheWeakenedBoundaryIsDetected(ctx context.Context, t *testing.T, rig escapeRig) {
 	t.Helper()
 	t.Run("M01-weakened-boundary-is-detected", func(t *testing.T) {
-		t.Log("M01 proves A05: the detectors of E06 report reach on a weakened firewall")
+		t.Log("M01 proves A05: the sub-uid detector of E06 reports reach on a weakened firewall")
 		if err := rig.client.RunAsRoot(ctx, rig.name, []byte(weakenTheFirewall)); err != nil {
 			t.Fatalf("CONTROL FAILED: M01: the weakening is not in place in %s: %v", rig.name, err)
 		}
-		detectors := []struct{ what, body string }{
-			{"the sub-uid probe of E06", leakProbe + "leak_probe\n"},
-			{"the container with the network of the machine and a sub-uid of E06", `no_direct "container with the network of the machine and --user 65534" --network host --user 65534` + "\n"},
-		}
-		missed := false
-		for _, d := range detectors {
-			err := rig.runIn(ctx, agentContainer, d.body)
-			if err == nil || !strings.Contains(err.Error(), "direct connection from") {
-				t.Errorf("the suite cannot detect the A05 leak: %s reported %v on a firewall that filters only the agent uid", d.what, errString(err))
-				missed = true
-				continue
-			}
-			t.Logf("detected: %s reports reach", d.what)
-		}
-		if missed {
+		err := rig.runIn(ctx, agentContainer, leakProbe+"leak_probe\n")
+		if err == nil || !strings.Contains(err.Error(), "direct connection from") {
+			t.Errorf("the suite cannot detect the A05 leak: the sub-uid probe of E06 reported %v on a firewall that filters only the agent uid", errString(err))
 			rig.tally.add(outcomeEscape)
 			return
 		}
+		t.Log("detected: the sub-uid probe of E06 reports reach")
 		rig.tally.add(outcomePass)
 	})
 }

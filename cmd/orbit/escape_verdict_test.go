@@ -21,13 +21,18 @@ const (
 // that it needs is missing.
 const toolMissingMarker = "PROBE TOOL MISSING"
 
+// targetUnreachableMarker is what a control prints, and exits non-zero, when
+// even root in the machine gets no answer from the network of the target
+// (E04): OrbStack blocks the path below the Orbit firewall.
+const targetUnreachableMarker = "TARGET NETWORK UNREACHABLE"
+
 // attemptResult holds what one run of an attempt observed.
 type attemptResult struct {
 	id string
 	// hasControl is true when the attempt has a positive control.
 	hasControl bool
-	// informationalControl is true when a failed control does not fail the
-	// attempt (E11).
+	// informationalControl is true when any failed control of the attempt
+	// is inconclusive, not a failure (E11).
 	informationalControl bool
 	// controlOutput is empty when the control succeeded, and holds why it
 	// failed otherwise.
@@ -40,10 +45,18 @@ type attemptResult struct {
 	evidence string
 }
 
+// inconclusiveControl reports whether the control failed in a way that is
+// inconclusive, not a failure: the attempt marks its control informational
+// (E11), or the control could not reach the network of its target (E04).
+// The attempt still runs, and it still fails the suite when it succeeds.
+func (r attemptResult) inconclusiveControl() bool {
+	return r.hasControl && r.controlFailed && (r.informationalControl || strings.Contains(r.controlOutput, targetUnreachableMarker))
+}
+
 // attemptVerdict returns the outcome of an attempt and its message. An
 // attempt passes only when its control succeeded and the attempt failed.
 func attemptVerdict(r attemptResult) (outcome, string) {
-	informational := r.hasControl && r.controlFailed && r.informationalControl
+	informational := r.inconclusiveControl()
 	if r.hasControl && r.controlFailed && !informational {
 		return outcomeControlFailed, fmt.Sprintf("CONTROL FAILED: %s: %s", r.id, r.controlOutput)
 	}
@@ -99,6 +112,9 @@ func TestAttemptVerdict(t *testing.T) {
 		{"informational control failed", attemptResult{id: "E11", hasControl: true, informationalControl: true, controlFailed: true, controlOutput: "timeout"}, outcomeInconclusive, "below the Orbit firewall"},
 		{"informational control failed, attempt succeeded", attemptResult{id: "E11", hasControl: true, informationalControl: true, controlFailed: true, escaped: true, evidence: "reached"}, outcomeEscape, "ESCAPE: E11 succeeded: reached"},
 		{"informational control passed", attemptResult{id: "E11", hasControl: true, informationalControl: true}, outcomePass, ""},
+		{"target network unreachable", attemptResult{id: "E04", hasControl: true, controlFailed: true, controlOutput: targetUnreachableMarker + ": no answer from 192.168.215.2"}, outcomeInconclusive, "below the Orbit firewall"},
+		{"target network unreachable, attempt succeeded", attemptResult{id: "E04", hasControl: true, controlFailed: true, controlOutput: targetUnreachableMarker, escaped: true, evidence: "reached"}, outcomeEscape, "ESCAPE: E04 succeeded: reached"},
+		{"target reached, listener missing", attemptResult{id: "E04", hasControl: true, controlFailed: true, controlOutput: "connection refused"}, outcomeControlFailed, "CONTROL FAILED: E04: connection refused"},
 		{"probe tool missing", attemptResult{id: "E05", hasControl: true, escaped: true, evidence: toolMissingMarker + ": curl"}, outcomeToolMissing, "PROBE TOOL MISSING: curl"},
 	}
 	for _, tt := range tests {

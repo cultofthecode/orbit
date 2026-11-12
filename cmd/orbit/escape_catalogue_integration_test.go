@@ -47,7 +47,8 @@ type attempt struct {
 	// controlFn is a control that runs in the test process, on the Mac. It
 	// runs instead of control.
 	controlFn func(ctx context.Context) error
-	// informational means that a failed control does not fail the attempt.
+	// informational means that a failed control does not fail the attempt
+	// but makes it inconclusive (E11).
 	informational bool
 	// try is the shell that must fail. It exits non-zero and prints the
 	// evidence on standard error when the attempt succeeded.
@@ -106,7 +107,7 @@ func (r escapeRig) run(ctx context.Context, t *testing.T, a attempt) {
 		if err := r.runControl(ctx, a); err != nil {
 			result.controlFailed, result.controlOutput = true, err.Error()
 		}
-		if !result.controlFailed || result.informationalControl {
+		if !result.controlFailed || result.inconclusiveControl() {
 			if err := r.runIn(ctx, a.as, a.try); err != nil {
 				result.escaped, result.evidence = true, err.Error()
 			}
@@ -340,12 +341,28 @@ done
 	return attempts
 }
 
-// hostContainerReached is the control of E04.
+// hostContainerReached is the control of E04: root reaches the container of
+// the host engine. When no container started, the control fails. When root
+// gets no answer at all, neither a connection nor a refusal, the control
+// prints targetUnreachableMarker: OrbStack blocks the network of the host
+// engine below the Orbit firewall, and E04 is inconclusive (owner,
+// 2026-11-12). A refusal means that the network answered without the
+// listener, and the control fails.
 func (e escapeEnv) hostContainerReached(ctx context.Context) error {
 	if e.hostContainerErr != nil {
 		return fmt.Errorf("no container of the host engine started (%v)", e.hostContainerErr)
 	}
-	body := e.fill("for try in 1 2 3 4 5; do timeout 5 bash -c 'exec 3<>/dev/tcp/@HOSTCTR@/@CTRPORT@' && exit 0; sleep 1; done; fail \"root cannot reach the host-engine container at @HOSTCTR@:@CTRPORT@\"\n")
+	body := e.fill(`need bash timeout
+for try in 1 2 3 4 5; do
+  out=$(timeout 5 bash -c 'exec 3<>/dev/tcp/@HOSTCTR@/@CTRPORT@' 2>&1) && exit 0
+  status=$?
+  sleep 1
+done
+case "$status:$out" in
+  124:*|*"No route to host"*|*"Network is unreachable"*) echo "` + targetUnreachableMarker + `: root gets no answer from @HOSTCTR@:@CTRPORT@ (exit $status${out:+: $out})" >&2; exit 1;;
+esac
+fail "root cannot reach the host-engine container at @HOSTCTR@:@CTRPORT@ (exit $status: $out)"
+`)
 	return e.rig.runIn(ctx, rootSession, body)
 }
 
