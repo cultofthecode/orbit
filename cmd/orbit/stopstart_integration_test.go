@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -38,6 +39,12 @@ const writeStateFile = `set -eu
 printf '%s\n' '` + stateFileContent + `' > ` + stateFile + `
 `
 
+// bootProcessesFile is the file in the machine that afterStartProbes fills
+// with the processes that have a uid from 1000 up, so that a passing run
+// keeps them: RunAsRoot returns the standard error of a script only when it
+// fails. It is under /run, which the boot empties.
+const bootProcessesFile = "/run/orbit-it-boot-processes"
+
 // afterStartProbes checks a started sandbox as root: the file of the agent
 // survived, the agent reaches no public address directly and no host
 // without an allow rule through the proxy, but reaches an allowed host, and
@@ -59,6 +66,8 @@ for unit in nftables.service orbit-proxy-address.service tinyproxy.service orbit
   [ "${at:-0}" -gt "$latest" ] && latest=$at
 done
 agents=0
+: > ` + bootProcessesFile + `
+chmod 0644 ` + bootProcessesFile + `
 for dir in /proc/[0-9]*; do
   uid=$(awk '/^Uid:/ {print $2}' "$dir/status" 2>/dev/null) || continue
   [ -n "$uid" ] && [ "$uid" -ge 1000 ] || continue
@@ -66,10 +75,11 @@ for dir in /proc/[0-9]*; do
   [ -n "$unit" ] || { fail "process ${dir#/proc/} with uid $uid is in no unit"; continue; }
   started=$(systemctl show -p InactiveExitTimestampMonotonic --value "$unit")
   agents=$((agents + 1))
-  echo "process ${dir#/proc/} uid $uid ($(tr '\0' ' ' < "$dir/cmdline" | cut -c1-60)) in $unit, which started at $started us" >&2
+  echo "process ${dir#/proc/} uid $uid ppid $(awk '/^PPid:/ {print $2}' "$dir/status") ($(tr '\0' ' ' < "$dir/cmdline" | cut -c1-80)) in $unit, which started at $started us" >> ` + bootProcessesFile + `
   [ "${started:-0}" -gt "$latest" ] || fail "process ${dir#/proc/} with uid $uid runs in $unit, which started at $started us, before the boundary was active at $latest us"
 done
-echo "boundary active at $latest us; $agents processes with a uid from 1000 up, all started later" >&2
+echo "boundary active at $latest us; $agents processes with a uid from 1000 up, all started later" >> ` + bootProcessesFile + `
+{ loginctl list-users --no-legend; systemctl list-units --type=service,scope --state=active --no-legend 'user@*' 'session-*' 2>/dev/null; } >> ` + bootProcessesFile + ` 2>&1 || true
 [ "$failures" -eq 0 ]
 `
 
@@ -193,6 +203,7 @@ func TestStopAndStartTheSandbox(t *testing.T) {
 		t.Errorf("probes after the start of %s:\n%v", s.nameA, err)
 	} else {
 		t.Logf("probes after the start of %s passed", s.nameA)
+		logBootProcesses(ctx, t, s)
 	}
 	checkNoSandbox(ctx, t, s)
 	checkBoundaryFailureStopsAgain(ctx, t, s)
@@ -203,6 +214,19 @@ func TestStopAndStartTheSandbox(t *testing.T) {
 	checkLinkedStoredPathRefusesTheStart(ctx, t, s)
 	exclusive.release(t)
 	expectOrbStackRunning(t)
+}
+
+// logBootProcesses logs the report that afterStartProbes left in sandbox a,
+// which the agent can read: it is the evidence of a passing run.
+func logBootProcesses(ctx context.Context, t *testing.T, s sandboxes) {
+	t.Helper()
+	var out bytes.Buffer
+	status, err := s.client.Shell(ctx, s.nameA, s.dirA, strings.NewReader("cat "+bootProcessesFile+"\n"), &out, &out)
+	if err != nil || status != 0 {
+		t.Errorf("read %s in %s = status %d, %v: %s", bootProcessesFile, s.nameA, status, err, out.String())
+		return
+	}
+	t.Logf("processes with a uid from 1000 up after the start of %s:\n%s", s.nameA, out.String())
 }
 
 // checkIdempotentStopAndStart stops sandbox a twice and starts it twice, and
