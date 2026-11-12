@@ -545,3 +545,23 @@ func TestHandleReportsOrbStackFailuresBeforeTheStart(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleQuotesAHostileDirectoryWithoutASandbox pins that the error for a
+// directory without a sandbox cannot write an escape sequence to the terminal.
+func TestHandleQuotesAHostileDirectoryWithoutASandbox(t *testing.T) {
+	s := newSandboxHome(t)
+	hostile := filepath.Join(s.home, "work", "a\x1b[2K\rb")
+	if err := os.Mkdir(hostile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s.dir, s.name = hostile, sandbox.MachineName(hostile)
+	fake := s.fake(orbstacktest.StateStopped)
+	delete(fake.Machines, s.name)
+
+	_, err := s.handler(fake).Handle(context.Background(), Input{Dir: s.dir})
+
+	want := "no sandbox for " + strconv.Quote(s.dir) + `: run "orbit init" here, or run this command in the directory where you ran "orbit init"`
+	if err == nil || err.Error() != want || strings.ContainsAny(err.Error(), "\x1b\r") || !errors.Is(err, sandbox.ErrNoSandbox) {
+		t.Errorf("Handle = %v, want %v as %q", err, sandbox.ErrNoSandbox, want)
+	}
+}

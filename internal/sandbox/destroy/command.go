@@ -7,12 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/spf13/cobra"
+
+	"github.com/cultofthecode/orbit/internal/sandbox"
 )
 
 // NewCommand returns the CLI command "orbit destroy", which deletes the
@@ -46,7 +45,7 @@ func run(cmd *cobra.Command, handler Handler) error {
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Destroyed sandbox %s for %s\n", printable(out.Name), printable(out.Dir)); err != nil {
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Destroyed sandbox %s for %s\n", sandbox.Printable(out.Name), sandbox.Printable(out.Dir)); err != nil {
 		return fmt.Errorf("print the result: %w", err)
 	}
 	return nil
@@ -92,16 +91,5 @@ func prompt(target Target) string {
 	if target.Running {
 		running = " It runs; open shells end."
 	}
-	return fmt.Sprintf("Destroy sandbox %s for %s?%s The login, history, and images of the agent in it are deleted; the project files stay. [y/N] ", printable(target.Name), printable(target.Dir), running)
-}
-
-// printable returns s, or its Go-quoted form when it holds a character that
-// is not printable or invalid UTF-8, so that a directory name cannot write
-// an escape sequence or a line break to the terminal and change what the
-// owner confirms.
-func printable(s string) string {
-	if !utf8.ValidString(s) || strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
-		return strconv.Quote(s)
-	}
-	return s
+	return fmt.Sprintf("Destroy sandbox %s for %s?%s The login, history, and images of the agent in it are deleted; the project files stay. [y/N] ", sandbox.Printable(target.Name), sandbox.Printable(target.Dir), running)
 }

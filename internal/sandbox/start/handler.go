@@ -189,7 +189,7 @@ func (h Handler) checkMarker(ctx context.Context, name, dir string) error {
 
 // noSandbox returns sandbox.ErrNoSandbox for the project directory dir.
 func noSandbox(dir string) error {
-	return fmt.Errorf(`%w for %s: run "orbit init" here, or run this command in the directory where you ran "orbit init"`, sandbox.ErrNoSandbox, dir)
+	return fmt.Errorf(`%w for %s: run "orbit init" here, or run this command in the directory where you ran "orbit init"`, sandbox.ErrNoSandbox, sandbox.Printable(dir))
 }
 
 // unexpectedState returns sandbox.ErrUnexpectedState for the machine name in

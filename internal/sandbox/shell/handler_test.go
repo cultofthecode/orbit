@@ -3,8 +3,10 @@ package shell
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -233,5 +235,25 @@ func TestHandleRefusesAPathThatIsNotADirectory(t *testing.T) {
 	}
 	if len(fake.Calls) != 0 {
 		t.Errorf("calls = %v, want none", fake.Calls)
+	}
+}
+
+// TestHandleQuotesAHostileDirectoryWithoutASandbox pins that the error for a
+// directory without a sandbox cannot write an escape sequence to the terminal.
+func TestHandleQuotesAHostileDirectoryWithoutASandbox(t *testing.T) {
+	hostile := filepath.Join(t.TempDir(), "a\x1b[2K\rb")
+	if err := os.Mkdir(hostile, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := realpath.Resolve(hostile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = handler(withMachine("orbit-other-1111111111111111", "/x", orbstacktest.StateRunning)).Handle(context.Background(), Input{Dir: dir})
+
+	want := "no sandbox for " + strconv.Quote(dir) + `: run "orbit init" here, or run "orbit shell" in the directory where you ran "orbit init"`
+	if err == nil || err.Error() != want || strings.ContainsAny(err.Error(), "\x1b\r") || !errors.Is(err, sandbox.ErrNoSandbox) {
+		t.Errorf("Handle = %v, want %v as %q", err, sandbox.ErrNoSandbox, want)
 	}
 }

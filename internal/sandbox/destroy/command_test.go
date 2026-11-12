@@ -161,7 +161,10 @@ func TestPromptAndResultQuoteAHostileDirectory(t *testing.T) {
 	}
 
 	var errOut bytes.Buffer
-	_ = confirmer(false, strings.NewReader("n\n"), &errOut, yesTerminal)(context.Background(), Target{Name: name, Dir: dir})
+	err = confirmer(false, strings.NewReader("n\n"), &errOut, yesTerminal)(context.Background(), Target{Name: name, Dir: dir})
+	if !errors.Is(err, ErrNotConfirmed) {
+		t.Errorf("confirmer after n = %v, want %v", err, ErrNotConfirmed)
+	}
 	if got := errOut.String(); strings.ContainsAny(got, "\x1b\r") || !strings.Contains(got, quoted) {
 		t.Errorf("prompt = %q, want the directory quoted as %s and no control character", got, quoted)
 	}
