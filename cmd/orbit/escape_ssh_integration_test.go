@@ -109,7 +109,9 @@ func commandIn(env []string, name string, args ...string) *exec.Cmd {
 // --no-ssh-forwarding. Its control is a second sandbox, created with
 // forwarding, in which the detectors of E15 must fire. SSH_AUTH_SOCK of the
 // test process names an agent of the test with no key, so that init never
-// carries the agent of the user.
+// carries the agent of the user. The control sandbox still receives the agent
+// that OrbStack 2.2.5 forwards on its own, the one of the Mac (spec A4); the
+// test never queries it, and the sandbox is deleted at the end.
 func TestEscapeNoSSHForwarding(t *testing.T) {
 	waitToRunInit(t)
 	logOrbStackVersionOnce(t)
