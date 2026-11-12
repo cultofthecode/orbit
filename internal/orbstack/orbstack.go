@@ -113,8 +113,8 @@ var (
 	// machine, so the client runs none of them then.
 	ErrMachineNotRunning = errors.New("machine is not running")
 	// ErrMachineName reports a machine name with white space. A name that
-	// sandbox.MachineName computes has none, and Start and Stop pass only
-	// such a name to orb.
+	// sandbox.MachineName computes has none, and Start, Stop, and Delete pass
+	// only such a name to orb.
 	ErrMachineName = errors.New("machine name holds white space")
 	// ErrNotRunning reports that OrbStack is not running. The client then
 	// runs no other command, because orb starts a stopped OrbStack.
@@ -232,6 +232,33 @@ func (c *Client) State(ctx context.Context, name string) (string, error) {
 	return parseState([]byte(list), name)
 }
 
+// Machine is a machine of OrbStack with the name prefix of the client, as
+// orb list prints it.
+type Machine struct {
+	Name   string
+	State  string
+	Mounts []Mount
+}
+
+// Mount is one stored mount of a machine: the host directory and the path in
+// the machine.
+type Mount struct {
+	Source      string
+	Destination string
+}
+
+// List returns every machine whose name starts with the prefix of the client,
+// with its state and its stored mounts, from one read of orb list. It runs
+// only orb status and orb list, so it never starts OrbStack or a machine, and
+// it runs no command in a machine.
+func (c *Client) List(ctx context.Context) ([]Machine, error) {
+	list, err := run(ctx, mountsArgs(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("list machines: %w", err)
+	}
+	return parseList([]byte(list), c.prefix)
+}
+
 // Start starts the machine name, and only that machine: orb start without a
 // name starts every machine that ran when OrbStack last stopped. It runs no
 // command when name lacks the prefix of the client or holds white space.
@@ -260,9 +287,10 @@ func (c *Client) Stop(ctx context.Context, name string) error {
 }
 
 // Delete deletes the machine name with everything stored in it. It runs no
-// command when name lacks the prefix of the client.
+// command when name lacks the prefix of the client or holds white space,
+// because orb delete takes several names and -a deletes every machine.
 func (c *Client) Delete(ctx context.Context, name string) error {
-	if err := c.checkOwned(name); err != nil {
+	if err := c.checkNamed(name); err != nil {
 		return err
 	}
 	if _, err := run(ctx, deleteArgs(name), nil); err != nil {
@@ -469,6 +497,44 @@ func parseMounts(list []byte) (map[string]map[string]string, error) {
 		}
 	}
 	return mounts, nil
+}
+
+// parseList returns the machines of the output of "orb list --format json"
+// whose names start with prefix, in the order of the output, with their state
+// as it is (also "") and their mounts in the order of config.mounts. OrbStack
+// prints [] when it has no machine (OrbStack 2.2.5); null is read as no
+// machines too, as encoding/json reads it. Empty output is never read as no
+// machines: it fails with ErrMachineList, like output that is not a JSON array
+// and a prefixed name that appears twice. It drops a name without the prefix
+// and the name equal to the prefix, as checkOwned does; an empty prefix lists
+// nothing.
+func parseList(list []byte, prefix string) ([]Machine, error) {
+	var entries []machine
+	if err := json.Unmarshal(list, &entries); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrMachineList, err)
+	}
+	var machines []Machine
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if prefix == "" || !strings.HasPrefix(e.Name, prefix) || e.Name == prefix {
+			continue
+		}
+		if seen[e.Name] {
+			return nil, fmt.Errorf("%w: machine %q is listed twice", ErrMachineList, e.Name)
+		}
+		seen[e.Name] = true
+		machines = append(machines, toMachine(e))
+	}
+	return machines, nil
+}
+
+// toMachine converts an entry of orb list to a Machine.
+func toMachine(e machine) Machine {
+	m := Machine{Name: e.Name, State: e.State}
+	for _, mount := range e.Config.Mounts {
+		m.Mounts = append(m.Mounts, Mount{Source: mount.Source, Destination: mount.Destination})
+	}
+	return m
 }
 
 // parseSSHAgentForwarded returns the SSH agent setting of the machine name in

@@ -445,3 +445,61 @@ func TestFakeSSHAgentForwardedRefusesWhatTheAdapterRefuses(t *testing.T) {
 		t.Errorf("SSHAgentForwarded = %v, want %v", err, boom)
 	}
 }
+
+func TestFakeDeleteRefusesHostileNames(t *testing.T) {
+	for _, machine := range []string{"orbit-x --all", "orbit-a orbit-b", "orbit-x\t"} {
+		fake := New("orbit-")
+		fake.Machines["orbit-x"] = map[string]string{}
+		if err := fake.Delete(context.Background(), machine); !errors.Is(err, ErrMachineName) {
+			t.Errorf("Delete(%q) = %v, want %v", machine, err, ErrMachineName)
+		}
+		if _, exists := fake.Machines["orbit-x"]; !exists {
+			t.Errorf("Delete(%q) removed a machine", machine)
+		}
+	}
+	for _, machine := range []string{"", "orbit-", "--all", "-a"} {
+		if err := New("orbit-").Delete(context.Background(), machine); !errors.Is(err, ErrForeignMachine) {
+			t.Errorf("Delete(%q) = %v, want %v", machine, err, ErrForeignMachine)
+		}
+	}
+}
+
+func TestFakeListsMachinesAndRecordsOnlyList(t *testing.T) {
+	fake := New("orbit-")
+	ctx := context.Background()
+	if err := fake.Create(ctx, "orbit-web-00db83c9", "/work/web", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.Stop(ctx, "orbit-web-00db83c9"); err != nil {
+		t.Fatal(err)
+	}
+	fake.Listed = []Machine{{Name: "ubuntu", State: "running"}}
+	fake.Calls = nil
+
+	got, err := fake.List(ctx)
+	want := []Machine{
+		{Name: "orbit-api-1d9b22c9", State: StateRunning, Mounts: []Mount{{Source: "/work/api", Destination: "/work/api"}}},
+		{Name: "orbit-web-00db83c9", State: StateStopped, Mounts: []Mount{{Source: "/work/web", Destination: "/work/web"}}},
+		{Name: "ubuntu", State: "running"},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("List = %+v, %v, want %+v", got, err, want)
+	}
+	if !slices.Equal(fake.Calls, []Call{{Op: OpList}}) {
+		t.Errorf("Calls = %v, want only %q", fake.Calls, OpList)
+	}
+	if state, _ := fake.State(ctx, "orbit-web-00db83c9"); state != StateStopped {
+		t.Errorf("state after List = %q, want %q", state, StateStopped)
+	}
+}
+
+func TestFakeListReturnsItsError(t *testing.T) {
+	fake := New("orbit-")
+	fake.ListErr = errors.New("boom")
+	if got, err := fake.List(context.Background()); !errors.Is(err, fake.ListErr) || got != nil {
+		t.Errorf("List = %+v, %v, want %v", got, err, fake.ListErr)
+	}
+}
