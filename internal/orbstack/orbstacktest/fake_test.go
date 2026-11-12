@@ -446,6 +446,24 @@ func TestFakeSSHAgentForwardedRefusesWhatTheAdapterRefuses(t *testing.T) {
 	}
 }
 
+func TestFakeDeleteRefusesHostileNames(t *testing.T) {
+	for _, machine := range []string{"orbit-x --all", "orbit-a orbit-b", "orbit-x\t"} {
+		fake := New("orbit-")
+		fake.Machines["orbit-x"] = map[string]string{}
+		if err := fake.Delete(context.Background(), machine); !errors.Is(err, ErrMachineName) {
+			t.Errorf("Delete(%q) = %v, want %v", machine, err, ErrMachineName)
+		}
+		if _, exists := fake.Machines["orbit-x"]; !exists {
+			t.Errorf("Delete(%q) removed a machine", machine)
+		}
+	}
+	for _, machine := range []string{"", "orbit-", "--all", "-a"} {
+		if err := New("orbit-").Delete(context.Background(), machine); !errors.Is(err, ErrForeignMachine) {
+			t.Errorf("Delete(%q) = %v, want %v", machine, err, ErrForeignMachine)
+		}
+	}
+}
+
 func TestFakeListsMachinesAndRecordsOnlyList(t *testing.T) {
 	fake := New("orbit-")
 	ctx := context.Background()
