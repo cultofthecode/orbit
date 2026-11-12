@@ -274,9 +274,15 @@ func (f *Fake) ActiveMounts(_ context.Context, name string) (map[string]string, 
 }
 
 // Delete removes the machine name. It refuses a name without the prefix of
-// the fake and a machine that does not exist.
+// the fake, a name with white space, and a machine that does not exist.
 func (f *Fake) Delete(_ context.Context, name string) error {
 	f.Calls = append(f.Calls, Call{Op: OpDelete, Name: name})
+	if err := f.checkOwned(name); err != nil {
+		return err
+	}
+	if strings.ContainsFunc(name, unicode.IsSpace) {
+		return fmt.Errorf("%w: %q", ErrMachineName, name)
+	}
 	if err := f.checkExists(name); err != nil {
 		return err
 	}

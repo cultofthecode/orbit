@@ -103,6 +103,9 @@ func TestListArgs(t *testing.T) {
 
 func TestDeleteArgs(t *testing.T) {
 	want := []string{"delete", "--force", "orbit-api-1d9b22c9"}
+	if len(want) != 3 {
+		t.Fatal("deleteArgs must stay exactly three elements")
+	}
 	if got := deleteArgs("orbit-api-1d9b22c9"); !slices.Equal(got, want) {
 		t.Errorf("deleteArgs() = %q, want %q", got, want)
 	}
@@ -1143,12 +1146,13 @@ func TestStopArgs(t *testing.T) {
 	}
 }
 
-// TestStartAndStopRefuseHostileNamesBeforeAnyCommand checks that Start and
-// Stop never reach orb with a name that is not one machine of the client:
-// orb stop without a machine stops OrbStack with every machine, and orb
-// start without one starts every machine that ran when OrbStack last
-// stopped.
-func TestStartAndStopRefuseHostileNamesBeforeAnyCommand(t *testing.T) {
+// TestStartStopAndDeleteRefuseHostileNamesBeforeAnyCommand checks that
+// Start, Stop, and Delete never reach orb with a name that is not one
+// machine of the client: orb stop without a machine stops OrbStack with
+// every machine, orb start without one starts every machine that ran when
+// OrbStack last stopped, and orb delete takes several names and -a deletes
+// every machine. Not even orb status runs.
+func TestStartStopAndDeleteRefuseHostileNamesBeforeAnyCommand(t *testing.T) {
 	tests := []struct {
 		name    string
 		prefix  string
@@ -1161,6 +1165,7 @@ func TestStartAndStopRefuseHostileNamesBeforeAnyCommand(t *testing.T) {
 		{name: "long flag", prefix: testPrefix, machine: "--all", want: ErrForeignMachine},
 		{name: "force flag", prefix: testPrefix, machine: "-f", want: ErrForeignMachine},
 		{name: "name and a flag", prefix: testPrefix, machine: "orbit-x --all", want: ErrMachineName},
+		{name: "two names", prefix: testPrefix, machine: "orbit-a orbit-b", want: ErrMachineName},
 		{name: "name with a tab", prefix: testPrefix, machine: "orbit-x\t-a", want: ErrMachineName},
 		{name: "name with a newline", prefix: testPrefix, machine: "orbit-x\n", want: ErrMachineName},
 		{name: "foreign name", prefix: testPrefix, machine: "ubuntu", want: ErrForeignMachine},
@@ -1177,6 +1182,9 @@ func TestStartAndStopRefuseHostileNamesBeforeAnyCommand(t *testing.T) {
 			}
 			if err := client.Stop(ctx, test.machine); !errors.Is(err, test.want) {
 				t.Errorf("Stop(%q) = %v, want %v", test.machine, err, test.want)
+			}
+			if err := client.Delete(ctx, test.machine); !errors.Is(err, test.want) {
+				t.Errorf("Delete(%q) = %v, want %v", test.machine, err, test.want)
 			}
 			if received, err := os.ReadFile(calls); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("orb ran %q, %v, want no command", received, err)

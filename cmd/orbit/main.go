@@ -20,6 +20,7 @@ import (
 	"github.com/cultofthecode/orbit/internal/orbstack"
 	"github.com/cultofthecode/orbit/internal/provision"
 	"github.com/cultofthecode/orbit/internal/sandbox"
+	"github.com/cultofthecode/orbit/internal/sandbox/destroy"
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
 	"github.com/cultofthecode/orbit/internal/sandbox/shell"
 	"github.com/cultofthecode/orbit/internal/sandbox/start"
@@ -50,7 +51,7 @@ func newOrbit() (*cobra.Command, error) {
 		return nil, err
 	}
 	machines := orbstack.New(sandbox.NamePrefix)
-	return newRoot(initCommand(machines, agents), shellCommand(machines), startCommand(machines), stopCommand(machines)), nil
+	return newRoot(initCommand(machines, agents), shellCommand(machines), startCommand(machines), stopCommand(machines), destroyCommand(machines)), nil
 }
 
 // initCommand returns the command "orbit init" on machines, with the agents
@@ -102,6 +103,12 @@ func startHandler(machines start.Machines) start.Handler {
 // stopCommand returns the command "orbit stop" on machines.
 func stopCommand(machines stop.Machines) *cobra.Command {
 	return stop.NewCommand(stop.Handler{Machines: machines})
+}
+
+// destroyCommand returns the command "orbit destroy" on machines. The command
+// fills the Confirm field of the handler from its flags and streams.
+func destroyCommand(machines destroy.Machines) *cobra.Command {
+	return destroy.NewCommand(destroy.Handler{Machines: machines})
 }
 
 // sandboxAgent returns a lookup of the agents of the registry that gives a

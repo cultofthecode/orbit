@@ -113,8 +113,8 @@ var (
 	// machine, so the client runs none of them then.
 	ErrMachineNotRunning = errors.New("machine is not running")
 	// ErrMachineName reports a machine name with white space. A name that
-	// sandbox.MachineName computes has none, and Start and Stop pass only
-	// such a name to orb.
+	// sandbox.MachineName computes has none, and Start, Stop, and Delete pass
+	// only such a name to orb.
 	ErrMachineName = errors.New("machine name holds white space")
 	// ErrNotRunning reports that OrbStack is not running. The client then
 	// runs no other command, because orb starts a stopped OrbStack.
@@ -260,9 +260,10 @@ func (c *Client) Stop(ctx context.Context, name string) error {
 }
 
 // Delete deletes the machine name with everything stored in it. It runs no
-// command when name lacks the prefix of the client.
+// command when name lacks the prefix of the client or holds white space,
+// because orb delete takes several names and -a deletes every machine.
 func (c *Client) Delete(ctx context.Context, name string) error {
-	if err := c.checkOwned(name); err != nil {
+	if err := c.checkNamed(name); err != nil {
 		return err
 	}
 	if _, err := run(ctx, deleteArgs(name), nil); err != nil {
