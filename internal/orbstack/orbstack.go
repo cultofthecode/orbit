@@ -491,8 +491,14 @@ func parseState(list []byte, name string) (string, error) {
 // parseMountTable returns the mounts of the host file system in a mount table
 // in the format of /proc/self/mountinfo: the root of each mount, which is a
 // path on the host, by its mount point. It fails on an entry that it cannot
-// read and on a mount point that appears twice.
+// read, on a mount point that appears twice, and on a table with no content:
+// a real table always lists the root file system, so empty output means that
+// the read failed (orb exited 0 and printed nothing), not that nothing is
+// mounted.
 func parseMountTable(table string) (map[string]string, error) {
+	if strings.TrimSpace(table) == "" {
+		return nil, fmt.Errorf("%w: the mount table is empty", ErrMountTable)
+	}
 	mounts := map[string]string{}
 	for _, line := range strings.Split(strings.TrimRight(table, "\n"), "\n") {
 		root, mountPoint, isHost, err := parseMountEntry(line)

@@ -265,6 +265,7 @@ func TestParseMountTableRefusesWhatItCannotRead(t *testing.T) {
 		table string
 	}{
 		{name: "empty table", table: ""},
+		{name: "table of newlines", table: "\n\n"},
 		{name: "error text", table: "cat: /proc/self/mountinfo: No such file or directory\n"},
 		{name: "entry without the end of the optional fields", table: table("195 125 0:35 / / rw shared:1 virtiofs mac rw x")},
 		{name: "entry without a source", table: table("195 125 0:35 / / rw - virtiofs")},
@@ -288,6 +289,15 @@ func TestParseMountTableRefusesWhatItCannotRead(t *testing.T) {
 				t.Errorf("parseMountTable(%q) = %q, %v, want %v", test.table, got, err, ErrMountTable)
 			}
 		})
+	}
+}
+
+func TestParseMountTableNamesAnEmptyTable(t *testing.T) {
+	for _, table := range []string{"", "\n", " \n\n"} {
+		_, err := parseMountTable(table)
+		if !errors.Is(err, ErrMountTable) || !strings.Contains(err.Error(), "the mount table is empty") || strings.Contains(err.Error(), "entry") {
+			t.Errorf("parseMountTable(%q) error = %v, want %v naming the empty table", table, err, ErrMountTable)
+		}
 	}
 }
 
