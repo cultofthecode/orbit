@@ -257,3 +257,49 @@ func TestHandleQuotesAHostileDirectoryWithoutASandbox(t *testing.T) {
 		t.Errorf("Handle = %v, want %v as %q", err, sandbox.ErrNoSandbox, want)
 	}
 }
+
+// hostileProject returns the canonical project directory whose name holds an
+// escape sequence and a line break, and the name of its machine.
+func hostileProject(t *testing.T) (string, string) {
+	t.Helper()
+	hostile := filepath.Join(t.TempDir(), "a\x1b[2K\nb")
+	if err := os.Mkdir(hostile, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := realpath.Resolve(hostile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, sandbox.MachineName(dir)
+}
+
+// TestHandleQuotesAHostileDirectoryInTheNotRunningError pins that the error
+// for a sandbox that does not run cannot write an escape sequence or a line
+// break to the terminal (#151).
+func TestHandleQuotesAHostileDirectoryInTheNotRunningError(t *testing.T) {
+	dir, name := hostileProject(t)
+	fake := withMachine(name, dir, orbstacktest.StateStopped)
+
+	_, err := handler(fake).Handle(context.Background(), Input{Dir: dir})
+
+	want := "sandbox " + name + " is stopped: " + ErrNotRunning.Error() + " in " + strconv.Quote(dir)
+	if !errors.Is(err, ErrNotRunning) || err.Error() != want || strings.ContainsAny(err.Error(), "\x1b\n") {
+		t.Errorf("Handle = %q, want %q", err, want)
+	}
+}
+
+// TestHandleQuotesAHostileDirectoryInTheNotProvisionedError pins that the
+// error for a sandbox that is not ready cannot write an escape sequence or a
+// line break to the terminal (#151).
+func TestHandleQuotesAHostileDirectoryInTheNotProvisionedError(t *testing.T) {
+	dir, name := hostileProject(t)
+	fake := withMachine(name, dir, orbstacktest.StateRunning)
+	fake.RunAsRootErr = errors.New("tinyproxy.service is not active")
+
+	_, err := handler(fake).Handle(context.Background(), Input{Dir: dir})
+
+	want := "sandbox " + name + " is not ready: tinyproxy.service is not active; run \"orbit init\" in " + strconv.Quote(dir) + " to provision it again"
+	if !errors.Is(err, ErrNotProvisioned) || err.Error() != want || strings.ContainsAny(err.Error(), "\x1b\n") {
+		t.Errorf("Handle = %q, want %q", err, want)
+	}
+}

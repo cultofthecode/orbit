@@ -156,7 +156,7 @@ func (h Handler) stopAgain(ctx context.Context, name, dir string, cause error) e
 	defer cancel()
 	down := fmt.Errorf("sandbox %s %w: %w", name, ErrBoundaryDown, cause)
 	if err := h.stopAndConfirm(stopCtx, name); err != nil {
-		return errors.Join(down, fmt.Errorf(`stop sandbox %s again: %w; the sandbox may still run: run "orbit stop" in %s`, name, err, dir))
+		return errors.Join(down, fmt.Errorf(`stop sandbox %s again: %w; the sandbox may still run: run "orbit stop" in %s`, name, err, sandbox.Printable(dir)))
 	}
 	return fmt.Errorf("%w; the sandbox was stopped again", down)
 }
@@ -182,7 +182,7 @@ func (h Handler) stopAndConfirm(ctx context.Context, name string) error {
 // the running machine name does not hold the version of this orbit.
 func (h Handler) checkMarker(ctx context.Context, name, dir string) error {
 	if err := h.Machines.RunAsRoot(ctx, name, h.MarkerCheckScript()); err != nil {
-		return fmt.Errorf(`sandbox %s runs, but %w; run "orbit init" in %s to provision it again: %w`, name, ErrNotProvisioned, dir, err)
+		return fmt.Errorf(`sandbox %s runs, but %w; run "orbit init" in %s to provision it again: %w`, name, ErrNotProvisioned, sandbox.Printable(dir), err)
 	}
 	return nil
 }

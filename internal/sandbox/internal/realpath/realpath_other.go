@@ -22,24 +22,11 @@ func resolve(path string) (string, error) {
 	if !info.IsDir() {
 		return "", &fs.PathError{Op: "resolve", Path: path, Err: syscall.ENOTDIR}
 	}
-	absolute, err := uncleanAbs(path)
+	absolute, err := UncleanAbs(path)
 	if err != nil {
 		return "", err
 	}
 	return filepath.EvalSymlinks(absolute)
-}
-
-// uncleanAbs returns path, or for a relative path the working directory
-// followed by path, without cleaning either.
-func uncleanAbs(path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return path, nil
-	}
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return dir + string(filepath.Separator) + path, nil
 }
 
 // resolveNoFirmlink equals resolve: only macOS has firmlinks.

@@ -156,21 +156,25 @@ func credentialFixtures(t *testing.T, home string) []credentialForm {
 
 // hopFixtures creates a second fake home whose protected paths reach their
 // targets through a symlink in a project directory, the layouts of #36, and
-// returns the 4 forms of E17 that init each such project directory: .aws,
-// .config, and .claude.json through a hop in their own project, and HOME
-// itself through a hop. The agent could repoint the hop at a directory that
-// it controls.
+// returns the 6 forms of E17 that init each such project directory: .aws,
+// .config, and .claude.json through a hop in their own project, HOME itself
+// through a hop, and .gnupg and .ssh/config through a target whose ".."
+// cancels a plain name in their own project. The agent could repoint the hop,
+// or replace the cancelled name with a symlink, and reach a directory that it
+// controls.
 func hopFixtures(t *testing.T) []credentialForm {
 	t.Helper()
 	home := projectDir(t)
 	work := filepath.Join(home, "work")
-	for _, dir := range []string{"vault/aws", "dotfiles/config/gh", "store/state", "work/aws", "work/config", "work/claude"} {
+	for _, dir := range []string{"vault/aws", "vault/gnupg", "dotfiles/config/gh", "dotfiles/ssh", "store/state", "work/aws", "work/config", "work/claude", "work/gnupg/x", "work/ssh/x", ".ssh"} {
 		if err := os.MkdirAll(filepath.Join(home, dir), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(home, "store", "state", "claude.json"), nil, 0o600); err != nil {
-		t.Fatal(err)
+	for _, file := range []string{filepath.Join("store", "state", "claude.json"), filepath.Join("dotfiles", "ssh", "config")} {
+		if err := os.WriteFile(filepath.Join(home, file), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	outside := projectDir(t)
 	homeProject := filepath.Join(outside, "proj")
@@ -185,6 +189,8 @@ func hopFixtures(t *testing.T) []credentialForm {
 		{filepath.Join(home, "store", "state", "claude.json"), filepath.Join(work, "claude", "c.json")},
 		{filepath.Join(work, "claude", "c.json"), filepath.Join(home, ".claude.json")},
 		{home, filepath.Join(homeProject, "h")},
+		{"work/gnupg/x/../../../vault/gnupg", filepath.Join(home, ".gnupg")},
+		{"../work/ssh/x/../../../dotfiles/ssh/config", filepath.Join(home, ".ssh", "config")},
 	} {
 		if err := os.Symlink(hop.target, hop.link); err != nil {
 			t.Fatal(err)
@@ -195,6 +201,8 @@ func hopFixtures(t *testing.T) []credentialForm {
 		{name: ".config hop", path: filepath.Join(work, "config"), home: home},
 		{name: "claude.json hop", path: filepath.Join(work, "claude"), home: home},
 		{name: "HOME hop", path: homeProject, home: filepath.Join(homeProject, "h")},
+		{name: ".gnupg cancelled name", path: filepath.Join(work, "gnupg"), home: home},
+		{name: ".ssh config cancelled name", path: filepath.Join(work, "ssh"), home: home},
 	}
 }
 
@@ -210,8 +218,8 @@ func TestEscapeCredentialLocations(t *testing.T) {
 	machines := accountHomeMachines{machines: client, home: accountHome}
 	handler := initHandler(machines, claudeRegistry(t))
 	forms := slices.Concat(credentialFixtures(t, home), hopFixtures(t))
-	if len(forms) != 32 {
-		t.Fatalf("%d forms, want 32", len(forms))
+	if len(forms) != 34 {
+		t.Fatalf("%d forms, want 34", len(forms))
 	}
 	var counts tally
 	t.Cleanup(func() { t.Log(counts.summary()) })

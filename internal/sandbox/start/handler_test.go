@@ -565,3 +565,68 @@ func TestHandleQuotesAHostileDirectoryWithoutASandbox(t *testing.T) {
 		t.Errorf("Handle = %v, want %v as %q", err, sandbox.ErrNoSandbox, want)
 	}
 }
+
+// hostileSandboxHome returns a sandbox home whose project directory has a
+// name with an escape sequence and a line break.
+func hostileSandboxHome(t *testing.T) sandboxHome {
+	t.Helper()
+	s := newSandboxHome(t)
+	hostile := filepath.Join(s.home, "work", "a\x1b[2K\nb")
+	if err := os.Mkdir(hostile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s.dir, s.name = hostile, sandbox.MachineName(hostile)
+	return s
+}
+
+// TestHandleQuotesAHostileDirectoryWhenTheStopAgainFails pins that the error
+// that names "orbit stop" cannot write an escape sequence or a line break to
+// the terminal (#111).
+func TestHandleQuotesAHostileDirectoryWhenTheStopAgainFails(t *testing.T) {
+	s := hostileSandboxHome(t)
+	fake := s.fake(orbstacktest.StateStopped)
+	fake.StopErr = errors.New("orb stop: exit status 1")
+
+	_, err := s.handler(failingBoot{Fake: fake, bootErr: errors.New("tinyproxy.service is not active")}).Handle(context.Background(), Input{Dir: s.dir})
+
+	want := `run "orbit stop" in ` + strconv.Quote(s.dir)
+	if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "\x1b") || strings.Count(err.Error(), "\n") != 1 {
+		t.Errorf("Handle = %q, want %q, no escape byte, and only the line break that joins the two errors", err, want)
+	}
+}
+
+// TestHandleQuotesAHostileDirectoryWhenTheMarkerFails pins that the
+// not-provisioned error cannot write an escape sequence or a line break to
+// the terminal (#111).
+func TestHandleQuotesAHostileDirectoryWhenTheMarkerFails(t *testing.T) {
+	s := hostileSandboxHome(t)
+	fake := s.fake(orbstacktest.StateStopped)
+
+	_, err := s.handler(failingMarker{Fake: fake, err: errors.New("marker missing")}).Handle(context.Background(), Input{Dir: s.dir})
+
+	want := `run "orbit init" in ` + strconv.Quote(s.dir) + " to provision it again: marker missing"
+	if !errors.Is(err, ErrNotProvisioned) || err == nil || !strings.HasSuffix(err.Error(), want) || strings.ContainsAny(err.Error(), "\x1b\n") {
+		t.Errorf("Handle = %q, want it to end with %q", err, want)
+	}
+}
+
+// TestHandleQuotesAHostileDirectoryOnAMountMismatch pins that the
+// mount-mismatch error of the host check before the start cannot write an
+// escape sequence or a line break to the terminal (#111).
+func TestHandleQuotesAHostileDirectoryOnAMountMismatch(t *testing.T) {
+	s := hostileSandboxHome(t)
+	fake := s.fake(orbstacktest.StateStopped)
+	other := filepath.Join(s.home, "work", "c\x1b]0;x\x07d")
+	fake.Machines[s.name] = map[string]string{s.dir: other}
+
+	_, err := s.handler(fake).Handle(context.Background(), Input{Dir: s.dir})
+
+	for _, want := range []string{"want " + strconv.Quote(s.dir), strconv.Quote(other)} {
+		if !errors.Is(err, sandbox.ErrMountMismatch) || !strings.Contains(err.Error(), want) {
+			t.Errorf("Handle = %v, want %v with %s", err, sandbox.ErrMountMismatch, want)
+		}
+	}
+	if err != nil && strings.ContainsAny(err.Error(), "\x1b\n\x07") {
+		t.Errorf("Handle = %q, want no control character", err)
+	}
+}

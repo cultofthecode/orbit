@@ -4,6 +4,11 @@
 // the same machine name for a directory.
 package realpath
 
+import (
+	"os"
+	"path/filepath"
+)
+
 // Resolve returns the canonical path of the existing directory path:
 // absolute, with symlinks resolved, in the one spelling that the system
 // reports for the directory. It needs only search permission on the
@@ -27,4 +32,19 @@ func ResolveWithOwner(path string) (string, uint32, error) {
 // ResolveNoFirmlink the second. On other systems the two are equal.
 func ResolveNoFirmlink(path string) (string, error) {
 	return resolveNoFirmlink(path)
+}
+
+// UncleanAbs returns path, or for a relative path the working directory
+// followed by path, without cleaning either. A ".." stays in the result, so
+// the caller can apply it as the kernel does: to the target of the symlink
+// before it.
+func UncleanAbs(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return dir + string(filepath.Separator) + path, nil
 }

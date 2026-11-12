@@ -381,9 +381,20 @@ func ValidateMounts(dir string, mounts map[string]string) error {
 		return err
 	}
 	if len(mounts) != 1 || mounts[dir] != dir {
-		return fmt.Errorf("%w: want %s, got %v", ErrMountMismatch, dir, mounts)
+		return fmt.Errorf("%w: want %s, got %v", ErrMountMismatch, Printable(dir), printableMounts(mounts))
 	}
 	return nil
+}
+
+// printableMounts returns mounts with every mount point and host directory
+// in its Printable form, so that a stored path cannot write an escape
+// sequence or a line break to the terminal (#111).
+func printableMounts(mounts map[string]string) map[string]string {
+	printable := make(map[string]string, len(mounts))
+	for point, source := range mounts {
+		printable[Printable(point)] = Printable(source)
+	}
+	return printable
 }
 
 // CheckSSHForwarding reports whether a machine whose forwarding of the host
