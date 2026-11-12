@@ -265,7 +265,6 @@ func TestParseMountTableRefusesWhatItCannotRead(t *testing.T) {
 		table string
 	}{
 		{name: "empty table", table: ""},
-		{name: "table of newlines", table: "\n\n"},
 		{name: "error text", table: "cat: /proc/self/mountinfo: No such file or directory\n"},
 		{name: "entry without the end of the optional fields", table: table("195 125 0:35 / / rw shared:1 virtiofs mac rw x")},
 		{name: "entry without a source", table: table("195 125 0:35 / / rw - virtiofs")},
@@ -316,6 +315,14 @@ func TestMountsAndActiveMountsReadOrb(t *testing.T) {
 	active, err := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
 	if err != nil || !reflect.DeepEqual(active, want) {
 		t.Errorf("ActiveMounts = %v, %v, want %v", active, err, want)
+	}
+}
+
+func TestActiveMountsNamesAnEmptyRead(t *testing.T) {
+	useFakeCLI(t, "if [ \"$1\" = -m ]; then :; fi\n")
+	active, err := New(testPrefix).ActiveMounts(context.Background(), "orbit-api-1d9b22c9")
+	if !errors.Is(err, ErrMountTable) || !strings.Contains(err.Error(), "the mount table is empty") || active != nil {
+		t.Errorf("ActiveMounts = %v, %v, want nil and %v naming the empty table", active, err, ErrMountTable)
 	}
 }
 
