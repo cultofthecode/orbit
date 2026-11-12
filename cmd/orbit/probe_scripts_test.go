@@ -12,11 +12,7 @@ import (
 // root in a provisioned machine. Each failed check prints one line to
 // standard error.
 const agentProbes = `
-set -u
-failures=0
-fail() { echo "PROBE FAILED: $*" >&2; failures=$((failures + 1)); }
-as_agent() { runuser -u agent -- "$@"; }
-connect_code() { as_agent curl -s -m 15 -x http://127.0.0.1:3128 -o /dev/null -w '%{http_connect}' "https://$1/" || true; }
+` + failCounter + `` + asAgent + `connect_code() { as_agent curl -s -m 15 -x http://127.0.0.1:3128 -o /dev/null -w '%{http_connect}' "https://$1/" || true; }
 tunnel() { local code; code=$(connect_code "$1"); [ "$code" = 200 ] || fail "CONNECT $1:443 got $code, want a tunnel"; }
 refused() { local code; code=$(connect_code "$1"); [ "$code" = 403 ] || fail "CONNECT $1:443 got $code, want 403"; }
 claude=/home/agent/.local/bin/claude
@@ -26,18 +22,9 @@ claude=/home/agent/.local/bin/claude
 // helpers of the probes, a wait for the daemon, and the probe of a direct
 // connection from a container of the image orbit-it-curl.
 const agentHelpers = `
-set -u
-failures=0
-fail() { echo "PROBE FAILED: $*" >&2; failures=$((failures + 1)); }
-blocked() { local what=$1; shift; if "$@" >/dev/null 2>&1; then fail "$what succeeded"; fi; }
-allowed() { local what=$1; shift; "$@" >/dev/null 2>&1 || fail "$what failed"; }
-finish() { [ "$failures" -eq 0 ]; }
+` + failCounter + blockedAllowed + `finish() { [ "$failures" -eq 0 ]; }
 wait_docker() { for _ in $(seq 90); do docker info >/dev/null 2>&1 && return 0; sleep 1; done; fail "the daemon did not answer within 90 s"; return 1; }
-IMG=orbit-it-curl
-direct() { docker run --rm "$@" $IMG curl -sS --noproxy '*' -m 5 -k -o /dev/null https://1.1.1.1; }
-proxied() { docker run --rm "$@" $IMG curl -sS -m 20 -o /dev/null -w '%{http_code}' https://github.com; }
-no_direct() { local what=$1; shift; if direct "$@" >/dev/null 2>&1; then fail "direct connection from $what succeeded"; fi; }
-`
+` + containerHelpers + ``
 
 // leakProbe is the probe of a sub-uid process in the network namespace of
 // the machine, the leak path of the spike (A05). It starts the process with
@@ -157,11 +144,7 @@ const (
 // unforwardedProbes checks, in a sandbox without the SSH agent, the scenario
 // "Init with the flag" and that the push path to GitHub still works.
 const unforwardedProbes = `
-set -u
-failures=0
-fail() { echo "PROBE FAILED: $*" >&2; failures=$((failures + 1)); }
-as_agent() { runuser -u agent -- "$@"; }
-
+` + failCounter + `` + asAgent + `
 [ "$(id -nG agent)" = agent ] || fail "agent has groups: $(id -nG agent), want only agent"
 [ ! -e /opt/orbstack-guest/run/host-ssh-agent.sock ] || fail "the socket of a forwarded agent exists"
 [ -z "$(as_agent env | grep '^SSH_AUTH_SOCK=' || true)" ] || fail "SSH_AUTH_SOCK is set for agent"
@@ -189,16 +172,9 @@ esac
 // boundary is checked again after them. Each failed check prints one line
 // to standard error, and the script exits non-zero when any check failed.
 const probeScript = `
-set -u
-failures=0
-fail() { echo "PROBE FAILED: $*" >&2; failures=$((failures + 1)); }
-blocked() { local what=$1; shift; if "$@" >/dev/null 2>&1; then fail "$what succeeded"; fi; }
-allowed() { local what=$1; shift; "$@" >/dev/null 2>&1 || fail "$what failed"; }
-as_agent() { runuser -u agent -- "$@"; }
-as_uid() { local uid=$1; shift; setpriv --reuid "$uid" --regid "$uid" --clear-groups "$@"; }
+` + failCounter + blockedAllowed + `` + asAgent + `as_uid() { local uid=$1; shift; setpriv --reuid "$uid" --regid "$uid" --clear-groups "$@"; }
 direct() { curl -sSf --noproxy '*' -m 5 "$@"; }
-refused_by_proxy() { local what=$1; shift; local out; out=$("$@" 2>&1) && fail "$what succeeded"; case "$out" in *403*) ;; *) fail "$what failed without a 403: $out";; esac; }
-DEFAULT_UID=%d
+` + refusedByProxy + `DEFAULT_UID=%d
 MAC_PORT=%d
 HOST_CONTAINER=%s
 PROJECT_DIR='%s'
@@ -221,12 +197,7 @@ allowed "agent delete in the project directory" as_agent rm "$PROJECT_DIR/` + ho
 allowed "agent write in the project directory" as_agent sh -c 'echo "$2" > "$1"' sh "$PROJECT_DIR/` + agentFile + `" "` + agentFileContent + `"
 [ "$(as_agent cat "$PROJECT_DIR/` + agentFile + `")" = "` + agentFileContent + `" ] || fail "agent read its file in the project directory"
 
-for socket in /var/run/docker.sock /run/docker.sock; do blocked "agent sees $socket" as_agent test -e "$socket"; done
-for socket in $(find / \( -path /proc -o -path /sys \) -prune -o -type s -print 2>/dev/null); do
-  [ "$socket" != "/run/user/$(id -u agent)/docker.sock" ] || continue
-  [ "$(as_agent curl -s -m 2 --unix-socket "$socket" http://engine/_ping 2>/dev/null)" != OK ] || fail "agent reached an engine on $socket"
-done
-
+` + engineSockets + `
 if sudo -l -U "$DEFAULT_USER" 2>/dev/null | grep -q 'may run'; then fail "default user has a sudo rule"; fi
 passwd -S "$DEFAULT_USER" | grep -q ' L ' || fail "default user password not locked"
 for group in sudo admin adm; do
@@ -237,15 +208,7 @@ done
 allowed "root direct to 1.1.1.1" direct -k -o /dev/null https://1.1.1.1
 blocked "agent direct to 1.1.1.1" as_agent curl -sSf --noproxy '*' -m 5 -k https://1.1.1.1
 blocked "agent direct by name" as_agent curl -sSf --noproxy '*' -m 5 https://github.com
-blocked "agent DNS to OrbStack DNS" as_agent timeout 5 bash -c 'exec 3<>/dev/udp/0.250.250.200/53 && echo x >&3'
-blocked "agent UDP" as_agent timeout 5 bash -c 'echo x > /dev/udp/1.1.1.1/443'
-blocked "agent ping" as_agent ping -c1 -W2 1.1.1.1
-blocked "agent ping IPv6" as_agent ping -6 -c1 -W2 2606:4700:4700::1111
-blocked "agent TCP over IPv6" as_agent timeout 5 bash -c 'exec 3<>/dev/tcp/2606:4700:4700::1111/443'
-blocked "agent UDP over IPv6" as_agent timeout 5 bash -c 'echo x > /dev/udp/2606:4700:4700::1111/53'
-blocked "agent resolvectl" as_agent resolvectl query github.com
-blocked "agent getent hosts" as_agent getent hosts github.com
-blocked "default uid direct" as_uid "$DEFAULT_UID" curl -sSf --noproxy '*' -m 5 -k https://1.1.1.1
+` + dnsProbe + `blocked "default uid direct" as_uid "$DEFAULT_UID" curl -sSf --noproxy '*' -m 5 -k https://1.1.1.1
 blocked "container uid direct" as_uid 100000 curl -sSf --noproxy '*' -m 5 -k https://1.1.1.1
 
 allowed "agent proxy to github.com" as_agent curl -sSf -m 15 -x http://127.0.0.1:3128 -o /dev/null https://github.com
