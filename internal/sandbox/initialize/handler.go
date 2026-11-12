@@ -17,14 +17,22 @@ import (
 // install failed.
 const discardTimeout = 2 * time.Minute
 
+// stateRunning is the only state of an existing machine in which the handler
+// runs a command in it.
+const stateRunning = "running"
+
 // Machines is what the handler needs from OrbStack.
 type Machines interface {
+	// State returns the state of the machine name, or "" when no machine
+	// has that name. It never starts a machine.
+	State(ctx context.Context, name string) (string, error)
 	// Mounts returns the configured mounts of every machine: for each
 	// machine name, the host directory of each mount by its mount point.
 	Mounts(ctx context.Context) (map[string]map[string]string, error)
 	// ActiveMounts returns what the machine name mounts from the host, as
 	// its kernel reports it: the host path of each mounted directory by its
 	// mount point. It names the path, not the identity of the directory.
+	// It fails for a machine that is not running.
 	ActiveMounts(ctx context.Context, name string) (map[string]string, error)
 	// SSHAgentForwarded reports whether the machine name forwards the SSH
 	// agent of the host. It runs nothing in the machine.
@@ -91,7 +99,8 @@ type plan struct {
 }
 
 // Handle creates the machine of the project directory in.Dir, unless it
-// already exists, checks that the machine forwards the SSH agent as the
+// already exists, in which case it refuses a machine that is not running
+// with ErrNotRunning, before it runs a command in it, checks that the machine forwards the SSH agent as the
 // request says, which on an existing machine runs no command in it, checks
 // that the machine mounts exactly that directory, provisions it, also when it already existed, sets up the Docker client of the agent user, and then installs the agent
 // in.Agent as the agent user, when in.Agent is set. The allowlist of the
@@ -242,12 +251,26 @@ func (h Handler) unnestedMachines(ctx context.Context, name, dir string) (map[st
 // it.
 func (h Handler) ensureMachine(ctx context.Context, p plan, machines map[string]map[string]string) (bool, error) {
 	if _, exists := machines[p.name]; exists {
-		return false, nil
+		return false, h.checkRunning(ctx, p.name)
 	}
 	if err := h.Machines.Create(ctx, p.name, p.dir, p.forwardSSHAgent); err != nil {
 		return false, fmt.Errorf("create sandbox %s: %w", p.name, err)
 	}
 	return true, nil
+}
+
+// checkRunning fails with ErrNotRunning unless the existing machine name is
+// running. It reads the state with State, which never starts a machine, and
+// runs before any command in the machine.
+func (h Handler) checkRunning(ctx context.Context, name string) error {
+	state, err := h.Machines.State(ctx, name)
+	if err != nil {
+		return fmt.Errorf("state of sandbox %s: %w", name, err)
+	}
+	if state != stateRunning {
+		return fmt.Errorf("sandbox %s is %q: %w, then run \"orbit init\" again; init never starts a sandbox", name, state, ErrNotRunning)
+	}
+	return nil
 }
 
 // verifyForwarding checks that the machine of p forwards the SSH agent as p

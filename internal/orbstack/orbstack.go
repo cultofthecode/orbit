@@ -70,6 +70,10 @@ var allowedVariables = []string{
 	"LANG", "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC", "LC_TIME",
 }
 
+// stateRunning is the only state of a machine in which the client runs a
+// command in it.
+const stateRunning = "running"
+
 // mountSeparator divides the source and the destination of a mount.
 const mountSeparator = ":"
 
@@ -104,6 +108,10 @@ var (
 	// ErrMachineList reports a list of machines that does not say for
 	// certain in which state a machine is.
 	ErrMachineList = errors.New("machine list cannot be read")
+	// ErrMachineNotRunning reports a machine that is not in the state
+	// running, or does not exist. Every orb -m command starts a stopped
+	// machine, so the client runs none of them then.
+	ErrMachineNotRunning = errors.New("machine is not running")
 	// ErrMachineName reports a machine name with white space. A name that
 	// sandbox.MachineName computes has none, and Start and Stop pass only
 	// such a name to orb.
@@ -194,10 +202,12 @@ func (c *Client) Mounts(ctx context.Context) (map[string]map[string]string, erro
 // system in the machine name, by its mount point, as the kernel of the
 // machine reports it. The kernel reports the path of the mounted directory,
 // not its identity: a path swapped for a symlink between two starts of the
-// machine still shows as the stored path. It starts the machine when it is
-// stopped. It runs no command when name lacks the prefix of the client.
+// machine still shows as the stored path. It never starts the machine: it
+// fails with ErrMachineNotRunning, and runs no command in the machine,
+// unless State reports it running. It runs no command when name lacks the
+// prefix of the client.
 func (c *Client) ActiveMounts(ctx context.Context, name string) (map[string]string, error) {
-	if err := c.checkOwned(name); err != nil {
+	if err := c.checkRunningMachine(ctx, name); err != nil {
 		return nil, err
 	}
 	table, err := run(ctx, activeMountsArgs(name), nil)
@@ -263,9 +273,11 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 
 // RunAsRoot runs script with bash as root in the machine name, with the
 // script on standard input, and fails when the script exits non-zero. It
-// runs no command when name lacks the prefix of the client.
+// fails with ErrMachineNotRunning, and runs no command in the machine,
+// unless State reports it running. It runs no command when name lacks the
+// prefix of the client.
 func (c *Client) RunAsRoot(ctx context.Context, name string, script []byte) error {
-	if err := c.checkOwned(name); err != nil {
+	if err := c.checkRunningMachine(ctx, name); err != nil {
 		return err
 	}
 	if _, err := run(ctx, runAsRootArgs(name), script); err != nil {
@@ -277,9 +289,11 @@ func (c *Client) RunAsRoot(ctx context.Context, name string, script []byte) erro
 // RunAsAgent runs script with bash as AgentUser in the machine name, with
 // the script on standard input, and fails when the script exits non-zero.
 // The user is fixed; no argument of the caller reaches the command line. It
-// runs no command when name lacks the prefix of the client.
+// fails with ErrMachineNotRunning, and runs no command in the machine,
+// unless State reports it running. It runs no command when name lacks the
+// prefix of the client.
 func (c *Client) RunAsAgent(ctx context.Context, name string, script []byte) error {
-	if err := c.checkOwned(name); err != nil {
+	if err := c.checkRunningMachine(ctx, name); err != nil {
 		return err
 	}
 	if _, err := run(ctx, runAsAgentArgs(name), script); err != nil {
@@ -294,8 +308,10 @@ func (c *Client) RunAsAgent(ctx context.Context, name string, script []byte) err
 // of orb, which is that of the shell, and an error only when orb could not
 // run. While orb runs, the process catches SIGINT and SIGQUIT, so that the
 // signal ends orb and not the caller. The user is fixed, and dir is the
-// only value of the caller besides name on the command line. It runs no
-// command when name lacks the prefix of the client or dir cannot be mounted.
+// only value of the caller besides name on the command line. It fails with
+// ErrMachineNotRunning, and runs no command in the machine, unless State
+// reports it running. It runs no command when name lacks the prefix of the
+// client or dir cannot be mounted.
 func (c *Client) Shell(ctx context.Context, name, dir string, in io.Reader, out, errOut io.Writer) (int, error) {
 	if err := c.checkOwned(name); err != nil {
 		return 0, err
@@ -303,7 +319,7 @@ func (c *Client) Shell(ctx context.Context, name, dir string, in io.Reader, out,
 	if err := checkMountable(dir); err != nil {
 		return 0, err
 	}
-	if err := checkRunning(ctx); err != nil {
+	if err := c.checkRunningMachine(ctx, name); err != nil {
 		return 0, err
 	}
 	var status int
@@ -316,6 +332,25 @@ func (c *Client) Shell(ctx context.Context, name, dir string, in io.Reader, out,
 		return 0, fmt.Errorf("run a shell as %s in machine %s: %w", AgentUser, name, err)
 	}
 	return status, nil
+}
+
+// checkRunningMachine refuses a name that checkOwned refuses and a machine
+// whose state is not running, read with State, which never starts a machine.
+// It guards every orb -m command, because orb starts a stopped machine by
+// itself. The machine can stop between this check and the command that
+// follows; that window is accepted, as for OrbStack (#62, #75).
+func (c *Client) checkRunningMachine(ctx context.Context, name string) error {
+	state, err := c.State(ctx, name)
+	if err != nil {
+		return err
+	}
+	switch state {
+	case stateRunning:
+		return nil
+	case "":
+		return fmt.Errorf("%w: machine %q does not exist", ErrMachineNotRunning, name)
+	}
+	return fmt.Errorf("%w: machine %q is %s", ErrMachineNotRunning, name, state)
 }
 
 // checkOwned refuses a name that does not consist of the prefix of the client
