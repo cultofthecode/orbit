@@ -271,9 +271,9 @@ func createAgent(forwardSSHAgent bool) []string {
 	return script
 }
 
-// selfCheck verifies, as root, what the boundary depends on, among it that
-// /run/nologin is absent, so PAM logins stay possible. Any failure
-// stops the script before the marker is written.
+// selfCheck verifies, as root, what the boundary depends on, including that
+// /run/nologin is absent, so PAM logins stay possible. Any failure stops the
+// script before the marker is written.
 func selfCheck(defaultUID uint32, forwardSSHAgent bool) []string {
 	script := slices.Concat(boundaryCheck(), []string{
 		`[ ! -e /run/nologin ] || fail "logins are disabled"`,

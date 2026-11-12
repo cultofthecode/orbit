@@ -60,6 +60,20 @@ func TestOrbitRegistersVersion(t *testing.T) {
 	}
 }
 
+func TestOrbitDashVPrintsTheVersion(t *testing.T) {
+	root, err := newOrbit()
+	if err != nil {
+		t.Fatalf("newOrbit = %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), root, []string{"-v"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("orbit -v = %d, %s", code, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "orbit version ") {
+		t.Errorf("orbit -v = %q, want it to start with %q", stdout.String(), "orbit version ")
+	}
+}
+
 func TestOrbitRegistersStop(t *testing.T) {
 	root, err := newOrbit()
 	if err != nil {
