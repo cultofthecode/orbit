@@ -2941,3 +2941,109 @@ func TestHandleNamesAMachineThatVanishesBeforeItsStateIsRead(t *testing.T) {
 		t.Errorf("error %q must not say is \"\" or point to orbit start, and must point to orbit init", err)
 	}
 }
+
+// hopLayout builds one layout in which a protected path reaches its target
+// through a symlink that lies in the project directory proj.
+type hopLayout struct {
+	name  string
+	build func(t *testing.T, home, proj, outside string)
+}
+
+// TestHandleRefusesAProjectThatHoldsAHopOfAProtectedPath covers a protected
+// path whose chain passes a symlink inside a project directory (#36): the
+// agent could repoint that hop at a directory that it controls.
+func TestHandleRefusesAProjectThatHoldsAHopOfAProtectedPath(t *testing.T) {
+	layouts := []hopLayout{
+		{name: ".aws through proj/link", build: func(t *testing.T, home, proj, outside string) {
+			makeDirs(t, outside, "vault/aws")
+			symlinkAt(t, filepath.Join(outside, "vault", "aws"), filepath.Join(proj, "link"))
+			symlinkAt(t, filepath.Join(proj, "link"), filepath.Join(home, ".aws"))
+		}},
+		{name: ".ssh through a relative hop", build: func(t *testing.T, home, proj, outside string) {
+			makeDirs(t, outside, "vault/ssh")
+			rel, err := filepath.Rel(proj, filepath.Join(outside, "vault", "ssh"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			symlinkAt(t, rel, filepath.Join(proj, "link"))
+			symlinkAt(t, filepath.Join("proj", "link"), filepath.Join(home, ".ssh"))
+		}},
+		{name: ".claude through proj/link", build: func(t *testing.T, home, proj, outside string) {
+			makeDirs(t, outside, "vault/claude")
+			symlinkAt(t, filepath.Join(outside, "vault", "claude"), filepath.Join(proj, "link"))
+			symlinkAt(t, filepath.Join(proj, "link"), filepath.Join(home, ".claude"))
+		}},
+		{name: ".config through proj/cfg", build: func(t *testing.T, home, proj, outside string) {
+			makeDirs(t, home, "dotfiles/config/gh")
+			symlinkAt(t, filepath.Join(home, "dotfiles", "config"), filepath.Join(proj, "cfg"))
+			symlinkAt(t, filepath.Join(proj, "cfg"), filepath.Join(home, ".config"))
+		}},
+		{name: ".config through proj/cfg, gh missing", build: func(t *testing.T, home, proj, outside string) {
+			makeDirs(t, home, "dotfiles/config")
+			symlinkAt(t, filepath.Join(home, "dotfiles", "config"), filepath.Join(proj, "cfg"))
+			symlinkAt(t, filepath.Join(proj, "cfg"), filepath.Join(home, ".config"))
+		}},
+		{name: ".claude.json through proj/c.json", build: func(t *testing.T, home, proj, outside string) {
+			makeDirs(t, outside, "store/state")
+			writeFile(t, filepath.Join(outside, "store", "state", "claude.json"))
+			symlinkAt(t, filepath.Join(outside, "store", "state", "claude.json"), filepath.Join(proj, "c.json"))
+			symlinkAt(t, filepath.Join(proj, "c.json"), filepath.Join(home, ".claude.json"))
+		}},
+		{name: ".gnupg through a hop that dangles", build: func(t *testing.T, home, proj, outside string) {
+			symlinkAt(t, filepath.Join(outside, "missing"), filepath.Join(proj, "link"))
+			symlinkAt(t, filepath.Join(proj, "link"), filepath.Join(home, ".gnupg"))
+		}},
+	}
+	spellings := []struct {
+		name  string
+		spell func(path string) string
+	}{
+		{name: "canonical", spell: func(path string) string { return path }},
+		{name: "upper case", spell: strings.ToUpper},
+		{name: "data volume", spell: func(path string) string { return dataVolume + path }},
+	}
+	for _, layout := range layouts {
+		for _, spelling := range spellings {
+			t.Run(layout.name+", "+spelling.name, func(t *testing.T) {
+				home := newDir(t)
+				outside := newDir(t)
+				makeDirs(t, home, "proj/sub", "work/api")
+				t.Setenv("HOME", home)
+				proj := filepath.Join(home, "proj")
+				layout.build(t, home, proj, outside)
+				requireSpelling(t, spelling.spell(proj))
+
+				checkRefusals(t, account(home), []refusal{
+					{name: "directory that holds the hop", dir: spelling.spell(proj), want: sandbox.ErrProtectedFile},
+				})
+			})
+		}
+	}
+}
+
+// TestHandleRefusesTheAncestorsOfAHopOfAProtectedPath covers the directories
+// that contain the directory that holds a hop, and accepts the directories
+// that do not hold it.
+func TestHandleRefusesTheAncestorsOfAHopOfAProtectedPath(t *testing.T) {
+	home := newDir(t)
+	outside := newDir(t)
+	makeDirs(t, home, "work/proj/sub", "work/other", "vault")
+	makeDirs(t, outside, "vault/aws")
+	symlinkAt(t, filepath.Join(outside, "vault", "aws"), filepath.Join(home, "work", "proj", "link"))
+	symlinkAt(t, filepath.Join(home, "work", "proj", "link"), filepath.Join(home, ".aws"))
+	t.Setenv("HOME", home)
+
+	checkRefusals(t, account(home), []refusal{
+		{name: "directory that holds the hop", dir: filepath.Join(home, "work", "proj"), want: sandbox.ErrProtectedFile},
+		{name: "ancestor of the directory that holds the hop", dir: filepath.Join(home, "work"), want: sandbox.ErrProtectedFile},
+	})
+	for _, dir := range []string{
+		filepath.Join(home, "work", "proj", "sub"),
+		filepath.Join(home, "work", "other"),
+		filepath.Join(home, "vault"),
+	} {
+		t.Run("accepts "+dir, func(t *testing.T) {
+			checkCreates(t, account(home), dir, dir)
+		})
+	}
+}

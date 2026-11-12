@@ -245,7 +245,8 @@ func allProtectedSpellings(homes []string) ([]string, error) {
 // allFileDirSpellings returns every spelling of the directories that hold
 // the protected files of homes and the protected files that the environment
 // moves, or would be created in, and of the directories that hold a symlink
-// on the path of a location that the environment moves.
+// on the path of a protected path of homes or of a location that the
+// environment moves.
 func allFileDirSpellings(homes []string) ([]string, error) {
 	fileDirs, err := protectedFileDirSpellings(homes)
 	if err != nil {
@@ -259,7 +260,27 @@ func allFileDirSpellings(homes []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return distinct(slices.Concat(fileDirs, relocated, hops)), nil
+	homeHops, err := homeHopSpellings(homes)
+	if err != nil {
+		return nil, fmt.Errorf("protected path: %w", err)
+	}
+	return distinct(slices.Concat(fileDirs, relocated, hops, homeHops)), nil
+}
+
+// homeHopSpellings returns every spelling of each directory that holds a
+// symlink on the chain of a protected path of homes, as linkSpellings walks
+// it: the path itself and a parent component such as .config. A hop that
+// lies in a project directory lets the agent repoint the path on the host.
+func homeHopSpellings(homes []string) ([]string, error) {
+	var holders []string
+	for _, path := range slices.Concat(protectedPaths(homes), protectedFilePaths(homes)) {
+		found, err := chainHolders(path)
+		if err != nil {
+			return nil, err
+		}
+		holders = append(holders, found...)
+	}
+	return holders, nil
 }
 
 // relocatedHopSpellings returns every spelling of each directory that holds
