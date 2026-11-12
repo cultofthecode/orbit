@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -483,10 +484,12 @@ func TestMissingCLIIsWrapped(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	_, err := New(testPrefix).Exists(context.Background(), "orbit-api-1d9b22c9")
-	if !errors.Is(err, exec.ErrNotFound) {
-		t.Fatalf("Exists without orb = %v, want %v", err, exec.ErrNotFound)
+	if !errors.Is(err, exec.ErrNotFound) || !errors.Is(err, ErrNotInstalled) || errors.Is(err, ErrNotRunning) {
+		t.Fatalf("Exists without orb = %v, want %v and %v and not %v", err, exec.ErrNotFound, ErrNotInstalled, ErrNotRunning)
 	}
-	if want := `list machines: orb status: exec: "orb": executable file not found in $PATH`; err.Error() != want {
+	want := `list machines: OrbStack is not installed or orb is not on PATH (orb status: exec: "orb": executable file not found in $PATH); ` +
+		"install OrbStack with `brew install --cask orbstack` or from https://orbstack.dev, make sure orb is on PATH, and try again"
+	if err.Error() != want {
 		t.Errorf("Exists without orb = %q, want %q", err.Error(), want)
 	}
 }
@@ -616,6 +619,22 @@ func TestStatusError(t *testing.T) {
 				t.Errorf("statusError(%q, %v) = %v, want %v: %v", test.status, test.err, err, ErrNotRunning, test.wantStopped)
 			}
 		})
+	}
+}
+
+func TestStatusErrorForAMissingOrb(t *testing.T) {
+	missing := fmt.Errorf("orb status: %w", exec.ErrNotFound)
+
+	for _, homeCause := range []string{"", "HOME is not absolute"} {
+		err := statusError("", missing, homeCause)
+		if !errors.Is(err, ErrNotInstalled) || !errors.Is(err, exec.ErrNotFound) || errors.Is(err, ErrNotRunning) || errors.Is(err, ErrHome) {
+			t.Errorf("statusError(missing orb, %q) = %v, want %v and %v only", homeCause, err, ErrNotInstalled, exec.ErrNotFound)
+		}
+		for _, want := range []string{"OrbStack", "brew install --cask orbstack", "https://orbstack.dev", "orb is not on PATH"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("statusError(missing orb, %q) = %q, want %q in the text", homeCause, err, want)
+			}
+		}
 	}
 }
 
@@ -1825,7 +1844,11 @@ func TestListFailureDoesNotRepeatListInItsMessage(t *testing.T) {
 	if !errors.Is(err, exec.ErrNotFound) {
 		t.Fatalf("List without orb = %v, want %v", err, exec.ErrNotFound)
 	}
-	if want := `orb status: exec: "orb": executable file not found in $PATH`; err.Error() != want {
+	if !errors.Is(err, ErrNotInstalled) {
+		t.Errorf("List without orb = %v, want %v", err, ErrNotInstalled)
+	}
+	if want := `OrbStack is not installed or orb is not on PATH (orb status: exec: "orb": executable file not found in $PATH); ` +
+		"install OrbStack with `brew install --cask orbstack` or from https://orbstack.dev, make sure orb is on PATH, and try again"; err.Error() != want {
 		t.Errorf("List without orb = %q, want %q", err.Error(), want)
 	}
 }
