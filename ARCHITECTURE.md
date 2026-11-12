@@ -54,7 +54,8 @@ internal/
                            (Go refuses to import a package that is named init)
     stop/                  slice of orbit stop
     start/                 slice of orbit start: the only slice that starts a machine
-    shell/  destroy/  list/
+    destroy/               slice of orbit destroy: deletes the sandbox of the current directory after a confirmation; runs no -m command
+    shell/  list/
     internal/              private to the module (enforced by the Go compiler)
       hostcheck/           host-side checks before a machine is created or started, shared by init and start
       realpath/            canonical path of a directory; every slice resolves the project directory with it
@@ -77,7 +78,7 @@ internal/
 | Credential | `internal/credential` | Which host credentials a sandbox may get, and in which form. By default only the forwarded SSH agent socket, which `--no-ssh-forwarding` removes (R08). Until a second credential exists, the forwarding decision is the pure function `sandbox.CheckSSHForwarding` in `internal/sandbox`, and this module stays planned. | `kernel` |
 | Provision | `internal/provision` | The root-owned setup of a machine: the agent user without sudo, the firewall, the proxy service, rootless Docker, the fixed toolchain. Owns the firewall rules as a pure function. | `policy`, `kernel` |
 | Proxy | `internal/proxy` | The configuration of tinyproxy, the egress proxy that root runs in the machine (D22). The proxy enforces the policy. | `policy`, `kernel` |
-| OrbStack adapter | `internal/orbstack` | The only package with OrbStack-specific code: create, start (`Start`), run a command in, stop (`Stop`), remove, list (`List`: names with the Orbit prefix, their state and stored mounts, read-only), and read the state (`State`) of isolated machines, and open the login shell of the agent user in one (`Shell`) (R07). `Start` and `Stop` always name one machine. | — |
+| OrbStack adapter | `internal/orbstack` | The only package with OrbStack-specific code: create, start (`Start`), run a command in, stop (`Stop`), remove (`Delete`), list (`List`: names with the Orbit prefix, their state and stored mounts, read-only), and read the state (`State`) of isolated machines, and open the login shell of the agent user in one (`Shell`) (R07). `Start`, `Stop`, and `Delete` always name one machine: they refuse a name without the Orbit prefix or with white space before any command, because `orb delete` takes several names and `--all` deletes every machine. | — |
 | Kernel | `internal/kernel` | Shared error and result types. Stays small. | nothing in this repository |
 
 ### Slice anatomy
