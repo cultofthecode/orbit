@@ -247,6 +247,7 @@ func TestScriptSelfChecks(t *testing.T) {
 	for _, want := range []string{
 		`nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`,
 		"for unit in nftables.service orbit-proxy-address.service tinyproxy.service orbit-harden.service systemd-user-sessions.service; do",
+		`[ ! -e /run/nologin ] || fail "logins are disabled"`,
 		"for unit in systemd-resolved.service systemd-resolved-varlink.socket systemd-resolved-monitor.socket; do",
 		`  if [ "$uid" -lt 1000 ] && [ "$uid" -ne 501 ]; then`,
 		`if runuser -u agent -- sudo -n true 2>/dev/null; then fail "agent can use sudo"; fi`,
