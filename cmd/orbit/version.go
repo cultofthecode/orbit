@@ -44,7 +44,9 @@ func versionText(linkedVersion, linkedCommit string, readBuildInfo buildInfoRead
 }
 
 // withVersion gives root the flag --version, which prints "orbit version"
-// followed by text.
+// followed by text. Cobra also gives the flag the shorthand -v. That reserves
+// -v on the root command, so a future --verbose cannot use it there; this is
+// accepted, and a subcommand may still use -v.
 func withVersion(root *cobra.Command, text string) *cobra.Command {
 	root.Version = text
 	root.SetVersionTemplate("orbit version {{.Version}}\n")
