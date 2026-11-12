@@ -271,10 +271,12 @@ func createAgent(forwardSSHAgent bool) []string {
 	return script
 }
 
-// selfCheck verifies, as root, what the boundary depends on. Any failure
+// selfCheck verifies, as root, what the boundary depends on, among it that
+// /run/nologin is absent, so PAM logins stay possible. Any failure
 // stops the script before the marker is written.
 func selfCheck(defaultUID uint32, forwardSSHAgent bool) []string {
 	script := slices.Concat(boundaryCheck(), []string{
+		`[ ! -e /run/nologin ] || fail "logins are disabled"`,
 		"for unit in " + strings.Join(resolvedUnits, " ") + "; do",
 		`  [ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" = masked ] || fail "$unit is not masked"`,
 		`  if systemctl is-active --quiet "$unit"; then fail "$unit is active"; fi`,
