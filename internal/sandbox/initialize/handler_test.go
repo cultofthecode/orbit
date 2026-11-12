@@ -269,6 +269,7 @@ func checkedCreateCalls(name, project string) []orbstacktest.Call {
 func checkedKeepCalls(name string) []orbstacktest.Call {
 	return []orbstacktest.Call{
 		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpState, Name: name},
 		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpActiveMounts, Name: name},
@@ -676,22 +677,22 @@ func TestHandleRefusesAnExistingMachineThatMountsAnotherDirectory(t *testing.T) 
 		{
 			name:       "configured with .ssh",
 			configured: map[string]string{project: ssh},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "configured with a second mount",
 			configured: map[string]string{project: project, "/home/dev": home},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "configured at another path",
 			configured: map[string]string{"/mnt/mac" + project: project},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "no mount",
 			configured: map[string]string{},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "mounts .ssh after a swap",
@@ -2707,7 +2708,7 @@ func TestHandleRefusesAnExistingMachineWhoseForwardingDiffers(t *testing.T) {
 			if err != nil && !strings.Contains(err.Error(), "--no-ssh-forwarding") {
 				t.Errorf("error %q does not name --no-ssh-forwarding", err)
 			}
-			want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
+			want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
 			if !slices.Equal(fake.Calls, want) {
 				t.Errorf("calls = %v, want only %v: no command in the machine, no start, no delete", fake.Calls, want)
 			}
@@ -2760,7 +2761,7 @@ func TestHandleStopsWhenTheForwardingCannotBeRead(t *testing.T) {
 		if !errors.Is(err, boom) {
 			t.Errorf("Handle = %v, want %v", err, boom)
 		}
-		want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
+		want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
 		if !slices.Equal(fake.Calls, want) {
 			t.Errorf("calls = %v, want %v", fake.Calls, want)
 		}
@@ -2846,5 +2847,97 @@ func TestHandleKeepsAnExistingMachineWhenTheClientSetupFails(t *testing.T) {
 	}
 	if want := slices.Concat(checkedKeepCalls(name), agentCalls(name)[:2]); !slices.Equal(fake.Calls, want) {
 		t.Errorf("calls = %v, want %v (no install)", fake.Calls, want)
+	}
+}
+
+func TestHandleRefusesAnExistingMachineThatIsNotRunning(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	tests := []struct {
+		name  string
+		state string
+	}{
+		{name: "stopped", state: orbstacktest.StateStopped},
+		{name: "starting", state: "starting"},
+		{name: "unknown state", state: "paused"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.Machines[name] = map[string]string{project: project}
+			fake.Forwarded[name] = true
+			fake.States[name] = test.state
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+			if !errors.Is(err, ErrNotRunning) || got != (Output{}) {
+				t.Fatalf("Handle = %+v, %v, want %v", got, err, ErrNotRunning)
+			}
+			if !strings.Contains(err.Error(), "orbit start") {
+				t.Errorf("error %q does not name orbit start", err)
+			}
+			want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}}
+			if !slices.Equal(fake.Calls, want) {
+				t.Errorf("calls = %v, want only %v: no command in the machine, no start, no delete", fake.Calls, want)
+			}
+			if state := fake.States[name]; state != test.state {
+				t.Errorf("state = %q, want %q unchanged", state, test.state)
+			}
+			if _, kept := fake.Machines[name]; !kept {
+				t.Error("the existing machine was deleted")
+			}
+		})
+	}
+}
+
+func TestHandleStopsWhenTheStateCannotBeRead(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	boom := errors.New("orb list failed")
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+	fake.StateErr = boom
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+	if !errors.Is(err, boom) {
+		t.Errorf("Handle = %v, want %v", err, boom)
+	}
+	want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}}
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want only %v", fake.Calls, want)
+	}
+}
+
+// vanishingMachine is a fake that deletes a machine when init lists the
+// mounts, so that the machine is gone when init reads its state.
+type vanishingMachine struct {
+	*orbstacktest.Fake
+	name string
+}
+
+func (v vanishingMachine) Mounts(ctx context.Context) (map[string]map[string]string, error) {
+	mounts, err := v.Fake.Mounts(ctx)
+	delete(v.Machines, v.name)
+	return mounts, err
+}
+
+func TestHandleNamesAMachineThatVanishesBeforeItsStateIsRead(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+	fake.Forwarded[name] = true
+
+	got, err := newHandlerOn(vanishingMachine{Fake: fake, name: name}, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+	if !errors.Is(err, ErrSandboxGone) || errors.Is(err, ErrNotRunning) || got != (Output{}) {
+		t.Fatalf("Handle = %+v, %v, want %v and not %v", got, err, ErrSandboxGone, ErrNotRunning)
+	}
+	if strings.Contains(err.Error(), `""`) || strings.Contains(err.Error(), "orbit start") || !strings.Contains(err.Error(), "orbit init") {
+		t.Errorf("error %q must not say is \"\" or point to orbit start, and must point to orbit init", err)
 	}
 }

@@ -347,3 +347,49 @@ func TestCreateFixesTheSSHAgentForwardingAndTheAdapterReadsItBack(t *testing.T) 
 		})
 	}
 }
+
+// TestNoMachineCommandStartsAStoppedMachine stops the machine of the test and
+// calls every method of the client that runs orb -m: each fails with
+// ErrMachineNotRunning and the machine stays stopped (#75). After Start, the
+// same calls work.
+func TestNoMachineCommandStartsAStoppedMachine(t *testing.T) {
+	client, name := newMachine(t, hostDir(t))
+	ctx := testContext(t)
+	if err := client.RunAsRoot(ctx, name, []byte("set -eu\nuseradd --create-home --shell /bin/bash --user-group "+AgentUser+"\n")); err != nil {
+		t.Fatalf("create the agent user: %v", err)
+	}
+	if err := client.Stop(ctx, name); err != nil {
+		t.Fatalf("Stop(%q) = %v", name, err)
+	}
+	expectState(ctx, t, client, name, "stopped", "after Stop")
+
+	_, activeMountsErr := client.ActiveMounts(ctx, name)
+	_, shellErr := client.Shell(ctx, name, hostDir(t), strings.NewReader("exit\n"), &strings.Builder{}, &strings.Builder{})
+	results := map[string]error{
+		"ActiveMounts": activeMountsErr,
+		"RunAsRoot":    client.RunAsRoot(ctx, name, []byte("true\n")),
+		"RunAsAgent":   client.RunAsAgent(ctx, name, []byte("true\n")),
+		"Shell":        shellErr,
+	}
+
+	for operation, err := range results {
+		if !errors.Is(err, ErrMachineNotRunning) {
+			t.Errorf("%s in a stopped machine = %v, want %v", operation, err, ErrMachineNotRunning)
+		}
+	}
+	expectState(ctx, t, client, name, "stopped", "after the refused calls")
+	if err := client.Start(ctx, name); err != nil {
+		t.Fatalf("Start(%q) = %v", name, err)
+	}
+	if err := client.RunAsAgent(ctx, name, []byte("true\n")); err != nil {
+		t.Errorf("RunAsAgent after Start = %v", err)
+	}
+}
+
+// expectState fails t unless the machine name is in state want.
+func expectState(ctx context.Context, t *testing.T, client *Client, name, want, when string) {
+	t.Helper()
+	if got, err := client.State(ctx, name); err != nil || got != want {
+		t.Errorf("state of %s %s = %q, %v, want %q", name, when, got, err, want)
+	}
+}

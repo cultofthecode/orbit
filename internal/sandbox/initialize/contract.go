@@ -5,7 +5,11 @@
 // by --agent as the agent user.
 package initialize
 
-import "github.com/cultofthecode/orbit/internal/sandbox"
+import (
+	"errors"
+
+	"github.com/cultofthecode/orbit/internal/sandbox"
+)
 
 // Input is the request to create the sandbox of a project directory.
 type Input struct {
@@ -42,7 +46,8 @@ type Output struct {
 // Orbit cannot protect with sandbox.ErrRelocatedPath, and a machine that
 // mounts something else than the project directory with
 // sandbox.ErrMountMismatch, and a machine whose SSH agent forwarding differs
-// from the request with sandbox.ErrSSHForwardingMismatch.
+// from the request with sandbox.ErrSSHForwardingMismatch, and an existing
+// machine in any state but running with ErrNotRunning.
 var ErrNotDirectory = sandbox.ErrNotDirectory
 
 // ErrLinkedSandboxDir reports another machine whose stored mount path passes
@@ -55,3 +60,14 @@ var ErrLinkedSandboxDir = sandbox.ErrLinkedSandboxDir
 // forwarding differs from the request, which init refuses before it runs a
 // command in the machine. It is sandbox.ErrSSHForwardingMismatch.
 var ErrSSHForwardingMismatch = sandbox.ErrSSHForwardingMismatch
+
+// ErrNotRunning reports an existing sandbox in any state but running. Init
+// refuses it before it runs a command in the machine, because every command
+// in a machine starts it, and only "orbit start" starts a sandbox, after its
+// own checks of the mounts.
+var ErrNotRunning = errors.New(`run "orbit start" first`)
+
+// ErrSandboxGone reports a sandbox that existed when init looked and is gone
+// when init reads its state, for example deleted while init ran. Init stops
+// before it runs a command in the machine.
+var ErrSandboxGone = errors.New(`machine not found; run "orbit init" again`)
