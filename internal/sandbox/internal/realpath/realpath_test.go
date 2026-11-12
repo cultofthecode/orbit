@@ -62,6 +62,9 @@ func TestResolve(t *testing.T) {
 	root := newTree(t)
 	project := filepath.Join(root, "Work", "api")
 	t.Chdir(root)
+	if err := os.Symlink(project, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name string
 		path string
@@ -75,6 +78,8 @@ func TestResolve(t *testing.T) {
 		{name: "symlink to a directory", path: symlink(t, project), want: project},
 		{name: "symlink to a symlink", path: symlink(t, symlink(t, project)), want: project},
 		{name: "path through a symlink", path: symlink(t, root) + "/Work/api", want: project},
+		{name: "dot dot after a symlink", path: symlink(t, project) + "/..", want: filepath.Join(root, "Work")},
+		{name: "relative dot dot after a symlink", path: "link/..", want: filepath.Join(root, "Work")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

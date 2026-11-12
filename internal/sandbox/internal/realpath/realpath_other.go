@@ -11,7 +11,9 @@ import (
 )
 
 // resolve refuses a path that is not an existing directory, makes it
-// absolute, and resolves its symlinks.
+// absolute, and resolves its symlinks. It does not clean the path first:
+// filepath.EvalSymlinks applies a ".." to the target of the symlink before
+// it, as the kernel does, and a lexical clean would drop that symlink.
 func resolve(path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -20,11 +22,24 @@ func resolve(path string) (string, error) {
 	if !info.IsDir() {
 		return "", &fs.PathError{Op: "resolve", Path: path, Err: syscall.ENOTDIR}
 	}
-	absolute, err := filepath.Abs(path)
+	absolute, err := uncleanAbs(path)
 	if err != nil {
 		return "", err
 	}
 	return filepath.EvalSymlinks(absolute)
+}
+
+// uncleanAbs returns path, or for a relative path the working directory
+// followed by path, without cleaning either.
+func uncleanAbs(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return dir + string(filepath.Separator) + path, nil
 }
 
 // resolveNoFirmlink equals resolve: only macOS has firmlinks.

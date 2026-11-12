@@ -193,11 +193,11 @@ func loadFacts(path string, currentUser func() (*user.User, error)) (sandbox.Pro
 	if err != nil {
 		return sandbox.ProjectDir{}, fmt.Errorf("project directory: %w", err)
 	}
-	uid, homes, err := loadUser(currentUser)
+	uid, homes, rawHomes, err := loadUser(currentUser)
 	if err != nil {
 		return sandbox.ProjectDir{}, err
 	}
-	protected, fileDirs, files, err := loadProtected(homes)
+	protected, fileDirs, files, err := loadProtected(homes, rawHomes)
 	if err != nil {
 		return sandbox.ProjectDir{}, err
 	}
@@ -208,15 +208,16 @@ func loadFacts(path string, currentUser func() (*user.User, error)) (sandbox.Pro
 }
 
 // loadProtected returns every spelling of the protected directories of homes
-// and of the environment, and of the directories that hold a protected file,
+// and of the environment, and of the directories that hold a protected file
+// or a symlink on the chain of a protected path of homes or rawHomes,
 // together with what the symlinks in those protected directories lead to,
 // and the files with more than one hard link that it found in them.
-func loadProtected(homes []string) ([]string, []string, foundFiles, error) {
+func loadProtected(homes, rawHomes []string) ([]string, []string, foundFiles, error) {
 	protected, err := allProtectedSpellings(homes)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	fileDirs, err := allFileDirSpellings(homes)
+	fileDirs, err := allFileDirSpellings(homes, rawHomes)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -245,8 +246,9 @@ func allProtectedSpellings(homes []string) ([]string, error) {
 // allFileDirSpellings returns every spelling of the directories that hold
 // the protected files of homes and the protected files that the environment
 // moves, or would be created in, and of the directories that hold a symlink
-// on the path of a location that the environment moves.
-func allFileDirSpellings(homes []string) ([]string, error) {
+// on the path of a protected path of homes or rawHomes or of a location that
+// the environment moves.
+func allFileDirSpellings(homes, rawHomes []string) ([]string, error) {
 	fileDirs, err := protectedFileDirSpellings(homes)
 	if err != nil {
 		return nil, fmt.Errorf("protected file: %w", err)
@@ -259,7 +261,68 @@ func allFileDirSpellings(homes []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return distinct(slices.Concat(fileDirs, relocated, hops)), nil
+	homeHops, err := homeHopSpellings(homes, rawHomes)
+	if err != nil {
+		return nil, fmt.Errorf("protected path: %w", err)
+	}
+	return distinct(slices.Concat(fileDirs, relocated, hops, homeHops)), nil
+}
+
+// homeHopSpellings returns every spelling of each directory that holds a
+// symlink on the chain of a protected path of homes or of rawHomes, as
+// kernelChainHolders walks it: the path itself, a parent component such as
+// .config, and the home itself as the environment or the account database
+// names it. A hop that lies in a project directory lets the agent repoint
+// the path on the host.
+func homeHopSpellings(homes, rawHomes []string) ([]string, error) {
+	raw, err := rawProtectedPaths(rawHomes)
+	if err != nil {
+		return nil, err
+	}
+	var holders []string
+	for _, path := range slices.Concat(protectedPaths(homes), protectedFilePaths(homes), raw) {
+		found, err := kernelChainHolders(path)
+		if err != nil {
+			return nil, err
+		}
+		holders = append(holders, found...)
+	}
+	return holders, nil
+}
+
+// rawProtectedPaths returns the protected paths of each of rawHomes, the
+// home directories as the environment and the account database name them,
+// with no name of the home cleaned away: a symlink in the value of HOME lies
+// on the chain of every protected path, and a ".." after it names the parent
+// of its target. A relative home is taken from the working directory, as
+// the kernel takes it.
+func rawProtectedPaths(rawHomes []string) ([]string, error) {
+	root := string(filepath.Separator)
+	names := slices.Concat(sandbox.ProtectedDirs(root), sandbox.ProtectedFiles(root))
+	var paths []string
+	for _, home := range rawHomes {
+		absolute, err := absoluteRaw(home)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range names {
+			paths = append(paths, absolute+name)
+		}
+	}
+	return paths, nil
+}
+
+// absoluteRaw returns path, or for a relative path the working directory
+// followed by path, without cleaning either.
+func absoluteRaw(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return dir + string(filepath.Separator) + path, nil
 }
 
 // relocatedHopSpellings returns every spelling of each directory that holds
@@ -286,6 +349,17 @@ func chainHolders(path string) ([]string, error) {
 	return holders, err
 }
 
+// kernelChainHolders returns every spelling of each directory that holds a
+// symlink on the chain of path, as chainHolders does, but reads each target
+// as the kernel reads it: a relative target from the directory that holds
+// the link, and a ".." name as the parent of the directory that the walk has
+// reached, which holds no symlink. So a target that has ".." after a name is
+// followed, not refused (#43 tracks the walk of the protected directories).
+func kernelChainHolders(path string) ([]string, error) {
+	_, holders, err := chainSpellings(path, os.Readlink)
+	return holders, err
+}
+
 // relocatedSpellings returns what resolve returns for each protected
 // location that locate finds in the environment of the user who runs Orbit.
 // It reads only the values of the variables, never a file that they name
@@ -306,22 +380,28 @@ func relocatedSpellings(locate func(func(string) (string, bool)) ([]sandbox.Relo
 	return spellings, nil
 }
 
-// loadUser returns the uid of the user who runs Orbit and every spelling of
-// the home directories of that user.
-func loadUser(currentUser func() (*user.User, error)) (uint32, []string, error) {
+// loadUser returns the uid of the user who runs Orbit, every spelling of
+// the home directories of that user, and those home directories as the
+// environment and the account database name them.
+func loadUser(currentUser func() (*user.User, error)) (uint32, []string, []string, error) {
 	account, err := currentUser()
 	if err != nil {
-		return 0, nil, fmt.Errorf("current user: %w", err)
+		return 0, nil, nil, fmt.Errorf("current user: %w", err)
 	}
 	uid, err := strconv.ParseUint(account.Uid, 10, 32)
 	if err != nil {
-		return 0, nil, fmt.Errorf("uid of the current user: %w", err)
+		return 0, nil, nil, fmt.Errorf("uid of the current user: %w", err)
 	}
-	homes, err := homeSpellings(account.HomeDir)
+	environmentHome, err := os.UserHomeDir()
 	if err != nil {
-		return 0, nil, fmt.Errorf("home directory: %w", err)
+		return 0, nil, nil, fmt.Errorf("home directory: %w", err)
 	}
-	return uint32(uid), homes, nil
+	rawHomes := []string{environmentHome, account.HomeDir}
+	homes, err := homeSpellings(rawHomes)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("home directory: %w", err)
+	}
+	return uint32(uid), homes, rawHomes, nil
 }
 
 // resolveDir returns the canonical path of path, which must be an existing
@@ -334,17 +414,12 @@ func resolveDir(path string) (string, uint32, error) {
 	return dir, owner, err
 }
 
-// homeSpellings returns every spelling of the home directories of the user:
-// the one of the environment and accountHome, the one of the account
-// database. Both must exist, because the environment alone can name any
-// directory.
-func homeSpellings(accountHome string) ([]string, error) {
-	environmentHome, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
+// homeSpellings returns every spelling of rawHomes, the home directories of
+// the user: the one of the environment and the one of the account database.
+// Both must exist, because the environment alone can name any directory.
+func homeSpellings(rawHomes []string) ([]string, error) {
 	var homes []string
-	for _, home := range []string{environmentHome, accountHome} {
+	for _, home := range rawHomes {
 		spellings, err := dirSpellings(home)
 		if err != nil {
 			return nil, quotedPathError(home, err)
@@ -808,7 +883,7 @@ func visitEntry(path string, mode fs.FileMode, files foundFiles) ([]string, []st
 // followLink returns what linkSpellings returns for the symlink link, and
 // adds the regular file where its chain ends to files.
 func followLink(link string, files foundFiles) ([]string, []string, error) {
-	walk, missing, err := walkChain(link)
+	walk, missing, err := walkChain(link, linkTarget)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -830,7 +905,13 @@ func followLink(link string, files foundFiles) ([]string, []string, error) {
 // The agent could replace a hop in a mounted directory, so each of them is
 // protected as the holder of a protected file.
 func linkSpellings(link string) ([]string, []string, error) {
-	walk, missing, err := walkChain(link)
+	return chainSpellings(link, linkTarget)
+}
+
+// chainSpellings returns what linkSpellings returns for the chain of path,
+// with readLink as the reader of the target of each symlink on it.
+func chainSpellings(path string, readLink func(string) (string, error)) ([]string, []string, error) {
+	walk, missing, err := walkChain(path, readLink)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -841,9 +922,10 @@ func linkSpellings(link string) ([]string, []string, error) {
 }
 
 // walkChain resolves the chain of the symlink link one name at a time, as
-// the kernel does, and reports whether it leads nowhere.
-func walkChain(link string) (*chainWalk, bool, error) {
-	walk := &chainWalk{resolved: string(filepath.Separator), rest: pathNames(link)}
+// the kernel does, with readLink as the reader of the target of each symlink,
+// and reports whether it leads nowhere.
+func walkChain(link string, readLink func(string) (string, error)) (*chainWalk, bool, error) {
+	walk := &chainWalk{resolved: string(filepath.Separator), rest: pathNames(link), readLink: readLink}
 	for len(walk.rest) > 0 {
 		missing, err := walk.step()
 		if err != nil || missing {
@@ -860,6 +942,10 @@ type chainWalk struct {
 	rest     []string
 	hops     int
 	holders  []string
+	// readLink returns the target of a symlink: linkTarget, which makes it
+	// absolute and refuses ".." after a name, or os.Readlink, whose relative
+	// target the walk continues from the directory that holds the link.
+	readLink func(string) (string, error)
 }
 
 // step resolves the next name of the path. It reports whether that name does
@@ -881,13 +967,14 @@ func (w *chainWalk) step() (bool, error) {
 }
 
 // follow replaces the symlink link, which is the next name of the path, with
-// its target, and keeps the directory that holds link. It follows at most
-// maxLinkHops symlinks.
+// its target, and keeps the directory that holds link. An absolute target
+// starts again from the root; a relative one continues from the directory
+// that holds link. It follows at most maxLinkHops symlinks.
 func (w *chainWalk) follow(link string) error {
 	if w.hops == maxLinkHops {
 		return fmt.Errorf("%w: %s", syscall.ELOOP, link)
 	}
-	target, err := linkTarget(link)
+	target, err := w.readLink(link)
 	if err != nil {
 		return err
 	}
@@ -896,7 +983,10 @@ func (w *chainWalk) follow(link string) error {
 		return err
 	}
 	w.holders = append(w.holders, holders...)
-	w.resolved, w.rest, w.hops = string(filepath.Separator), slices.Concat(pathNames(target), w.rest[1:]), w.hops+1
+	if filepath.IsAbs(target) {
+		w.resolved = string(filepath.Separator)
+	}
+	w.rest, w.hops = slices.Concat(pathNames(target), w.rest[1:]), w.hops+1
 	return nil
 }
 
