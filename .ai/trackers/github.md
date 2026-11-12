@@ -24,13 +24,9 @@ That text reads like a deprecation warning, but the label was never applied and 
 
 **Why this descriptor does not hit it.** Every label, assignee, and title/body mutation below is written against the REST API (`gh api`), which never touches the GraphQL project fields and therefore behaves identically on every client version. That is deliberate — do not "simplify" the guards back to `gh pr edit --add-label`.
 
-**Upgrade the client anyway.** Read paths keep the coupling: `gh issue view` / `gh pr view` without `--json` render the classic project column, and `projectCards` is still offered as a fetchable `--json` field (cli/cli#11769), so a field list that names it errors on any version. Distribution packages lag years behind — Debian bookworm ships 2.23, Ubuntu 2.45, Alpine stable 2.72, all affected — so install from [GitHub's own package repositories](https://github.com/cli/cli/blob/trunk/docs/install_linux.md#recommended-official) or Homebrew rather than the distro's:
+**Upgrade the client anyway.** Read paths keep the coupling: `gh issue view` / `gh pr view` without `--json` render the classic project column, and `projectCards` is still offered as a fetchable `--json` field (cli/cli#11769), so a field list that names it errors on any version. Distribution packages lag years behind — Debian bookworm ships 2.23, Ubuntu 2.45, Alpine stable 2.72, all affected — so install from [GitHub's own package repositories](https://github.com/cli/cli/blob/trunk/docs/install_linux.md#recommended-official) or Homebrew rather than the distro's.
 
-```bash
-gh --version                                   # must report >= 2.82.1
-brew upgrade gh                                # macOS / Linuxbrew
-sudo apt update && sudo apt install --only-upgrade gh   # after adding GitHub's apt repo
-```
+Check the installed version with `gh --version`; it must report 2.82.1 or newer. The owner of the machine upgrades `gh` outside the agent session. Agents do not run package-manager or `sudo` commands for this.
 
 Upstream references: cli/cli#11983 (`gh pr edit` aborts without any project flag), cli/cli#11986 → fixed in [v2.82.1](https://github.com/cli/cli/releases/tag/v2.82.1) ("Fix `gh pr edit` not detecting classic projects feature deprecation"), cli/cli#11992 / #12476 / #12640 (the same error from `gh issue view`; the maintainers' answer is to upgrade), cli/cli#11769 (open: drop `projectCards` as a fetchable field).
 
@@ -126,11 +122,13 @@ apply; never remove human assignees during bot-claim cleanup.
 
 ## Operations
 
+Fenced `bash` blocks in this file hold only helper function definitions. Every usage example is in a `text` block with placeholders such as `{issueId}` or `<title>`. Those examples are not runnable as written; an agent reads them as a description of the command to build, and does not execute them verbatim.
+
 ### Identity and repository
 
 #### auth-check
 Verify the CLI is authenticated and new enough. → exit status (non-zero when unauthenticated), plus a warning on stdout when the client predates the Projects (classic) fix.
-```bash
+```text
 gh auth status || exit 1
 
 # Clients older than 2.82.1 abort `gh pr edit` / `gh issue edit` on the retired Projects
@@ -146,20 +144,20 @@ fi
 
 #### current-user
 → the automation user's login.
-```bash
+```text
 CURRENT_USER=$(gh api user --jq '.login')
 ```
 
 #### repo-info
 → `owner/name` handle and default branch of the current repository.
-```bash
+```text
 gh repo view --json nameWithOwner,defaultBranchRef
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
 ```
 
 #### default-branch
 → the repository's default branch name (used when the config's `baseBranch` is `"auto"`).
-```bash
+```text
 BASE_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)
 [ -z "$BASE_BRANCH" ] && BASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
 [ -z "$BASE_BRANCH" ] && BASE_BRANCH="main"
@@ -169,13 +167,13 @@ BASE_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'
 
 #### get-issue
 `{issueId}`, field list → issue data. Request only the fields the calling skill names.
-```bash
+```text
 gh issue view {issueId} --repo {owner}/{repo} --json number,title,body,state,author,url,labels,assignees,comments,createdAt,updatedAt
 ```
 
 #### search-issues
 Query (text, `in:title,body`, state) → matching issues. Empty text enumerates issues in that state. The cap defaults to 1000; disclose a result that reaches it as incomplete.
-```bash
+```text
 ISSUE_STATE="{state}"
 case "$ISSUE_STATE" in open|closed|all) ;; *) exit 1 ;; esac
 ISSUE_QUERY="<query>"
@@ -190,32 +188,32 @@ fi
 
 #### create-issue
 Title, body, assignee, labels → created issue URL.
-```bash
+```text
 gh issue create --repo {owner}/{repo} --title "<title>" --assignee <login> --label <labels> --body "<body>"
 ```
 
 #### close-issue
 `{issueId}`, reason, closing comment.
-```bash
+```text
 gh issue close {issueId} --repo {owner}/{repo} --reason completed --comment "<comment>"
 ```
 
 #### comment-issue
 `{issueId}`, body (use a heredoc/body-file for multi-line bodies).
-```bash
+```text
 gh issue comment {issueId} --repo {owner}/{repo} --body "<body>"
 ```
 
 #### update-issue
 `{issueId}`, new title and/or body. Edits the issue's own fields; does not touch labels or assignees (those have their own operations). Pass only what changed; read the body from a file so multi-line content survives.
-```bash
+```text
 gh api -X PATCH repos/{owner}/{repo}/issues/{issueId} -f title="<title>"
 gh api -X PATCH repos/{owner}/{repo}/issues/{issueId} -F body=@<file>
 ```
 `gh issue edit {issueId} --title "<title>" --body-file <file>` does the same on `gh` >= 2.82.1 and is fine interactively; older clients fail before writing anything (see Prerequisites), so script the REST form.
 
 #### assign-issue / unassign-issue
-```bash
+```text
 gh api -X POST   repos/{owner}/{repo}/issues/{issueId}/assignees -f "assignees[]=<login>"
 gh api -X DELETE repos/{owner}/{repo}/issues/{issueId}/assignees -f "assignees[]=<login>"
 ```
@@ -225,19 +223,19 @@ Always through the guards: `apply_issue_label "<label>" {issueId}` / `remove_iss
 
 #### get-issue-comment
 Comment id → body, author, URL.
-```bash
+```text
 gh api repos/{owner}/{repo}/issues/comments/{commentId} --jq '{body,user:.user.login,url:.html_url}'
 ```
 
 #### list-issue-comments
 `{issueId or prNumber}` → conversation comments (PR conversation comments are issue comments on GitHub).
-```bash
+```text
 gh api --paginate repos/{owner}/{repo}/issues/{number}/comments --jq '.[] | {id,user:.user.login,body,createdAt:.created_at,updatedAt:.updated_at}'
 ```
 
 #### update-comment
 `{commentId}`, new body → rewrite an existing conversation comment in place (works for issue and PR conversation comments alike). This is how marker-idempotent comments (label rationale, verification, claim take-overs) are updated on re-runs: find your `🤖 …` marker via **list-issue-comments**, then update that comment instead of posting a new one. Use a body file so multi-line bodies survive.
-```bash
+```text
 gh api -X PATCH repos/{owner}/{repo}/issues/comments/{commentId} -F body=@<path>
 ```
 
@@ -278,6 +276,11 @@ gh_get_lock() {
       (.actor | type == "string" and length > 0) and ($created | type == "string")) |
     . + {ref:$ref,sha:$sha,createdAt:$created}'
 }
+```
+
+Example invocation (not runnable as written; fill the placeholders):
+
+```text
 gh_get_lock "{kind}" "{number}"
 ```
 
@@ -325,6 +328,11 @@ gh_acquire_lock() {
       elif .runId == $run and .actor == $actor then "owned"
       elif $posted == "false" then "conflict" else error("Lock replaced after creation") end),lock:.}'
 }
+```
+
+Example invocation (not runnable as written; fill the placeholders):
+
+```text
 gh_acquire_lock "{kind}" "{number}" "$CLAIM_RUN_ID" "$CURRENT_USER" "$BASE_SHA"
 ```
 
@@ -362,6 +370,11 @@ gh_release_lock() (
     printf 'released; successor retained\n'
   else exit 1; fi
 )
+```
+
+Example invocation (not runnable as written; fill the placeholders):
+
+```text
 gh_release_lock "{kind}" "{number}" "$CLAIM_LOCK_SHA" "$CLAIM_RUN_ID" "$CURRENT_USER"
 ```
 
@@ -401,6 +414,11 @@ gh_get_claim_reset() {
     or (.user.permissions | .admin == true or .maintain == true or .push == true or .triage == true)' >/dev/null || return 1
   printf '%s' "$reset_event" | jq '{id: (.id | tostring), createdAt: .created_at, actor: .actor.login}'
 }
+```
+
+Example invocation (not runnable as written; fill the placeholders):
+
+```text
 gh_get_claim_reset "{number}"
 ```
 
@@ -434,6 +452,11 @@ gh_claim_winner() {
       | {id: (.id | tostring), user: .user.login, body} ]
     | sort_by(.id | [length, .]) | .[0] // null'
 }
+```
+
+Example invocation (not runnable as written; fill the placeholders):
+
+```text
 gh_claim_winner "{number}" "$LIVE_CLAIM_IDS"
 ```
 
@@ -456,13 +479,13 @@ comment leaving the old active candidate in place.
 
 #### get-pr
 `{prNumber}`, field list → PR data. Request only the fields the calling skill names; the full field set skills use:
-```bash
+```text
 gh pr view {prNumber} --json number,title,url,body,state,author,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,maintainerCanModify,mergeable,mergeStateStatus,reviewDecision,labels,latestReviews,reviews,commits,files,assignees,comments,mergedAt,mergeCommit,closingIssuesReferences,createdAt,closedAt,additions,changedFiles
 ```
 
 #### list-prs
 State/search filters, field list, limit → PRs.
-```bash
+```text
 gh pr list --state open --json number,title,url,author,labels,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,updatedAt,isDraft,assignees --limit 100
 gh pr list --state merged --search "merged:>=${SINCE_DATE}" --json number,title,url,body,author,createdAt,mergedAt,mergeCommit,baseRefName,headRefName,closingIssuesReferences,labels --limit {limit}
 gh pr list --state closed --search "closed:>=${SINCE_DATE} is:unmerged" --json number,createdAt,title,url,body,author,closedAt,baseRefName,headRefName,closingIssuesReferences,labels --limit {limit}
@@ -470,13 +493,13 @@ gh pr list --state closed --search "closed:>=${SINCE_DATE} is:unmerged" --json n
 
 #### search-prs
 Free-text query (for example an issue reference) and state → matching PRs.
-```bash
+```text
 gh search prs --repo {owner}/{repo} "#{issueId}" --state open --json number,title,url,state
 ```
 
 #### create-pr
 Base branch, draft flag, title, body → PR.
-```bash
+```text
 gh pr create --repo {owner}/{repo} --base "$BASE_BRANCH" --draft --title "<title>" --body "<body>"
 PR_URL=$(gh pr view --json url --jq .url)
 PR_NUMBER=$(gh pr view --json number --jq .number)
@@ -484,7 +507,7 @@ PR_NUMBER=$(gh pr view --json number --jq .number)
 
 #### update-pr
 `{prNumber}`, new title and/or new body → the PR's own title/body rewritten in place (not a comment), e.g. describing what a PR actually ships once its scope changed. Pass whichever of title / body changed; omit the other. Read the body from a file so multi-line content survives.
-```bash
+```text
 gh api -X PATCH repos/{owner}/{repo}/pulls/{prNumber} -f title="<title>"
 gh api -X PATCH repos/{owner}/{repo}/pulls/{prNumber} -F body=@<path>
 ```
@@ -495,13 +518,13 @@ gh api -X PATCH repos/{owner}/{repo}/pulls/{prNumber} -F body=@<path>
 title and body. Post/update the caller's evidence note before calling. A fresh
 **get-pr** must confirm `CLOSED` and no merge before reporting success; an
 already merged PR is never reported as closed-obsolete.
-```bash
+```text
 gh api -X PATCH repos/{owner}/{repo}/pulls/{prNumber} -f state=closed
 ```
 
 #### comment-pr
 `{prNumber}`, body. For long structured comments:
-```bash
+```text
 gh pr comment {prNumber} --body-file <path-or-process-substitution>
 ```
 
@@ -510,7 +533,7 @@ gh pr comment {prNumber} --body-file <path-or-process-substitution>
 
 GitHub does not accept image bytes through the comment API, so make the images referenceable first. For a **public** repo, upload them to a dedicated **slash-free** evidence branch (never the change's own branch) via the Contents API and reference `raw.githubusercontent.com` URLs — those render inline in comments:
 
-```bash
+```text
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 EVIDENCE_BRANCH="qa-evidence-{slug}"                 # slash-free: some raw URLs 404 on slashed refs
 DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
@@ -546,7 +569,7 @@ Fallbacks: for a **private** repo the raw URLs need auth and will not render —
 
 #### assign-pr / unassign-pr
 Assignees live on the shared `/issues/` endpoint for PRs too — `{prNumber}` is the path segment.
-```bash
+```text
 gh api -X POST   repos/{owner}/{repo}/issues/{prNumber}/assignees -f "assignees[]=<login>"
 gh api -X DELETE repos/{owner}/{repo}/issues/{prNumber}/assignees -f "assignees[]=<login>"
 ```
@@ -556,20 +579,20 @@ Always through the guards: `apply_label "<label>" {prNumber}` / `set_pipeline_la
 
 #### get-pr-diff
 `{prNumber}` → full diff, or the changed-file list with `--name-only`.
-```bash
+```text
 gh pr diff {prNumber}
 gh pr diff {prNumber} --name-only
 ```
 
 #### get-pr-files
 `{prNumber}` → changed files with per-file status (added/modified/removed), paginated.
-```bash
+```text
 gh api "repos/{owner}/{repo}/pulls/{prNumber}/files" --paginate --jq '.[] | {path: .filename, status: .status}'
 ```
 
 #### get-pr-author-association
 `{prNumber}` → `{login, association}`, normalized from GitHub's `author_association`. GitHub reports `COLLABORATOR` for anyone with explicit repository access who is not an organization member, so on an organization-owned repository that is an `outside-collaborator`. `FIRST_TIMER` (first PR anywhere on GitHub) folds into `first-time-contributor`, and `MANNEQUIN` folds into `none`.
-```bash
+```text
 gh api "repos/{owner}/{repo}/pulls/{prNumber}" --jq '{login: .user.login, association: (
   .author_association as $a | .base.repo.owner.type as $t |
   if $a == "OWNER" then "owner"
@@ -582,13 +605,13 @@ gh api "repos/{owner}/{repo}/pulls/{prNumber}" --jq '{login: .user.login, associ
 
 #### checkout-pr
 `{prNumber}` → the PR's head available locally (needed for cross-repository fork PRs where the head branch cannot be fetched from `origin`).
-```bash
+```text
 gh pr checkout {prNumber} --recurse-submodules=no
 ```
 
 #### review-pr
 `{prNumber}`, verdict (approve / request changes), body.
-```bash
+```text
 gh pr review {prNumber} --approve --body "<body>"
 gh pr review {prNumber} --request-changes --body "<body>"
 ```
@@ -596,7 +619,7 @@ GitHub rejects self-approval (reviewing your own PR); surface that instead of wo
 
 #### merge-pr
 `{prNumber}`; a merge commit is the only merge strategy in this repository (owner decision, `SDLC.md` → Merge): squash and rebase merges are disabled on GitHub. A skill that asks for a squash merge uses `--merge` here. `--auto` merges when checks pass; `--delete-branch` only when asked.
-```bash
+```text
 gh pr merge {prNumber} --merge
 gh pr merge {prNumber} --merge --match-head-commit "<headRefOid>" --admin   # head-SHA guard + bypass-protection
 ```
@@ -604,32 +627,32 @@ gh pr merge {prNumber} --merge --match-head-commit "<headRefOid>" --admin   # he
 
 #### mark-pr-ready
 Promote a draft PR.
-```bash
+```text
 gh pr ready {prNumber}
 ```
 
 #### get-pr-checks
 `{prNumber}` → CI check runs with name, state, and link.
-```bash
+```text
 gh pr checks {prNumber} --json name,state,link
 ```
 
 #### get-required-checks
 Base branch → the set of required status checks. A 404 or a 403 (branch protection is not available on this plan: "Upgrade to GitHub Pro or make this repository public") means branch protection is not readable — treat all reported checks as required.
-```bash
+```text
 gh api repos/{owner}/{repo}/branches/{baseRefName}/protection/required_status_checks --jq '.contexts[]' 2>/dev/null
 ```
 
 #### get-pr-comment / get-review-comment
 Conversation comment id (`issuecomment-<id>` links) vs inline review comment id (`discussion_r<id>` links) → body, author, URL.
-```bash
+```text
 gh api repos/{owner}/{repo}/issues/comments/{commentId} --jq '{body,user:.user.login,url:.html_url}'
 gh api repos/{owner}/{repo}/pulls/comments/{commentId} --jq '{body,user:.user.login,url:.html_url}'
 ```
 
 #### list-review-comments
 `{prNumber}` → every inline review comment on the diff (the conversation comments come from **list-issue-comments**; these are the ones anchored to a file and line).
-```bash
+```text
 gh api --paginate repos/{owner}/{repo}/pulls/{prNumber}/comments \
   --jq '.[] | {id,user:.user.login,path,line:(.line // .original_line),body,url:.html_url,reply_to:.in_reply_to_id}'
 ```
@@ -641,31 +664,31 @@ CI status for a *PR* comes from **get-pr-checks** / **get-required-checks** abov
 
 #### list-runs
 Branch (or head SHA) → recent workflow runs with id, workflow name, status, and conclusion.
-```bash
+```text
 gh run list --branch {branch} --limit 20 --json databaseId,workflowName,name,status,conclusion,headSha,url,createdAt
 ```
 
 #### get-run
 Run id → status, conclusion, and per-job breakdown.
-```bash
+```text
 gh run view {runId} --json status,conclusion,workflowName,headSha,url,jobs
 ```
 
 #### get-run-failed-logs
 Run id → the log output of failed steps only. This is the primary diagnosis input for CI failures.
-```bash
+```text
 gh run view {runId} --log-failed
 ```
 
 #### rerun-failed
 Run id → re-execute only the failed jobs of that run. Use to disambiguate flaky failures before changing any code.
-```bash
+```text
 gh run rerun {runId} --failed
 ```
 
 #### approve-pending-runs
 Head SHA → approve every workflow run on that commit that is waiting for maintainer approval (`conclusion` `action_required` — GitHub holds runs from first-time or outside contributors until a maintainer approves them). Prints the approved run ids; an empty result means nothing was waiting. Approving lets the contributor's workflow code run with this repository's CI, so callers approve only on a PR a human has authorized for automation (e.g. an `automerge` label) and read the diff's workflow changes first.
-```bash
+```text
 gh api "repos/{owner}/{repo}/actions/runs?head_sha={headSha}&status=action_required&per_page=100" \
   --jq '.workflow_runs[].id' | while read -r run; do
   gh api -X POST "repos/{owner}/{repo}/actions/runs/$run/approve" >/dev/null && echo "$run"
@@ -674,7 +697,7 @@ done
 
 #### watch-run
 Run id → block until the run completes, exiting non-zero on failure. Prefer this over sleep-polling; fall back to periodic **get-run** when watching is unavailable.
-```bash
+```text
 gh run watch {runId} --exit-status
 ```
 
@@ -682,19 +705,19 @@ gh run watch {runId} --exit-status
 
 #### list-labels
 → all label names defined in the repo. Paginated, so repositories with large taxonomies are not truncated the way a fixed `gh label list --limit` is.
-```bash
+```text
 gh api --paginate repos/{owner}/{repo}/labels --jq '.[].name'
 ```
 
 #### create-label
 Name, color, description. Never delete, rename, or recolor existing labels.
-```bash
+```text
 gh label create <name> --color <hex> --description "<description>"
 ```
 
 #### ensure-label-taxonomy
 Create every label from the config's taxonomy that does not exist yet (used by `om-setup-agent-pipeline`; skip ones that already exist per **list-labels**):
-```bash
+```text
 gh label create review            --color 0366d6 --description "Ready for code review"
 gh label create changes-requested --color b60205 --description "Reviewer requested changes"
 gh label create qa                --color fbca04 --description "Manual QA in progress"
