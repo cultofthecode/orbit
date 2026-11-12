@@ -3047,3 +3047,146 @@ func TestHandleRefusesTheAncestorsOfAHopOfAProtectedPath(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleRefusesAProjectThatHoldsAHopOfTheHome covers a home directory
+// that the environment or the account database names through a symlink in a
+// project directory (#36): every protected path lies on its chain, so the
+// agent could repoint the home of the host tools at a directory that it
+// controls.
+func TestHandleRefusesAProjectThatHoldsAHopOfTheHome(t *testing.T) {
+	layouts := []struct {
+		name string
+		// build makes the hop in proj to home and returns the home of the
+		// environment and the home of the account database.
+		build func(t *testing.T, home, proj string) (string, string)
+	}{
+		{name: "HOME through proj/h", build: func(t *testing.T, home, proj string) (string, string) {
+			symlinkAt(t, home, filepath.Join(proj, "h"))
+			return filepath.Join(proj, "h"), home
+		}},
+		{name: "account home through proj/h", build: func(t *testing.T, home, proj string) (string, string) {
+			symlinkAt(t, home, filepath.Join(proj, "h"))
+			return home, filepath.Join(proj, "h")
+		}},
+		{name: "HOME through a relative proj/h", build: func(t *testing.T, home, proj string) (string, string) {
+			rel, err := filepath.Rel(proj, home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			symlinkAt(t, rel, filepath.Join(proj, "h"))
+			return filepath.Join(proj, "h"), home
+		}},
+		{name: "HOME with .. after proj/h", build: func(t *testing.T, home, proj string) (string, string) {
+			makeDirs(t, home, "sub")
+			symlinkAt(t, filepath.Join(home, "sub"), filepath.Join(proj, "h"))
+			return proj + "/h/..", home
+		}},
+	}
+	places := []struct {
+		name string
+		proj func(home, outside string) string
+	}{
+		{name: "project outside the home", proj: func(_, outside string) string { return filepath.Join(outside, "proj") }},
+		{name: "project in the home", proj: func(home, _ string) string { return filepath.Join(home, "proj") }},
+	}
+	spellings := []struct {
+		name  string
+		spell func(path string) string
+	}{
+		{name: "canonical", spell: func(path string) string { return path }},
+		{name: "upper case", spell: strings.ToUpper},
+		{name: "data volume", spell: func(path string) string { return dataVolume + path }},
+	}
+	for _, layout := range layouts {
+		for _, place := range places {
+			for _, spelling := range spellings {
+				t.Run(layout.name+", "+place.name+", "+spelling.name, func(t *testing.T) {
+					home := newDir(t)
+					outside := newDir(t)
+					makeDirs(t, home, ".aws", "work/api")
+					proj := place.proj(home, outside)
+					makeDirs(t, proj, "sub")
+					environmentHome, accountHome := layout.build(t, home, proj)
+					t.Setenv("HOME", environmentHome)
+					requireSpelling(t, spelling.spell(proj))
+
+					checkRefusals(t, account(accountHome), []refusal{
+						{name: "directory that holds the hop", dir: spelling.spell(proj), want: sandbox.ErrProtectedFile},
+					})
+					t.Run("accepts a directory inside it", func(t *testing.T) {
+						checkCreates(t, account(accountHome), filepath.Join(proj, "sub"), filepath.Join(proj, "sub"))
+					})
+				})
+			}
+		}
+	}
+}
+
+// TestHandleRefusesAProjectThatHoldsAHopOfARelativeHome covers a relative
+// HOME, which the kernel resolves from the working directory, through a
+// symlink in a project directory.
+func TestHandleRefusesAProjectThatHoldsAHopOfARelativeHome(t *testing.T) {
+	home := newDir(t)
+	outside := newDir(t)
+	makeDirs(t, home, ".aws")
+	makeDirs(t, outside, "proj")
+	symlinkAt(t, home, filepath.Join(outside, "proj", "h"))
+	t.Chdir(outside)
+	t.Setenv("HOME", filepath.Join("proj", "h"))
+
+	checkRefusals(t, account(home), []refusal{
+		{name: "directory that holds the hop", dir: filepath.Join(outside, "proj"), want: sandbox.ErrProtectedFile},
+	})
+}
+
+// TestHandleFollowsAHopOfAProtectedPathWithParentAfterAName covers a hop of
+// a protected path whose target exists and has ".." after a name: the walk
+// resolves ".." as the kernel does, so init refuses the directories that hold
+// a hop and accepts every other project, as main did before #36 (#43 tracks
+// the same target inside a protected directory).
+func TestHandleFollowsAHopOfAProtectedPathWithParentAfterAName(t *testing.T) {
+	tests := []struct {
+		name string
+		// build makes the hops and returns the directories that hold one.
+		build func(t *testing.T, home, outside string) []string
+	}{
+		{name: "plain name before ..", build: func(t *testing.T, home, outside string) []string {
+			makeDirs(t, outside, "x", "vault/aws")
+			symlinkAt(t, filepath.Join(outside, "x", "..", "vault", "aws"), filepath.Join(home, "proj", "link"))
+			symlinkAt(t, filepath.Join(home, "proj", "link"), filepath.Join(home, ".aws"))
+			return []string{filepath.Join(home, "proj")}
+		}},
+		{name: "symlink before ..", build: func(t *testing.T, home, outside string) []string {
+			makeDirs(t, outside, "links", "elsewhere/sub", "elsewhere/vault/aws")
+			symlinkAt(t, filepath.Join(outside, "elsewhere", "sub"), filepath.Join(outside, "links", "x"))
+			symlinkAt(t, outside+"/links/x/../vault/aws", filepath.Join(home, "proj", "link"))
+			symlinkAt(t, filepath.Join(home, "proj", "link"), filepath.Join(home, ".aws"))
+			return []string{filepath.Join(home, "proj"), filepath.Join(outside, "links")}
+		}},
+		{name: "relative target with .. after a name", build: func(t *testing.T, home, outside string) []string {
+			makeDirs(t, home, "x", "vault/aws")
+			symlinkAt(t, "../x/../vault/aws", filepath.Join(home, "proj", "link"))
+			symlinkAt(t, filepath.Join(home, "proj", "link"), filepath.Join(home, ".aws"))
+			return []string{filepath.Join(home, "proj")}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := newDir(t)
+			outside := newDir(t)
+			makeDirs(t, home, "proj", "work/api")
+			t.Setenv("HOME", home)
+			holders := test.build(t, home, outside)
+
+			var refusals []refusal
+			for _, holder := range holders {
+				refusals = append(refusals, refusal{name: "holder " + holder, dir: holder, want: sandbox.ErrProtectedFile})
+			}
+			checkRefusals(t, account(home), refusals)
+			t.Run("accepts another project", func(t *testing.T) {
+				dir := filepath.Join(home, "work", "api")
+				checkCreates(t, account(home), dir, dir)
+			})
+		})
+	}
+}

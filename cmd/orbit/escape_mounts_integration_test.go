@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -99,13 +100,14 @@ func TestEscapeSymlinkSwap(t *testing.T) {
 	})
 }
 
-// credentialForm is one way to point init at a credential location.
+// credentialForm is one way to point init at a credential location. home,
+// when it is set, is the HOME of the run instead of the fake home.
 type credentialForm struct {
-	name, path string
+	name, path, home string
 }
 
 // credentialFixtures creates the credential locations in the fake home and
-// returns the 28 forms of E17.
+// returns the 28 forms of E17 that use it.
 func credentialFixtures(t *testing.T, home string) []credentialForm {
 	t.Helper()
 	links := projectDir(t)
@@ -124,11 +126,11 @@ func credentialFixtures(t *testing.T, home string) []credentialForm {
 			}
 		}
 		forms = append(forms,
-			credentialForm{location, path},
-			credentialForm{location + " child", child},
-			credentialForm{location + " ancestor", ancestor},
-			credentialForm{location + " symlink", toLocation},
-			credentialForm{location + " child symlink", toChild},
+			credentialForm{name: location, path: path},
+			credentialForm{name: location + " child", path: child},
+			credentialForm{name: location + " ancestor", path: ancestor},
+			credentialForm{name: location + " symlink", path: toLocation},
+			credentialForm{name: location + " child symlink", path: toChild},
 		)
 	}
 	dotfiles := filepath.Join(home, "dotfiles")
@@ -146,10 +148,54 @@ func credentialFixtures(t *testing.T, home string) []credentialForm {
 		t.Fatal(err)
 	}
 	return append(forms,
-		credentialForm{"claude.json directory", dotfiles},
-		credentialForm{"claude.json ancestor", home},
-		credentialForm{"claude.json directory symlink", toDotfiles},
+		credentialForm{name: "claude.json directory", path: dotfiles},
+		credentialForm{name: "claude.json ancestor", path: home},
+		credentialForm{name: "claude.json directory symlink", path: toDotfiles},
 	)
+}
+
+// hopFixtures creates a second fake home whose protected paths reach their
+// targets through a symlink in a project directory, the layouts of #36, and
+// returns the 4 forms of E17 that init each such project directory: .aws,
+// .config, and .claude.json through a hop in their own project, and HOME
+// itself through a hop. The agent could repoint the hop at a directory that
+// it controls.
+func hopFixtures(t *testing.T) []credentialForm {
+	t.Helper()
+	home := projectDir(t)
+	work := filepath.Join(home, "work")
+	for _, dir := range []string{"vault/aws", "dotfiles/config/gh", "store/state", "work/aws", "work/config", "work/claude"} {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, "store", "state", "claude.json"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := projectDir(t)
+	homeProject := filepath.Join(outside, "proj")
+	if err := os.MkdirAll(homeProject, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, hop := range []struct{ target, link string }{
+		{filepath.Join(home, "vault", "aws"), filepath.Join(work, "aws", "link")},
+		{filepath.Join(work, "aws", "link"), filepath.Join(home, ".aws")},
+		{filepath.Join(home, "dotfiles", "config"), filepath.Join(work, "config", "cfg")},
+		{filepath.Join(work, "config", "cfg"), filepath.Join(home, ".config")},
+		{filepath.Join(home, "store", "state", "claude.json"), filepath.Join(work, "claude", "c.json")},
+		{filepath.Join(work, "claude", "c.json"), filepath.Join(home, ".claude.json")},
+		{home, filepath.Join(homeProject, "h")},
+	} {
+		if err := os.Symlink(hop.target, hop.link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return []credentialForm{
+		{name: ".aws hop", path: filepath.Join(work, "aws"), home: home},
+		{name: ".config hop", path: filepath.Join(work, "config"), home: home},
+		{name: "claude.json hop", path: filepath.Join(work, "claude"), home: home},
+		{name: "HOME hop", path: homeProject, home: filepath.Join(homeProject, "h")},
+	}
 }
 
 // TestEscapeCredentialLocations runs E17: init refuses every form of every
@@ -163,15 +209,18 @@ func TestEscapeCredentialLocations(t *testing.T) {
 	home, accountHome := temporaryHome(t)
 	machines := accountHomeMachines{machines: client, home: accountHome}
 	handler := initHandler(machines, claudeRegistry(t))
-	forms := credentialFixtures(t, home)
-	if len(forms) != 28 {
-		t.Fatalf("%d forms, want 28", len(forms))
+	forms := slices.Concat(credentialFixtures(t, home), hopFixtures(t))
+	if len(forms) != 32 {
+		t.Fatalf("%d forms, want 32", len(forms))
 	}
 	var counts tally
 	t.Cleanup(func() { t.Log(counts.summary()) })
 	rig := escapeRig{client: client, tally: &counts}
 	for _, form := range forms {
 		t.Run("E17-"+strings.NewReplacer("/", "-", " ", "-").Replace(form.name), func(t *testing.T) {
+			if form.home != "" {
+				t.Setenv("HOME", form.home)
+			}
 			t.Logf("E17 proves R08 D08: init on %s", form.path)
 			result := attemptResult{id: "E17 " + form.name}
 			out, err := handler.Handle(ctx, initialize.Input{Dir: form.path})

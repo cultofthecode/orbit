@@ -177,7 +177,7 @@ func TestLoadUserQuotesAMissingHome(t *testing.T) {
 			account := func() (*user.User, error) {
 				return &user.User{Uid: "501", HomeDir: accountHome}, nil
 			}
-			_, _, err := loadUser(account)
+			_, _, _, err := loadUser(account)
 			if !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("loadUser = %v, want %v", err, fs.ErrNotExist)
 			}
