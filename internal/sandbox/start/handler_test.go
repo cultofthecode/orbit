@@ -609,3 +609,24 @@ func TestHandleQuotesAHostileDirectoryWhenTheMarkerFails(t *testing.T) {
 		t.Errorf("Handle = %q, want it to end with %q", err, want)
 	}
 }
+
+// TestHandleQuotesAHostileDirectoryOnAMountMismatch pins that the
+// mount-mismatch error of the host check before the start cannot write an
+// escape sequence or a line break to the terminal (#111).
+func TestHandleQuotesAHostileDirectoryOnAMountMismatch(t *testing.T) {
+	s := hostileSandboxHome(t)
+	fake := s.fake(orbstacktest.StateStopped)
+	other := filepath.Join(s.home, "work", "c\x1b]0;x\x07d")
+	fake.Machines[s.name] = map[string]string{s.dir: other}
+
+	_, err := s.handler(fake).Handle(context.Background(), Input{Dir: s.dir})
+
+	for _, want := range []string{"want " + strconv.Quote(s.dir), strconv.Quote(other)} {
+		if !errors.Is(err, sandbox.ErrMountMismatch) || !strings.Contains(err.Error(), want) {
+			t.Errorf("Handle = %v, want %v with %s", err, sandbox.ErrMountMismatch, want)
+		}
+	}
+	if err != nil && strings.ContainsAny(err.Error(), "\x1b\n\x07") {
+		t.Errorf("Handle = %q, want no control character", err)
+	}
+}

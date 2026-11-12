@@ -344,7 +344,8 @@ func relocatedHopSpellings() ([]string, error) {
 }
 
 // chainHolders returns the second result of linkSpellings for path: every
-// spelling of each directory that holds a symlink on its chain.
+// spelling of each directory that holds a symlink on its chain or a name that
+// a later ".." cancels.
 func chainHolders(path string) ([]string, error) {
 	_, holders, err := linkSpellings(path)
 	return holders, err
@@ -893,9 +894,10 @@ func followLink(link string, files foundFiles) ([]string, []string, error) {
 // the directory that the chain ends at, or of where its target would be
 // created, as a directory, when it leads nowhere. The second has every
 // spelling of each directory that holds a symlink on the chain, every hop
-// included, and of the directory that holds the file that the chain ends at.
-// The agent could replace a hop in a mounted directory, so each of them is
-// protected as the holder of a protected file.
+// included, or a name that a later ".." cancels, and of the directory that
+// holds the file that the chain ends at. The agent could replace a hop or a
+// cancelled name in a mounted directory, so each of them is protected as the
+// holder of a protected file.
 func linkSpellings(link string) ([]string, []string, error) {
 	walk, missing, err := walkChain(link)
 	if err != nil {
@@ -922,7 +924,8 @@ func walkChain(link string) (*chainWalk, bool, error) {
 }
 
 // chainWalk resolves a path one name at a time, as the kernel does, and keeps
-// every spelling of each directory that holds a symlink on the way.
+// every spelling of each directory that holds a symlink on the way, or a name
+// that a later ".." cancels.
 type chainWalk struct {
 	// start is the path that the walk resolves.
 	start string
@@ -937,6 +940,9 @@ type chainWalk struct {
 // step resolves the next name of the path. It reports whether that name does
 // not exist.
 func (w *chainWalk) step() (bool, error) {
+	if w.rest[0] == ".." {
+		return false, w.cancel()
+	}
 	next := filepath.Join(w.resolved, w.rest[0])
 	info, err := os.Lstat(next)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -950,6 +956,21 @@ func (w *chainWalk) step() (bool, error) {
 	}
 	w.resolved, w.rest = next, w.rest[1:]
 	return false, nil
+}
+
+// cancel applies a ".." name: it moves up to the directory that holds the
+// last name of the path resolved so far, and keeps that directory. The agent
+// could replace the cancelled name in a mounted directory with a symlink, and
+// the kernel would then apply the ".." to its target.
+func (w *chainWalk) cancel() error {
+	parent := filepath.Dir(w.resolved)
+	holders, err := dirSpellings(parent)
+	if err != nil {
+		return err
+	}
+	w.holders = append(w.holders, holders...)
+	w.resolved, w.rest = parent, w.rest[1:]
+	return nil
 }
 
 // follow replaces the symlink link, which is the next name of the path, with

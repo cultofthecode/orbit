@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -567,6 +568,25 @@ func TestValidateNotNested(t *testing.T) {
 				t.Errorf("ValidateNotNested(%q, %q) = %v, want %v", test.dir, test.sandboxes, err, test.want)
 			}
 		})
+	}
+}
+
+// TestValidateMountsQuotesHostilePaths pins that the mount-mismatch error
+// cannot write an escape sequence or a line break to the terminal, from the
+// project directory or from a stored mount (#111).
+func TestValidateMountsQuotesHostilePaths(t *testing.T) {
+	dir := "/Users/dev/a\x1b[2K\nb"
+	point, source := "/srv/c\rd", "/Users/dev/e\x07f"
+
+	err := ValidateMounts(dir, map[string]string{point: source})
+
+	for _, want := range []string{"want " + strconv.Quote(dir), strconv.Quote(point), strconv.Quote(source)} {
+		if !errors.Is(err, ErrMountMismatch) || !strings.Contains(err.Error(), want) {
+			t.Errorf("ValidateMounts = %v, want %v with %s", err, ErrMountMismatch, want)
+		}
+	}
+	if err != nil && strings.ContainsAny(err.Error(), "\x1b\n\r\x07") {
+		t.Errorf("ValidateMounts = %q, want no control character", err)
 	}
 }
 

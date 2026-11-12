@@ -14,7 +14,9 @@ import (
 type printableError struct{ err error }
 
 // Error returns the message of the wrapped error with each character that is
-// not printable, and each byte that is not UTF-8, in its Go escape.
+// not printable, and each byte that is not UTF-8, in its Go escape, and each
+// backslash doubled, so that a name that holds a backslash never reads the
+// same as one that holds the character that its escape names.
 func (e printableError) Error() string {
 	var message strings.Builder
 	for rest := e.err.Error(); rest != ""; {
@@ -22,6 +24,8 @@ func (e printableError) Error() string {
 		switch {
 		case r == utf8.RuneError && size == 1:
 			fmt.Fprintf(&message, `\x%02x`, rest[0])
+		case r == '\\':
+			message.WriteString(`\\`)
 		case unicode.IsPrint(r):
 			message.WriteString(rest[:size])
 		default:

@@ -26,6 +26,7 @@ func TestPrintableErrorEscapesWhatIsNotPrintable(t *testing.T) {
 		{name: "invalid UTF-8", msg: "a\xffb", want: `a\xffb`},
 		{name: "unicode line separator", msg: "a\u2028b", want: `a\u2028b`},
 		{name: "C1 control", msg: "a\u009bb", want: `a\u009bb`},
+		{name: "backslash", msg: `a\nb`, want: `a\\nb`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
