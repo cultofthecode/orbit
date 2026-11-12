@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -132,13 +133,56 @@ func TestRunSurvivesStderrThatCannotBeWritten(t *testing.T) {
 	}
 }
 
-func TestRunRejectsVersionFlagBeforeItExists(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), testRoot(), []string{"--version"}, &stdout, &stderr)
-	if code != exitFailure {
-		t.Errorf("exit code = %d, want %d", code, exitFailure)
+func buildInfoOf(moduleVersion string) buildInfoReader {
+	return func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Main: debug.Module{Version: moduleVersion}}, true
 	}
-	if want := "orbit: unknown flag: --version\n"; stderr.String() != want {
-		t.Errorf("stderr = %q, want %q", stderr.String(), want)
+}
+
+func noBuildInfo() (*debug.BuildInfo, bool) {
+	return nil, false
+}
+
+func TestVersionFlag(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		commit  string
+		info    buildInfoReader
+		want    string
+	}{
+		{name: "release build", version: "v1.2.3", commit: "abc1234", info: buildInfoOf("(devel)"), want: "orbit version 1.2.3 (commit abc1234)\n"},
+		{name: "linker version without a commit", version: "1.2.3", info: noBuildInfo, want: "orbit version 1.2.3\n"},
+		{name: "go install", info: buildInfoOf("v1.2.3"), want: "orbit version 1.2.3\n"},
+		{name: "go build in a checkout", info: buildInfoOf("v0.0.0-20261111152512-0402908abcde+dirty"), want: "orbit version 0.0.0-20261111152512-0402908abcde+dirty\n"},
+		{name: "build info without a version", info: buildInfoOf(""), want: "orbit version dev\n"},
+		{name: "devel build info", info: buildInfoOf("(devel)"), want: "orbit version dev\n"},
+		{name: "no build info", info: noBuildInfo, want: "orbit version dev\n"},
+		{name: "linker value wins over build info", version: "2.0.0", info: buildInfoOf("v1.2.3"), want: "orbit version 2.0.0\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := withVersion(testRoot(), versionText(tt.version, tt.commit, tt.info))
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), root, []string{"--version"}, &stdout, &stderr)
+			if code != exitOK {
+				t.Errorf("exit code = %d, want %d", code, exitOK)
+			}
+			if stdout.String() != tt.want {
+				t.Errorf("stdout = %q, want %q", stdout.String(), tt.want)
+			}
+			if stderr.Len() != 0 {
+				t.Errorf("stderr = %q, want it empty", stderr.String())
+			}
+		})
+	}
+}
+
+func TestVersionAddsNoCommand(t *testing.T) {
+	root := withVersion(testRoot(), "1.0.0")
+	for _, command := range root.Commands() {
+		if command.Name() == "version" {
+			t.Error("orbit has a version command, want only the flag")
+		}
 	}
 }
