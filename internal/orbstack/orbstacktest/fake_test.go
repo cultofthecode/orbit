@@ -18,7 +18,7 @@ func TestFakeCreatesAndFindsMachines(t *testing.T) {
 	if err != nil || before {
 		t.Fatalf("Exists before Create = %v, %v, want false", before, err)
 	}
-	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", true); err != nil {
+	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", "ubuntu", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	after, err := fake.Exists(ctx, "orbit-api-1d9b22c9")
@@ -28,7 +28,7 @@ func TestFakeCreatesAndFindsMachines(t *testing.T) {
 
 	wantCalls := []Call{
 		{Op: OpExists, Name: "orbit-api-1d9b22c9"},
-		{Op: OpCreate, Name: "orbit-api-1d9b22c9", Dir: "/work/api", Forward: true},
+		{Op: OpCreate, Name: "orbit-api-1d9b22c9", Dir: "/work/api", Forward: true, Distribution: "ubuntu"},
 		{Op: OpExists, Name: "orbit-api-1d9b22c9"},
 	}
 	if !slices.Equal(fake.Calls, wantCalls) {
@@ -43,7 +43,7 @@ func TestFakeReportsMountsAndDeletes(t *testing.T) {
 	const name = "orbit-api-1d9b22c9"
 	fake := New("orbit-")
 	ctx := context.Background()
-	if err := fake.Create(ctx, name, "/work/api", true); err != nil {
+	if err := fake.Create(ctx, name, "/work/api", "ubuntu", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	own := map[string]string{"/work/api": "/work/api"}
@@ -69,7 +69,7 @@ func TestFakeReportsMountsAndDeletes(t *testing.T) {
 		t.Errorf("after Delete: Machines = %v, Active = %v, want none", fake.Machines, fake.Active)
 	}
 	wantCalls := []Call{
-		{Op: OpCreate, Name: name, Dir: "/work/api", Forward: true},
+		{Op: OpCreate, Name: name, Dir: "/work/api", Forward: true, Distribution: "ubuntu"},
 		{Op: OpMounts},
 		{Op: OpActiveMounts, Name: name},
 		{Op: OpActiveMounts, Name: name},
@@ -121,7 +121,7 @@ func TestFakeRefusesForeignNames(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fake := New(test.prefix)
-			err := fake.Create(context.Background(), test.machine, "/work/api", true)
+			err := fake.Create(context.Background(), test.machine, "/work/api", "ubuntu", true)
 			if !errors.Is(err, ErrForeignMachine) {
 				t.Errorf("Create(%q) = %v, want %v", test.machine, err, ErrForeignMachine)
 			}
@@ -135,7 +135,7 @@ func TestFakeRefusesForeignNames(t *testing.T) {
 func TestFakeRefusesMountPathsLikeTheAdapter(t *testing.T) {
 	for _, dir := range []string{"", "work/api", "/work/a:b", "/work/.ssh:", "/work/a,b", "/work/a:/b"} {
 		fake := New("orbit-")
-		err := fake.Create(context.Background(), "orbit-api-1d9b22c9", dir, true)
+		err := fake.Create(context.Background(), "orbit-api-1d9b22c9", dir, "ubuntu", true)
 		if !errors.Is(err, ErrMountPath) {
 			t.Errorf("Create with the directory %q = %v, want %v", dir, err, ErrMountPath)
 		}
@@ -160,7 +160,7 @@ func TestFakeFailsWhenTold(t *testing.T) {
 	if _, err := fake.Exists(ctx, "orbit-api-1d9b22c9"); !errors.Is(err, boom) {
 		t.Errorf("Exists = %v, want %v", err, boom)
 	}
-	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", true); !errors.Is(err, boom) {
+	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", "ubuntu", true); !errors.Is(err, boom) {
 		t.Errorf("Create = %v, want %v", err, boom)
 	}
 	if err := fake.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true")); !errors.Is(err, boom) {
@@ -190,7 +190,7 @@ func TestFakeFailsWhenTold(t *testing.T) {
 func TestFakeDeletesAndRunsScripts(t *testing.T) {
 	fake := New("orbit-")
 	ctx := context.Background()
-	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", true); err != nil {
+	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", "ubuntu", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	if err := fake.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("echo hi\n")); err != nil {
@@ -206,7 +206,7 @@ func TestFakeDeletesAndRunsScripts(t *testing.T) {
 		t.Errorf("Machines = %v, want none", fake.Machines)
 	}
 	wantCalls := []Call{
-		{Op: OpCreate, Name: "orbit-api-1d9b22c9", Dir: "/work/api", Forward: true},
+		{Op: OpCreate, Name: "orbit-api-1d9b22c9", Dir: "/work/api", Forward: true, Distribution: "ubuntu"},
 		{Op: OpRunAsRoot, Name: "orbit-api-1d9b22c9", Script: "echo hi\n"},
 		{Op: OpRunAsAgent, Name: "orbit-api-1d9b22c9", Script: "id -un\n"},
 		{Op: OpDelete, Name: "orbit-api-1d9b22c9"},
@@ -240,7 +240,7 @@ func TestFakeStopsAndStartsMachines(t *testing.T) {
 	if state, err := fake.State(ctx, name); err != nil || state != "" {
 		t.Fatalf("State before Create = %q, %v, want no machine", state, err)
 	}
-	if err := fake.Create(ctx, name, "/work/api", true); err != nil {
+	if err := fake.Create(ctx, name, "/work/api", "ubuntu", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	steps := []struct {
@@ -266,7 +266,7 @@ func TestFakeRefusesCommandsInAStoppedMachine(t *testing.T) {
 	const name = "orbit-api-1d9b22c9"
 	fake := New("orbit-")
 	ctx := context.Background()
-	if err := fake.Create(ctx, name, "/work/api", true); err != nil {
+	if err := fake.Create(ctx, name, "/work/api", "ubuntu", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	fake.States[name] = "starting"
@@ -319,7 +319,7 @@ func TestFakeStartAndStopFailWhenTold(t *testing.T) {
 	const name = "orbit-api-1d9b22c9"
 	fake := New("orbit-")
 	ctx := context.Background()
-	if err := fake.Create(ctx, name, "/work/api", true); err != nil {
+	if err := fake.Create(ctx, name, "/work/api", "ubuntu", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	failure := errors.New("orb failed")
@@ -342,7 +342,7 @@ func TestFakeShellRecordsAndReturnsTheStatus(t *testing.T) {
 	fake := New("orbit-")
 	ctx := context.Background()
 	const name = "orbit-api-11111111"
-	if err := fake.Create(ctx, name, "/Users/dev/api", true); err != nil {
+	if err := fake.Create(ctx, name, "/Users/dev/api", "ubuntu", true); err != nil {
 		t.Fatal(err)
 	}
 	fake.ShellStatus = 3
@@ -361,7 +361,7 @@ func TestFakeShellRefusesWhatTheAdapterRefuses(t *testing.T) {
 	fake := New("orbit-")
 	ctx := context.Background()
 	const name = "orbit-api-11111111"
-	if err := fake.Create(ctx, name, "/Users/dev/api", true); err != nil {
+	if err := fake.Create(ctx, name, "/Users/dev/api", "ubuntu", true); err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
@@ -400,7 +400,7 @@ func TestFakeKeepsTheSSHAgentForwardingOfACreatedMachine(t *testing.T) {
 	fake := New("orbit-")
 	ctx := context.Background()
 	for name, forward := range map[string]bool{"orbit-on-1d9b22c9": true, "orbit-off-00db83c9": false} {
-		if err := fake.Create(ctx, name, "/work/"+name, forward); err != nil {
+		if err := fake.Create(ctx, name, "/work/"+name, "ubuntu", forward); err != nil {
 			t.Fatalf("Create(%q) = %v", name, err)
 		}
 		if got, err := fake.SSHAgentForwarded(ctx, name); err != nil || got != forward {
@@ -419,7 +419,7 @@ func TestFakeReportsAnotherForwardingThanRequestedWhenToldTo(t *testing.T) {
 	fake := New("orbit-")
 	other := false
 	fake.CreatedForwarded = &other
-	if err := fake.Create(context.Background(), "orbit-api-1d9b22c9", "/work/api", true); err != nil {
+	if err := fake.Create(context.Background(), "orbit-api-1d9b22c9", "/work/api", "ubuntu", true); err != nil {
 		t.Fatalf("Create = %v", err)
 	}
 	if got, err := fake.SSHAgentForwarded(context.Background(), "orbit-api-1d9b22c9"); err != nil || got {
@@ -437,7 +437,7 @@ func TestFakeSSHAgentForwardedRefusesWhatTheAdapterRefuses(t *testing.T) {
 		t.Errorf("SSHAgentForwarded of a missing machine = %v, want %v", err, ErrNoMachine)
 	}
 	boom := errors.New("boom")
-	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", true); err != nil {
+	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", "ubuntu", true); err != nil {
 		t.Fatal(err)
 	}
 	fake.SSHAgentForwardedErr = boom
@@ -467,10 +467,10 @@ func TestFakeDeleteRefusesHostileNames(t *testing.T) {
 func TestFakeListsMachinesAndRecordsOnlyList(t *testing.T) {
 	fake := New("orbit-")
 	ctx := context.Background()
-	if err := fake.Create(ctx, "orbit-web-00db83c9", "/work/web", true); err != nil {
+	if err := fake.Create(ctx, "orbit-web-00db83c9", "/work/web", "ubuntu", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", true); err != nil {
+	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", "ubuntu", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := fake.Stop(ctx, "orbit-web-00db83c9"); err != nil {
@@ -501,5 +501,27 @@ func TestFakeListReturnsItsError(t *testing.T) {
 	fake.ListErr = errors.New("boom")
 	if got, err := fake.List(context.Background()); !errors.Is(err, fake.ListErr) || got != nil {
 		t.Errorf("List = %+v, %v, want %v", got, err, fake.ListErr)
+	}
+}
+
+func TestFakeCreateRecordsTheDistributionAndRefusesOthers(t *testing.T) {
+	for _, key := range []string{"ubuntu", "debian"} {
+		fake := New("orbit-")
+		if err := fake.Create(context.Background(), "orbit-api-1d9b22c9", "/work/api", key, true); err != nil {
+			t.Fatalf("Create(%q) = %v", key, err)
+		}
+		if got := fake.Calls[0].Distribution; got != key {
+			t.Errorf("recorded distribution = %q, want %q", got, key)
+		}
+	}
+	for _, key := range []string{"", "alpine", "Ubuntu", "ubuntu:26.04", "--debian"} {
+		fake := New("orbit-")
+		err := fake.Create(context.Background(), "orbit-api-1d9b22c9", "/work/api", key, true)
+		if !errors.Is(err, ErrDistribution) {
+			t.Errorf("Create(%q) = %v, want %v", key, err, ErrDistribution)
+		}
+		if _, exists := fake.Machines["orbit-api-1d9b22c9"]; exists {
+			t.Errorf("Create(%q) added a machine", key)
+		}
 	}
 }

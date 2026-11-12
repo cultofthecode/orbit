@@ -84,7 +84,10 @@ func TestCreateArgs(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := createArgs(test.machine, test.dir, test.forward)
+			got, err := createArgs(test.machine, test.dir, "ubuntu", test.forward)
+			if err != nil {
+				t.Fatalf("createArgs(%q, %q, ubuntu, %t) = %v", test.machine, test.dir, test.forward, err)
+			}
 			if !slices.Equal(got, test.want) {
 				t.Errorf("createArgs(%q, %q, %t) =\n%q, want\n%q", test.machine, test.dir, test.forward, got, test.want)
 			}
@@ -92,6 +95,74 @@ func TestCreateArgs(t *testing.T) {
 				t.Errorf("createArgs(%q, %q, %t) = %q, want the flag %t", test.machine, test.dir, test.forward, got, test.forward)
 			}
 		})
+	}
+}
+
+func TestCreateArgsPinsTheImageOfEveryDistribution(t *testing.T) {
+	want := map[string]string{"ubuntu": "ubuntu:26.04", "debian": "debian:trixie"}
+	keys := Distributions()
+	if len(keys) != len(want) {
+		t.Fatalf("Distributions() = %q, want the keys of %v", keys, want)
+	}
+	for _, key := range keys {
+		for _, forward := range []bool{false, true} {
+			got, err := createArgs("orbit-api-1d9b22c9", "/Users/dev/Project/api", key, forward)
+			if err != nil {
+				t.Fatalf("createArgs(%q) = %v", key, err)
+			}
+			for _, need := range []string{"--isolated", "--isolate-network", "/Users/dev/Project/api:/Users/dev/Project/api"} {
+				if !slices.Contains(got, need) {
+					t.Errorf("createArgs(%q) = %q, want %q", key, got, need)
+				}
+			}
+			n := len(got)
+			if got[n-2] != want[key] || got[n-1] != "orbit-api-1d9b22c9" || got[n-3] != "/Users/dev/Project/api:/Users/dev/Project/api" {
+				t.Errorf("createArgs(%q) = %q, want the image %q then the name last", key, got, want[key])
+			}
+			if got[0] != "create" || got[1] != "--isolated" || got[2] != "--isolate-network" {
+				t.Errorf("createArgs(%q) = %q, want create --isolated --isolate-network first", key, got)
+			}
+		}
+	}
+}
+
+func TestCreateArgsRefusesAnythingButAKey(t *testing.T) {
+	tests := []string{
+		"", " ", "Ubuntu", " ubuntu", "ubuntu ", "ubuntu\n", "ubuntu\ndebian",
+		"ubuntu:26.04", "debian:trixie", "debian:bookworm", "debian:latest", "bookworm", "26.04",
+		"alpine", "alpine:3.23", "ubuntu debian", "ubuntu;debian", `"ubuntu"`, "'debian'",
+		"$(debian)", "-ubuntu", "--debian", "--forward-ssh-agent", "--mount", "../ubuntu", "ubuntu\x00",
+		"docker.io/library/ubuntu", "ghcr.io/evil/image:1",
+	}
+	for _, key := range tests {
+		got, err := createArgs("orbit-api-1d9b22c9", "/Users/dev/Project/api", key, true)
+		if !errors.Is(err, ErrDistribution) {
+			t.Errorf("createArgs(%q) = %q, %v, want ErrDistribution", key, got, err)
+		}
+		if got != nil {
+			t.Errorf("createArgs(%q) = %q with an error, want no arguments", key, got)
+		}
+	}
+}
+
+func TestDistributionsReturnsACopy(t *testing.T) {
+	got := Distributions()
+	if !slices.Equal(got, []string{"ubuntu", "debian"}) {
+		t.Fatalf("Distributions() = %q, want ubuntu then debian", got)
+	}
+	got[0] = "alpine"
+	if again := Distributions(); again[0] != "ubuntu" {
+		t.Errorf("Distributions() changed through a returned slice: %q", again)
+	}
+}
+
+func TestCreateRefusesAnUnpinnedDistributionBeforeAnyCommand(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	for _, key := range []string{"", "alpine", "ubuntu:26.04", "--debian", "ubuntu;debian"} {
+		err := New(testPrefix).Create(context.Background(), "orbit-api-1d9b22c9", "/Users/dev/Project/api", key, true)
+		if !errors.Is(err, ErrDistribution) {
+			t.Errorf("Create with distribution %q = %v, want %v", key, err, ErrDistribution)
+		}
 	}
 }
 
@@ -414,7 +485,7 @@ func TestGuardsRunNoCommand(t *testing.T) {
 	client := New(testPrefix)
 	ctx := context.Background()
 
-	if err := client.Create(ctx, "ubuntu", "/Users/dev/Project/api", true); !errors.Is(err, ErrForeignMachine) {
+	if err := client.Create(ctx, "ubuntu", "/Users/dev/Project/api", "ubuntu", true); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("Create of a foreign machine = %v, want %v", err, ErrForeignMachine)
 	}
 	if err := client.Delete(ctx, "ubuntu"); !errors.Is(err, ErrForeignMachine) {
@@ -438,10 +509,10 @@ func TestGuardsRunNoCommand(t *testing.T) {
 	if err := New("").RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true\n")); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("RunAsAgent of a client without a prefix = %v, want %v", err, ErrForeignMachine)
 	}
-	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/.ssh:x", true); !errors.Is(err, ErrMountPath) {
+	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/.ssh:x", "ubuntu", true); !errors.Is(err, ErrMountPath) {
 		t.Errorf("Create with a colon in the directory = %v, want %v", err, ErrMountPath)
 	}
-	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/a,b", true); !errors.Is(err, ErrMountPath) {
+	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/a,b", "ubuntu", true); !errors.Is(err, ErrMountPath) {
 		t.Errorf("Create with a comma in the directory = %v, want %v", err, ErrMountPath)
 	}
 }
@@ -456,7 +527,7 @@ func TestFailedCommandCarriesStderr(t *testing.T) {
 	_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
 	_, stateErr := client.State(ctx, "orbit-api-1d9b22c9")
 	failures := map[string]error{
-		"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", true),
+		"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", "ubuntu", true),
 		"Exists":       existsErr,
 		"Mounts":       mountsErr,
 		"List":         listErr,
@@ -676,7 +747,7 @@ func TestNoCallStartsAStoppedOrbStack(t *testing.T) {
 			_, stateErr := client.State(ctx, "orbit-api-1d9b22c9")
 			_, shellErr := client.Shell(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 			results := map[string]error{
-				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", true),
+				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", "ubuntu", true),
 				"Exists":       existsErr,
 				"Mounts":       mountsErr,
 				"List":         listErr,
@@ -964,7 +1035,7 @@ func TestStoppedUnderAnotherHomeNamesHome(t *testing.T) {
 			_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
 			_, shellErr := client.Shell(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 			results := map[string]error{
-				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", true),
+				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", "ubuntu", true),
 				"Exists":       existsErr,
 				"Mounts":       mountsErr,
 				"List":         listErr,
@@ -1267,7 +1338,7 @@ func TestEveryCommandGetsOnlyAllowedVariables(t *testing.T) {
 	_, stateErr := client.State(ctx, machineName)
 	_, shellErr := client.Shell(ctx, machineName, "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	operations := map[string]error{
-		"Create":       client.Create(ctx, machineName, "/Users/dev/Project/api", true),
+		"Create":       client.Create(ctx, machineName, "/Users/dev/Project/api", "ubuntu", true),
 		"Exists":       existsErr,
 		"Mounts":       mountsErr,
 		"List":         listErr,
@@ -1677,7 +1748,7 @@ func TestEveryCommandRunsOrbWithTheSameEnvironment(t *testing.T) {
 	_, stateErr := client.State(ctx, machineName)
 	_, shellErr := client.Shell(ctx, machineName, projectDir, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	operations := map[string]error{
-		"Create":       client.Create(ctx, machineName, projectDir, true),
+		"Create":       client.Create(ctx, machineName, projectDir, "ubuntu", true),
 		"Exists":       existsErr,
 		"Mounts":       mountsErr,
 		"List":         listErr,

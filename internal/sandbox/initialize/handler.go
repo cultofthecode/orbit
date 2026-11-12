@@ -37,10 +37,11 @@ type Machines interface {
 	// SSHAgentForwarded reports whether the machine name forwards the SSH
 	// agent of the host. It runs nothing in the machine.
 	SSHAgentForwarded(ctx context.Context, name string) (bool, error)
-	// Create creates the isolated machine name with dir as its only mount,
-	// at the same absolute path as on the host, and forwards the SSH agent
-	// of the host only when forwardSSHAgent is true.
-	Create(ctx context.Context, name, dir string, forwardSSHAgent bool) error
+	// Create creates the isolated machine name from the pinned image of the
+	// distribution key, with dir as its only mount, at the same absolute
+	// path as on the host, and forwards the SSH agent of the host only when
+	// forwardSSHAgent is true.
+	Create(ctx context.Context, name, dir, distribution string, forwardSSHAgent bool) error
 	// RunAsRoot runs script with bash as root in the machine name and
 	// fails when the script fails.
 	RunAsRoot(ctx context.Context, name string, script []byte) error
@@ -90,6 +91,8 @@ type plan struct {
 	dir string
 	// forwardSSHAgent is true unless Input.NoSSHForwarding is set.
 	forwardSSHAgent bool
+	// distribution is the distribution of a machine that this call creates.
+	distribution sandbox.Distribution
 	// provision is the root script.
 	provision []byte
 	// dockerSetup is the client setup script of the agent user.
@@ -106,7 +109,7 @@ type plan struct {
 // in.Agent as the agent user, when in.Agent is set. The allowlist of the
 // proxy is the base list plus the egress domains of in.Agent, so a run
 // without an agent removes the domains of an earlier one. It refuses an
-// unknown agent, a directory that the mount rules of the sandbox module do
+// unknown distribution, an unknown agent, a directory that the mount rules of the sandbox module do
 // not accept, and a provisioning script that cannot be built before it asks
 // OrbStack anything, and a directory that is, lies inside, or contains the
 // project directory of another machine before it creates one. When the
@@ -131,6 +134,10 @@ func (h Handler) Handle(ctx context.Context, in Input) (Output, error) {
 // prepare resolves the agent, validates the project directory, and builds the
 // scripts, without asking OrbStack anything.
 func (h Handler) prepare(in Input) (plan, error) {
+	distribution, err := distribution(in.Distro)
+	if err != nil {
+		return plan{}, err
+	}
 	agent, err := h.agent(in.Agent)
 	if err != nil {
 		return plan{}, err
@@ -143,11 +150,20 @@ func (h Handler) prepare(in Input) (plan, error) {
 	if err != nil {
 		return plan{}, fmt.Errorf("provisioning script: %w", err)
 	}
-	p := plan{name: sandbox.MachineName(facts.Path), dir: facts.Path, forwardSSHAgent: !in.NoSSHForwarding, provision: script, dockerSetup: h.DockerSetupScript()}
+	p := plan{name: sandbox.MachineName(facts.Path), dir: facts.Path, forwardSSHAgent: !in.NoSSHForwarding, distribution: distribution, provision: script, dockerSetup: h.DockerSetupScript()}
 	if in.Agent != "" {
 		p.install = installScript(agent.Install)
 	}
 	return p, nil
+}
+
+// distribution returns the distribution that name names, or the default when
+// name is empty.
+func distribution(name string) (sandbox.Distribution, error) {
+	if name == "" {
+		return sandbox.DefaultDistribution, nil
+	}
+	return sandbox.ParseDistribution(name)
 }
 
 // agent returns the agent named name, or no agent when name is empty.
@@ -253,7 +269,7 @@ func (h Handler) ensureMachine(ctx context.Context, p plan, machines map[string]
 	if _, exists := machines[p.name]; exists {
 		return false, h.checkRunning(ctx, p.name)
 	}
-	if err := h.Machines.Create(ctx, p.name, p.dir, p.forwardSSHAgent); err != nil {
+	if err := h.Machines.Create(ctx, p.name, p.dir, string(p.distribution), p.forwardSSHAgent); err != nil {
 		return false, fmt.Errorf("create sandbox %s: %w", p.name, err)
 	}
 	return true, nil

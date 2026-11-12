@@ -26,11 +26,11 @@ type swappingMachines struct {
 }
 
 // Create swaps the directory and then creates the machine.
-func (m swappingMachines) Create(ctx context.Context, name, dir string, forwardSSHAgent bool) error {
+func (m swappingMachines) Create(ctx context.Context, name, dir, distribution string, forwardSSHAgent bool) error {
 	if err := m.swap(); err != nil {
 		return err
 	}
-	return m.Machines.Create(ctx, name, dir, forwardSSHAgent)
+	return m.Machines.Create(ctx, name, dir, distribution, forwardSSHAgent)
 }
 
 // TestEscapeSymlinkSwap runs E16 under the exclusive init lock: while the

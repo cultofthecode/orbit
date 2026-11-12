@@ -137,6 +137,12 @@ func newMachine(t *testing.T, dir string) (*Client, string) {
 // forward names.
 func newForwardingMachine(t *testing.T, dir string, forward bool) (*Client, string) {
 	t.Helper()
+	return newDistroMachine(t, dir, "ubuntu", forward)
+}
+
+// newDistroMachine is newForwardingMachine for the distribution key.
+func newDistroMachine(t *testing.T, dir, distribution string, forward bool) (*Client, string) {
+	t.Helper()
 	ctx, cancel := createContext(t)
 	defer cancel()
 	client := New(integrationPrefix)
@@ -152,7 +158,7 @@ func newForwardingMachine(t *testing.T, dir string, forward bool) (*Client, stri
 			t.Errorf("Exists(%q) after Delete = %v, %v, want false", name, exists, err)
 		}
 	})
-	if err := client.Create(ctx, name, dir, forward); err != nil {
+	if err := client.Create(ctx, name, dir, distribution, forward); err != nil {
 		t.Fatalf("Create(%q, %q) = %v", name, dir, err)
 	}
 	t.Logf("created the machine %s with the mount %s", name, dir)
@@ -209,6 +215,32 @@ func TestCreateMountsOnlyTheDirectoryAtItsOwnPath(t *testing.T) {
 // swapped between two starts does not show there. While the machine exists,
 // init refuses every directory, so the test blocks the init tests of every
 // run on the host.
+// TestCreateUsesThePinnedImageOfEveryDistribution creates one machine per
+// distribution, one after the other, and reads the release that runs in it.
+func TestCreateUsesThePinnedImageOfEveryDistribution(t *testing.T) {
+	want := map[string][]string{
+		"ubuntu": {"ID=ubuntu", `VERSION_ID="26.04"`},
+		"debian": {"ID=debian", `VERSION_ID="13"`},
+	}
+	for _, key := range Distributions() {
+		t.Run(key, func(t *testing.T) {
+			dir := hostDir(t)
+			client, name := newDistroMachine(t, dir, key, false)
+			ctx := testContext(t)
+			checkMounts(ctx, t, client, name, map[string]string{dir: dir}, map[string]string{dir: dir})
+			release, err := inMachine(ctx, name, "cat", "/etc/os-release")
+			if err != nil {
+				t.Fatalf("cat /etc/os-release = %v: %s", err, release)
+			}
+			for _, line := range want[key] {
+				if !slices.Contains(strings.Split(release, "\n"), line) {
+					t.Errorf("os-release of the %s machine = %q, want the line %q", key, release, line)
+				}
+			}
+		})
+	}
+}
+
 func TestActiveMountsShowASwappedPath(t *testing.T) {
 	blockInit(t)
 	base := hostDir(t)

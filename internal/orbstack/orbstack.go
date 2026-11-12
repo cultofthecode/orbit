@@ -33,8 +33,47 @@ const rootUser = "root"
 // user that provisioning creates for the agent.
 const AgentUser = "agent"
 
-// image is the distribution of every machine that the adapter creates.
-const image = "ubuntu:26.04"
+// pin is the image that the adapter passes to orb create for one
+// distribution.
+type pin struct {
+	// key is the plain name of the distribution that a caller passes.
+	key string
+	// image is the OrbStack image of that distribution, with its version
+	// pinned: never a bare name, which OrbStack resolves to a release of its
+	// own choice (debian to bookworm, OrbStack 2.2.5).
+	image string
+}
+
+// pins is the only place in the repository that names an OrbStack image
+// (R07). The keys are the values of sandbox.Distribution, which the adapter
+// cannot import; a test in cmd/orbit keeps the two lists equal. A pin
+// changes only in a change that runs the integration tests and the escape
+// suite on it.
+var pins = []pin{
+	{key: "ubuntu", image: "ubuntu:26.04"},
+	{key: "debian", image: "debian:trixie"},
+}
+
+// Distributions returns the keys of the distributions that Create accepts,
+// in a new slice.
+func Distributions() []string {
+	keys := make([]string, len(pins))
+	for i, p := range pins {
+		keys[i] = p.key
+	}
+	return keys
+}
+
+// pinnedImage returns the image of the distribution key, matched exactly, or
+// ErrDistribution.
+func pinnedImage(key string) (string, error) {
+	for _, p := range pins {
+		if p.key == key {
+			return p.image, nil
+		}
+	}
+	return "", fmt.Errorf("%w: %q; use one of: %s", ErrDistribution, key, strings.Join(Distributions(), ", "))
+}
 
 // States that "orb status" prints. It reports the state of OrbStack without
 // starting it.
@@ -99,6 +138,10 @@ const (
 )
 
 var (
+	// ErrDistribution reports a distribution key that has no pinned image.
+	// Create refuses it before any command: no image or version of a caller
+	// reaches orb create.
+	ErrDistribution = errors.New("distribution has no pinned image")
 	// ErrForeignMachine reports a machine name without the prefix of the
 	// client. The client creates and deletes only machines with its prefix.
 	ErrForeignMachine = errors.New("machine name does not start with the required prefix")
@@ -151,19 +194,25 @@ func New(prefix string) *Client {
 	return &Client{prefix: prefix}
 }
 
-// Create creates the isolated machine name with dir as its only mount, at the
+// Create creates the isolated machine name from the pinned image of the
+// distribution key (one of Distributions) with dir as its only mount, at the
 // same absolute path as on the host, and forwards the SSH agent of the host
 // into it only when forwardSSHAgent is true. OrbStack fixes that setting when
 // it creates the machine. It runs no command when name lacks the prefix of
-// the client or dir cannot be mounted.
-func (c *Client) Create(ctx context.Context, name, dir string, forwardSSHAgent bool) error {
+// the client, key has no pinned image (ErrDistribution), or dir cannot be
+// mounted.
+func (c *Client) Create(ctx context.Context, name, dir, key string, forwardSSHAgent bool) error {
 	if err := c.checkOwned(name); err != nil {
 		return err
 	}
 	if err := checkMountable(dir); err != nil {
 		return err
 	}
-	if _, err := run(ctx, createArgs(name, dir, forwardSSHAgent), nil); err != nil {
+	args, err := createArgs(name, dir, key, forwardSSHAgent)
+	if err != nil {
+		return err
+	}
+	if _, err := run(ctx, args, nil); err != nil {
 		return fmt.Errorf("create machine %s: %w", name, err)
 	}
 	return nil
@@ -426,13 +475,19 @@ const forwardFlag = "--forward-ssh-agent"
 // createArgs returns the arguments of orb that create the machine name. The
 // machine is always isolated, also on the network, and dir is always mounted
 // at its own path: a mount without a destination lands under /mnt/mac. The
-// flag that forwards the SSH agent is there only when forward is true.
-func createArgs(name, dir string, forward bool) []string {
+// flag that forwards the SSH agent is there only when forward is true. The
+// image is the pin of the distribution key; a key without a pin fails with
+// ErrDistribution and yields no arguments.
+func createArgs(name, dir, key string, forward bool) ([]string, error) {
+	image, err := pinnedImage(key)
+	if err != nil {
+		return nil, err
+	}
 	args := []string{"create", "--isolated", "--isolate-network"}
 	if forward {
 		args = append(args, forwardFlag)
 	}
-	return append(args, "--mount", dir+mountSeparator+dir, image, name)
+	return append(args, "--mount", dir+mountSeparator+dir, image, name), nil
 }
 
 // statusArgs returns the arguments of orb that print the state of OrbStack
