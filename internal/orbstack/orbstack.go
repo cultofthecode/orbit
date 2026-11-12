@@ -44,6 +44,9 @@ const (
 	statusStopped  = "Stopped"
 )
 
+// installURL is where a user finds OrbStack.
+const installURL = "https://orbstack.dev"
+
 // stateDir is the directory under $HOME through which orb finds OrbStack.
 const stateDir = ".orbstack"
 
@@ -116,6 +119,10 @@ var (
 	// sandbox.MachineName computes has none, and Start, Stop, and Delete pass
 	// only such a name to orb.
 	ErrMachineName = errors.New("machine name holds white space")
+	// ErrNotInstalled reports that orb is not on PATH, so OrbStack is not
+	// installed or orb cannot be found. The client then runs no other command.
+	// The error wraps exec.ErrNotFound as well.
+	ErrNotInstalled = errors.New("OrbStack is not installed or orb is not on PATH")
 	// ErrNotRunning reports that OrbStack is not running. The client then
 	// runs no other command, because orb starts a stopped OrbStack.
 	ErrNotRunning = errors.New("OrbStack is not running")
@@ -723,9 +730,12 @@ func checkRunning(ctx context.Context) error {
 // its error, and for homeCause, the reason why HOME may not lead orb to
 // OrbStack: nil only for a running OrbStack, ErrHome for a stopped or
 // starting one when homeCause is not empty, ErrNotRunning for a stopped or
-// starting one otherwise, and an error for anything else.
+// starting one otherwise, ErrNotInstalled for an orb that cannot be found,
+// and an error for anything else.
 func statusError(status string, err error, homeCause string) error {
 	switch {
+	case errors.Is(err, exec.ErrNotFound):
+		return fmt.Errorf("%w (%w); install OrbStack with `brew install --cask orbstack` or from %s, make sure orb is on PATH, and try again", ErrNotInstalled, err, installURL)
 	case isNotRunning(status) && homeCause != "":
 		return fmt.Errorf("%w (orb status: %s): orb finds OrbStack through $HOME/%s, so OrbStack may still be running; %s", ErrHome, status, stateDir, homeCause)
 	case isNotRunning(status):
