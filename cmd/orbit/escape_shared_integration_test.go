@@ -38,7 +38,8 @@ func TestEscapeShared(t *testing.T) {
 	}
 	rig := escapeRig{client: client, name: name, tally: &counts}
 	buildProbeImage(ctx, t, rig)
-	env := newEscapeEnv(ctx, t, dir, rig)
+	env := newEscapeEnv(t, dir, rig)
+	env.hostContainer, env.hostContainerErr = startHostContainer(ctx, t)
 	env.target, env.targetAddr = startTarget(ctx, t, client)
 	t.Logf("sandbox %s, target of E11 %s at %s", name, env.target, env.targetAddr)
 

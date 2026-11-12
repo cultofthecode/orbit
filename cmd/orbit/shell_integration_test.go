@@ -99,7 +99,7 @@ var restoreMarker = fmt.Sprintf("set -eu\nprintf '%%s\\n' %d > /etc/orbit/provis
 // same path on the host; its status passes through; ORBENV and a secret of
 // the host do not reach it (R08, #76). Then the refusals: no
 // sandbox, an outdated or missing marker, and a stopped sandbox, which
-// stays stopped. The escape suite (#10) is not part of this test.
+// stays stopped. The refusal with a failed boundary unit is E14 of the escape suite (TestEscapeRestart).
 func TestShellIsTheAgentInTheProjectDirectory(t *testing.T) {
 	waitToRunInit(t)
 	ctx, cancel := context.WithTimeout(context.Background(), shellTimeout)
@@ -117,7 +117,6 @@ func TestShellIsTheAgentInTheProjectDirectory(t *testing.T) {
 	checkWorktreeOnTheHost(t, dir)
 	checkShellWithoutASandbox(ctx, t, handler, dir)
 	checkShellNotReady(ctx, t, client, handler, dir, name)
-	checkShellWithAFailedBoundaryUnit(ctx, t, client, handler, dir, name)
 	checkShellInAStoppedSandbox(ctx, t, client, handler, dir, name)
 	expectOrbStackRunning(t)
 }
@@ -220,38 +219,6 @@ func checkShellNotReady(ctx context.Context, t *testing.T, client *orbstack.Clie
 	}
 	if err := client.RunAsRoot(ctx, name, []byte(restoreMarker)); err != nil {
 		t.Fatalf("restore the marker of %s: %v", name, err)
-	}
-}
-
-// failBoundaryUnit stops the proxy, which also stops
-// systemd-user-sessions.service, and leaves /run/nologin as a failed boot
-// does.
-const failBoundaryUnit = "set -eu\nsystemctl stop tinyproxy.service\ntouch /run/nologin\n"
-
-// restoreBoundaryUnit starts the proxy and the login gate again.
-const restoreBoundaryUnit = "set -eu\nrm -f /run/nologin\nsystemctl start tinyproxy.service systemd-user-sessions.service\n"
-
-// checkShellWithAFailedBoundaryUnit stops a boundary unit and expects
-// ErrNotProvisioned naming the unit, without a shell (#74). It logs whether
-// a raw orb session as the agent still opens, which is the known limitation
-// that the documents state: orb ignores /run/nologin. It restores the
-// sandbox and expects the shell to open again.
-func checkShellWithAFailedBoundaryUnit(ctx context.Context, t *testing.T, client *orbstack.Client, handler shell.Handler, dir, name string) {
-	t.Helper()
-	if err := client.RunAsRoot(ctx, name, []byte(failBoundaryUnit)); err != nil {
-		t.Fatalf("fail a boundary unit of %s: %v", name, err)
-	}
-	_, streams, err := openShell(ctx, handler, dir, "echo opened\n")
-	if !errors.Is(err, shell.ErrNotProvisioned) || !strings.Contains(err.Error(), "tinyproxy.service is not active") || streams != "" {
-		t.Errorf("shell with tinyproxy.service stopped = %v, %q, want %v naming the unit, and no shell", err, streams, shell.ErrNotProvisioned)
-	}
-	raw, rawErr := exec.CommandContext(ctx, "orb", "-m", name, "-u", "agent", "id", "-un").CombinedOutput()
-	t.Logf("raw orb session as agent with /run/nologin and a stopped unit (ungated, #74): %q, %v", strings.TrimSpace(string(raw)), rawErr)
-	if err := client.RunAsRoot(ctx, name, []byte(restoreBoundaryUnit)); err != nil {
-		t.Fatalf("restore the boundary unit of %s: %v", name, err)
-	}
-	if _, streams, err := openShell(ctx, handler, dir, "exit 0\n"); err != nil {
-		t.Errorf("shell after the boundary unit is active again = %v, %q, want a shell", err, streams)
 	}
 }
 

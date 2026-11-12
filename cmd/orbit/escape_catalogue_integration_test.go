@@ -167,7 +167,7 @@ func logOrbStackVersionOnce(t *testing.T) {
 			return
 		}
 		mac, _ := exec.Command("sw_vers", "-productVersion").Output()
-		t.Logf("OrbStack: %s; macOS %s; orbit provision version %d", strings.Join(strings.Fields(strings.ReplaceAll(string(out), "\n", ", ")), " "), strings.TrimSpace(string(mac)), provision.Version)
+		t.Logf("OrbStack: %s; macOS %s; orbit provision version %d", strings.Join(strings.Fields(string(out)), " "), strings.TrimSpace(string(mac)), provision.Version)
 	})
 	if header.err != nil {
 		t.Fatal(header.err)
@@ -216,10 +216,9 @@ func (e escapeEnv) fill(body string) string {
 	).Replace(body)
 }
 
-// newEscapeEnv writes the sentinel files, listens on the Mac, finds the LAN
-// address, and starts the host container. A failure of the host container
-// is kept for the control of E04.
-func newEscapeEnv(ctx context.Context, t *testing.T, dir string, rig escapeRig) escapeEnv {
+// newEscapeEnv writes the sentinel files, listens on the Mac, and finds the
+// LAN address.
+func newEscapeEnv(t *testing.T, dir string, rig escapeRig) escapeEnv {
 	t.Helper()
 	e := escapeEnv{dir: dir, rig: rig, defaultUID: os.Getuid(), sentinelContent: fmt.Sprintf("secret-%d-%d", os.Getpid(), os.Getuid())}
 	e.sentinel = filepath.Join(filepath.Dir(dir), "escape-sentinel-"+filepath.Base(dir))
@@ -232,7 +231,6 @@ func newEscapeEnv(ctx context.Context, t *testing.T, dir string, rig escapeRig) 
 	}
 	e.macPort = serveOnTheMac(t)
 	e.macLAN = macLANAddress()
-	e.hostContainer, e.hostContainerErr = startHostContainer(ctx, t)
 	return e
 }
 
