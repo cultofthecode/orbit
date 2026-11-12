@@ -68,6 +68,15 @@ func (m accountHomeMachines) Mounts(ctx context.Context) (map[string]map[string]
 	return mounts, err
 }
 
+func (m accountHomeMachines) State(ctx context.Context, name string) (string, error) {
+	var state string
+	err := m.withAccountHome(func() (err error) {
+		state, err = m.machines.State(ctx, name)
+		return err
+	})
+	return state, err
+}
+
 func (m accountHomeMachines) ActiveMounts(ctx context.Context, name string) (map[string]string, error) {
 	var mounts map[string]string
 	err := m.withAccountHome(func() (err error) {
