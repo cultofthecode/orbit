@@ -9,6 +9,7 @@ import (
 	"io"
 	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -47,12 +48,28 @@ const (
 	OpCreate            = "create"
 	OpSSHAgentForwarded = "ssh-agent-forwarded"
 	OpMounts            = "mounts"
+	OpList              = "list"
 	OpActiveMounts      = "active-mounts"
 	OpDelete            = "delete"
 	OpRunAsRoot         = "run-as-root"
 	OpRunAsAgent        = "run-as-agent"
 	OpShell             = "shell"
 )
+
+// Machine is one machine as List reports it. The fake has its own type
+// because it imports nothing from the adapter or from a slice.
+type Machine struct {
+	Name   string
+	State  string
+	Mounts []Mount
+}
+
+// Mount is one stored mount of a Machine: the host directory and the path in
+// the machine.
+type Mount struct {
+	Source      string
+	Destination string
+}
 
 // Call is one call that a Fake received.
 type Call struct {
@@ -100,6 +117,13 @@ type Fake struct {
 	SSHAgentForwardedErr error
 	// CreateErr, when set, is the result of every Create call.
 	CreateErr error
+	// Listed holds raw entries that List returns after the machines of the
+	// fake, as they are: foreign names, no state, odd mounts. The real
+	// client drops foreign names; a test of a handler seeds them to check
+	// that it drops them again.
+	Listed []Machine
+	// ListErr, when set, is the result of every List call.
+	ListErr error
 	// MountsErr, when set, is the result of every Mounts call.
 	MountsErr error
 	// ActiveMountsErr, when set, is the result of every ActiveMounts call.
@@ -250,6 +274,25 @@ func (f *Fake) Mounts(_ context.Context) (map[string]map[string]string, error) {
 		mounts[name] = maps.Clone(machineMounts)
 	}
 	return mounts, nil
+}
+
+// List returns every machine of the fake, sorted by name, with its state and
+// its configured mounts sorted by mount point, followed by the entries of
+// Listed. It records only OpList and never changes a state.
+func (f *Fake) List(_ context.Context) ([]Machine, error) {
+	f.Calls = append(f.Calls, Call{Op: OpList})
+	if f.ListErr != nil {
+		return nil, f.ListErr
+	}
+	var machines []Machine
+	for _, name := range slices.Sorted(maps.Keys(f.Machines)) {
+		machine := Machine{Name: name, State: f.state(name)}
+		for _, point := range slices.Sorted(maps.Keys(f.Machines[name])) {
+			machine.Mounts = append(machine.Mounts, Mount{Source: f.Machines[name][point], Destination: point})
+		}
+		machines = append(machines, machine)
+	}
+	return append(machines, f.Listed...), nil
 }
 
 // ActiveMounts returns a copy of the active mounts of the machine name: those
