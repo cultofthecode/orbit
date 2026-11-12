@@ -60,7 +60,7 @@ The table "What is Debian/Ubuntu-specific today" on #46 states premises that the
 
 ## 📝 Prior spec drift
 
-- `.ai/specs/2026-11-10-sandbox-provisioning.md`, API Contracts and Phase 1: `Script(defaultUID)` writes version `1`, and the proxy allows port 443 only. The code has `Script(ScriptInput{DefaultUID, AgentDomains, ForwardSSHAgent})` and `Version = 3` (`internal/provision/script.go:17`), and allows ports 80 and 443 (D26). It also installs rootless Docker (`docker.go`). This spec starts from the code.
+- `.ai/specs/2026-11-10-sandbox-provisioning.md`, API Contracts and Phase 1: `Script(defaultUID)` writes version `1`, and the proxy allows port 443 only. The code has `Script(ScriptInput{DefaultUID, AgentDomains, ForwardSSHAgent})` and `Version = 3` (`internal/provision/script.go:16`), and allows ports 80 and 443 (D26). It also installs rootless Docker (`docker.go`). This spec starts from the code.
 - The same spec, Units: the gate "does not reach `orb` sessions". This is already in the code comments (`internal/provision/check.go`, `ReadinessScript`) and in `internal/provision/AGENTS.md`. In sync. The epic table was the outlier.
 
 ## 📝 Proposed Solution
