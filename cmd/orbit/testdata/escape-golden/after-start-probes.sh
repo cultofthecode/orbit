@@ -21,18 +21,29 @@ for unit in nftables.service orbit-proxy-address.service tinyproxy.service orbit
   [ "${at:-0}" -gt "$latest" ] && latest=$at
 done
 agents=0
+late=0
 : > /run/orbit-it-boot-processes
 chmod 0644 /run/orbit-it-boot-processes
 for dir in /proc/[0-9]*; do
   uid=$(awk '/^Uid:/ {print $2}' "$dir/status" 2>/dev/null) || continue
   [ -n "$uid" ] && [ "$uid" -ge 1000 ] || continue
   unit=$(awk -F: '$1 == "0" {print $3}' "$dir/cgroup" 2>/dev/null | tr / '\n' | grep -m1 -E '[.](service|scope)$') || unit=""
-  [ -n "$unit" ] || { fail "process ${dir#/proc/} with uid $uid is in no unit"; continue; }
-  started=$(systemctl show -p InactiveExitTimestampMonotonic --value "$unit")
   agents=$((agents + 1))
-  echo "process ${dir#/proc/} uid $uid ppid $(awk '/^PPid:/ {print $2}' "$dir/status") ($(tr '\0' ' ' < "$dir/cmdline" | cut -c1-80)) in $unit, which started at $started us" >> /run/orbit-it-boot-processes
-  [ "${started:-0}" -gt "$latest" ] || fail "process ${dir#/proc/} with uid $uid runs in $unit, which started at $started us, before the boundary was active at $latest us"
+  described="process ${dir#/proc/} uid $uid ppid $(awk '/^PPid:/ {print $2}' "$dir/status") ($(tr '\0' ' ' < "$dir/cmdline" | cut -c1-80))"
+  if [ -z "$unit" ]; then
+    late=$((late + 1))
+    echo "$described in no unit" >> /run/orbit-it-boot-processes
+    fail "process ${dir#/proc/} with uid $uid is in no unit"
+    continue
+  fi
+  started=$(systemctl show -p InactiveExitTimestampMonotonic --value "$unit")
+  echo "$described in $unit, which started at $started us" >> /run/orbit-it-boot-processes
+  [ "${started:-0}" -gt "$latest" ] || { late=$((late + 1)); fail "process ${dir#/proc/} with uid $uid runs in $unit, which started at $started us, before the boundary was active at $latest us"; }
 done
-echo "boundary active at $latest us; $agents processes with a uid from 1000 up, all started later" >> /run/orbit-it-boot-processes
+if [ "$late" -eq 0 ]; then
+  echo "boundary active at $latest us; $agents processes with a uid from 1000 up, all started later" >> /run/orbit-it-boot-processes
+else
+  echo "boundary active at $latest us; $agents processes with a uid from 1000 up, $late not started after the boundary or in no unit" >> /run/orbit-it-boot-processes
+fi
 { loginctl list-users --no-legend; systemctl list-units --type=service,scope --state=active --no-legend 'user@*' 'session-*' 2>/dev/null; } >> /run/orbit-it-boot-processes 2>&1 || true
 [ "$failures" -eq 0 ]

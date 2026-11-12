@@ -41,6 +41,25 @@ func TestOrbitRegistersInitWithClaudeCode(t *testing.T) {
 	}
 }
 
+func TestOrbitRegistersVersion(t *testing.T) {
+	root, err := newOrbit()
+	if err != nil {
+		t.Fatalf("newOrbit = %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), root, []string{"--version"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("orbit --version = %d, %s", code, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "orbit version ") {
+		t.Errorf("orbit --version = %q, want it to start with %q", stdout.String(), "orbit version ")
+	}
+	for _, command := range root.Commands() {
+		if command.Name() == "version" {
+			t.Error("orbit has a version command, want only the flag (D19)")
+		}
+	}
+}
+
 func TestOrbitRegistersStop(t *testing.T) {
 	root, err := newOrbit()
 	if err != nil {
