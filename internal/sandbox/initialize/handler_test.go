@@ -116,36 +116,65 @@ func lookupAgent(name string) (sandbox.Agent, error) {
 // database, knows testAgent, and builds the root script with fakeScript.
 func newHandler(fake *orbstacktest.Fake, entry *user.User) Handler {
 	return Handler{
-		Machines:        fake,
-		Agent:           lookupAgent,
-		ProvisionScript: fakeScript,
-		CurrentUser:     func() (*user.User, error) { return entry, nil },
+		Machines:          fake,
+		Agent:             lookupAgent,
+		ProvisionScript:   fakeScript,
+		DockerSetupScript: func() []byte { return []byte(testDockerSetupScript) },
+		CurrentUser:       func() (*user.User, error) { return entry, nil },
 	}
 }
 
-// fakeScript returns a root script that names the default uid and the agent
-// domains.
-func fakeScript(defaultUID uint32, agentDomains []string) ([]byte, error) {
-	return []byte(scriptFor(defaultUID, agentDomains)), nil
+// newHandlerOn is newHandler on any machines.
+func newHandlerOn(machines Machines, entry *user.User) Handler {
+	handler := newHandler(nil, entry)
+	handler.Machines = machines
+	return handler
 }
 
-// scriptFor returns the script that fakeScript builds for uid and
-// agentDomains.
-func scriptFor(uid uint32, agentDomains []string) string {
-	return "provision with the default uid " + strconv.FormatUint(uint64(uid), 10) + " and the agent domains [" + strings.Join(agentDomains, " ") + "]\n"
+// failingScript is a fake whose RunAsAgent fails for one script only.
+type failingScript struct {
+	*orbstacktest.Fake
+	script string
+	err    error
+}
+
+// RunAsAgent records script and fails when it is the failing script.
+func (f failingScript) RunAsAgent(ctx context.Context, name string, script []byte) error {
+	if err := f.Fake.RunAsAgent(ctx, name, script); err != nil {
+		return err
+	}
+	if string(script) == f.script {
+		return f.err
+	}
+	return nil
+}
+
+// fakeScript returns a root script that names the default uid, the agent
+// domains, and the SSH agent forwarding.
+func fakeScript(defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error) {
+	return []byte(scriptFor(defaultUID, agentDomains, forwardSSHAgent)), nil
+}
+
+// scriptFor returns the script that fakeScript builds for uid, agentDomains,
+// and forward.
+func scriptFor(uid uint32, agentDomains []string, forward bool) string {
+	return "provision with the default uid " + strconv.FormatUint(uint64(uid), 10) + " and the agent domains [" + strings.Join(agentDomains, " ") + "] and SSH agent forwarding " + strconv.FormatBool(forward) + "\n"
 }
 
 // ownScript returns the script that fakeScript builds for the user who runs
 // the test, without an agent.
 func ownScript() string {
-	return scriptFor(uint32(os.Getuid()), nil)
+	return scriptFor(uint32(os.Getuid()), nil, true)
 }
 
 // ownAgentScript returns the script that fakeScript builds for the user who
 // runs the test, with testAgent.
 func ownAgentScript() string {
-	return scriptFor(uint32(os.Getuid()), testAgent.EgressDomains)
+	return scriptFor(uint32(os.Getuid()), testAgent.EgressDomains, true)
 }
+
+// testDockerSetupScript is the client setup script that newHandler passes.
+const testDockerSetupScript = "set up the Docker client of the agent user\n"
 
 // testInstallScript is the install script of testAgent that the handler
 // runs as the agent user.
@@ -156,6 +185,7 @@ const testInstallScript = "{\nset -euo pipefail\nset -a\n. /etc/environment\nset
 func agentCalls(name string) []orbstacktest.Call {
 	return []orbstacktest.Call{
 		{Op: orbstacktest.OpRunAsRoot, Name: name, Script: ownAgentScript()},
+		{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testDockerSetupScript},
 		{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testInstallScript},
 	}
 }
@@ -227,7 +257,8 @@ func checkCreates(t *testing.T, entry *user.User, dir, project string) {
 func checkedCreateCalls(name, project string) []orbstacktest.Call {
 	return []orbstacktest.Call{
 		{Op: orbstacktest.OpMounts},
-		{Op: orbstacktest.OpCreate, Name: name, Dir: project},
+		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true},
+		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpActiveMounts, Name: name},
 	}
@@ -238,27 +269,31 @@ func checkedCreateCalls(name, project string) []orbstacktest.Call {
 func checkedKeepCalls(name string) []orbstacktest.Call {
 	return []orbstacktest.Call{
 		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpActiveMounts, Name: name},
 	}
 }
 
-// provisionCall is the call that provisions the machine name for the user
-// who runs the test.
-func provisionCall(name string) orbstacktest.Call {
-	return orbstacktest.Call{Op: orbstacktest.OpRunAsRoot, Name: name, Script: ownScript()}
+// provisionCalls are the calls that provision the machine name for the user
+// who runs the test and set up its Docker client.
+func provisionCalls(name string) []orbstacktest.Call {
+	return []orbstacktest.Call{
+		{Op: orbstacktest.OpRunAsRoot, Name: name, Script: ownScript()},
+		{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testDockerSetupScript},
+	}
 }
 
 // createCalls returns the calls that create, check, and provision the
 // machine name of the directory project.
 func createCalls(name, project string) []orbstacktest.Call {
-	return append(checkedCreateCalls(name, project), provisionCall(name))
+	return slices.Concat(checkedCreateCalls(name, project), provisionCalls(name))
 }
 
 // keepCalls returns the calls that find, check, and provision the machine
 // name.
 func keepCalls(name string) []orbstacktest.Call {
-	return append(checkedKeepCalls(name), provisionCall(name))
+	return slices.Concat(checkedKeepCalls(name), provisionCalls(name))
 }
 
 func TestHandleCreatesTheMachine(t *testing.T) {
@@ -285,6 +320,7 @@ func TestHandleKeepsAnExistingMachine(t *testing.T) {
 	name := sandbox.MachineName(project)
 	fake := orbstacktest.New(sandbox.NamePrefix)
 	fake.Machines[name] = map[string]string{project: project}
+	fake.Forwarded[name] = true
 
 	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
 
@@ -640,22 +676,22 @@ func TestHandleRefusesAnExistingMachineThatMountsAnotherDirectory(t *testing.T) 
 		{
 			name:       "configured with .ssh",
 			configured: map[string]string{project: ssh},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "configured with a second mount",
 			configured: map[string]string{project: project, "/home/dev": home},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "configured at another path",
 			configured: map[string]string{"/mnt/mac" + project: project},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "no mount",
 			configured: map[string]string{},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "mounts .ssh after a swap",
@@ -668,6 +704,7 @@ func TestHandleRefusesAnExistingMachineThatMountsAnotherDirectory(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			fake := orbstacktest.New(sandbox.NamePrefix)
 			fake.Machines[name] = test.configured
+			fake.Forwarded[name] = true
 			if test.active != nil {
 				fake.Active[name] = test.active
 			}
@@ -1006,6 +1043,12 @@ func unreadable(t *testing.T, path string) {
 // file file has another hard link, and that the error names file.
 func checkHardLinkRefusal(t *testing.T, home, dir, file string) {
 	t.Helper()
+	_ = refuseHardLink(t, home, dir, file)
+}
+
+// refuseHardLink runs checkHardLinkRefusal and returns the refusal.
+func refuseHardLink(t *testing.T, home, dir, file string) error {
+	t.Helper()
 	fake := orbstacktest.New(sandbox.NamePrefix)
 
 	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: dir})
@@ -1019,6 +1062,7 @@ func checkHardLinkRefusal(t *testing.T, home, dir, file string) {
 	if len(fake.Calls) != 0 {
 		t.Errorf("calls = %v, want none", fake.Calls)
 	}
+	return err
 }
 
 // TestHandleRefusesAHardLinkedProtectedFile covers a .claude.json with
@@ -1052,6 +1096,18 @@ func TestHandleRefusesAHardLinkedProtectedFile(t *testing.T) {
 		symlinkAt(t, target, filepath.Join(home, ".claude.json"))
 		checkHardLinkRefusal(t, home, filepath.Join(home, "work", "api"), target)
 	})
+	t.Run("other link inside a walked protected directory names the one-link file", func(t *testing.T) {
+		home := newHome(t)
+		file := filepath.Join(home, ".claude.json")
+		writeFile(t, file)
+		walked := filepath.Join(home, ".claude", "claude.json.bak")
+		writeFile(t, filepath.Join(home, ".claude", "settings.json"))
+		hardLink(t, file, walked)
+		err := refuseHardLink(t, home, filepath.Join(home, "work", "api"), file)
+		if strings.Contains(err.Error(), walked) {
+			t.Errorf("Handle() = %v, want it not to name %s", err, walked)
+		}
+	})
 	t.Run("single link", func(t *testing.T) {
 		home := newHome(t)
 		file := filepath.Join(home, ".claude.json")
@@ -1067,6 +1123,376 @@ func TestHandleRefusesAHardLinkedProtectedFile(t *testing.T) {
 		hardLink(t, other, filepath.Join(home, "work", "api", "notes.txt"))
 		checkCreates(t, account(home), filepath.Join(home, "work", "api"), filepath.Join(home, "work", "api"))
 	})
+}
+
+// credentialFile makes the empty file rel, relative to home, with its parent
+// directories, and returns its path.
+func credentialFile(t *testing.T, home, rel string) string {
+	t.Helper()
+	makeDirs(t, home, filepath.Dir(rel))
+	path := filepath.Join(home, rel)
+	writeFile(t, path)
+	return path
+}
+
+// linkedCredential makes the credential file rel in home with another hard
+// link at link, takes every permission from the file, and returns its path.
+func linkedCredential(t *testing.T, home, rel, link string) string {
+	t.Helper()
+	file := credentialFile(t, home, rel)
+	hardLink(t, file, link)
+	unreadable(t, file)
+	return file
+}
+
+// linkedIntoProject makes the credential file rel in home with another hard
+// link in the project directory work/api, and returns its path.
+func linkedIntoProject(t *testing.T, home, rel string) string {
+	t.Helper()
+	return linkedCredential(t, home, rel, filepath.Join(home, "work", "api", filepath.Base(rel)))
+}
+
+// linkedOutside makes the credential file rel in home with another hard link
+// outside every project directory, and returns its path.
+func linkedOutside(t *testing.T, home, rel string) string {
+	t.Helper()
+	return linkedCredential(t, home, rel, filepath.Join(newDir(t), filepath.Base(rel)))
+}
+
+// hardLinkLayout is a layout of files in a bare home directory and the
+// protected file with another hard link that the handler must name when it
+// refuses work/api; an empty file means that the handler accepts it.
+type hardLinkLayout struct {
+	name   string
+	layout func(t *testing.T, home string) (file string)
+}
+
+// checkHardLinkLayouts builds each layout in a new bare home directory and
+// runs the handler for work/api.
+func checkHardLinkLayouts(t *testing.T, layouts []hardLinkLayout) {
+	t.Helper()
+	for _, test := range layouts {
+		t.Run(test.name, func(t *testing.T) {
+			home := newBareHome(t)
+			file := test.layout(t, home)
+			project := filepath.Join(home, "work", "api")
+			if file == "" {
+				checkCreates(t, account(home), project, project)
+				return
+			}
+			checkHardLinkRefusal(t, home, project, file)
+		})
+	}
+}
+
+// TestHandleRefusesHardLinkedFilesInProtectedDirectories covers a regular
+// file in a protected directory with a hard link outside every protected
+// location (#69): the agent could read and rewrite it through a link in its
+// project directory. A link next to the target of a per-file symlink counts
+// as outside too, because the walk does not list that directory. Every file
+// is unreadable, so the test fails when the handler opens one (D08).
+func TestHandleRefusesHardLinkedFilesInProtectedDirectories(t *testing.T) {
+	layouts := []hardLinkLayout{
+		{name: "settings of Claude Code in the project", layout: func(t *testing.T, home string) string {
+			return linkedIntoProject(t, home, ".claude/settings.json")
+		}},
+		{name: "SSH configuration in the project", layout: func(t *testing.T, home string) string {
+			return linkedIntoProject(t, home, ".ssh/config")
+		}},
+		{name: "AWS credentials in the project", layout: func(t *testing.T, home string) string {
+			return linkedIntoProject(t, home, ".aws/credentials")
+		}},
+		{name: "token of the GitHub CLI in the project", layout: func(t *testing.T, home string) string {
+			return linkedIntoProject(t, home, ".config/gh/hosts.yml")
+		}},
+		{name: "deep file in the project", layout: func(t *testing.T, home string) string {
+			return linkedIntoProject(t, home, ".gnupg/private-keys-v1.d/key.key")
+		}},
+		{name: "other link outside every project", layout: func(t *testing.T, home string) string {
+			return linkedOutside(t, home, ".claude/settings.json")
+		}},
+		{name: "one of two inside links and one outside", layout: func(t *testing.T, home string) string {
+			file := linkedOutside(t, home, ".claude/settings.json")
+			hardLink(t, file, filepath.Join(home, ".claude", "settings.json.bak"))
+			return file
+		}},
+		{name: "symlinked .ssh", layout: func(t *testing.T, home string) string {
+			linkDirInto(t, home, ".ssh", "dotfiles/ssh")
+			return linkedIntoProject(t, home, "dotfiles/ssh/config")
+		}},
+		{name: "per-file symlink in .ssh", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			file := linkedIntoProject(t, home, "dotfiles/ssh/config")
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "config"))
+			return file
+		}},
+		{name: "per-file symlink through a symlinked directory", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			file := linkedIntoProject(t, home, "dotfiles/ssh/config")
+			symlinkAt(t, filepath.Join(home, "dotfiles"), filepath.Join(home, "links"))
+			symlinkAt(t, filepath.Join(home, "links", "ssh", "config"), filepath.Join(home, ".ssh", "config"))
+			return file
+		}},
+		{name: "link next to the target of a per-file symlink", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			file := linkedCredential(t, home, "dotfiles/ssh/config", filepath.Join(home, "dotfiles", "ssh", "config.bak"))
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "config"))
+			return file
+		}},
+	}
+	for _, moved := range movedLocations {
+		if moved.file {
+			continue
+		}
+		layouts = append(layouts, hardLinkLayout{name: "directory of " + moved.variable, layout: func(t *testing.T, home string) string {
+			moved.create(t, home)
+			moved.set(t, filepath.Join(home, moved.value))
+			return linkedIntoProject(t, home, filepath.Join(moved.location, "secret"))
+		}})
+	}
+	checkHardLinkLayouts(t, layouts)
+}
+
+// TestHandleCountsEachPathOfAHardLinkedFileOnce covers protected locations
+// that overlap, and symlinks that name a file in another spelling: each path
+// of a file counts once, so the link outside every protected location is
+// not hidden by a path that was counted twice.
+func TestHandleCountsEachPathOfAHardLinkedFileOnce(t *testing.T) {
+	layouts := []hardLinkLayout{
+		{name: "CLAUDE_CONFIG_DIR is .claude", layout: func(t *testing.T, home string) string {
+			t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+			return linkedOutside(t, home, ".claude/settings.json")
+		}},
+		{name: "XDG_CONFIG_HOME is .config", layout: func(t *testing.T, home string) string {
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+			return linkedOutside(t, home, ".config/gh/hosts.yml")
+		}},
+		{name: "GH_CONFIG_DIR is a symlink to .config/gh", layout: func(t *testing.T, home string) string {
+			file := linkedOutside(t, home, ".config/gh/hosts.yml")
+			symlinkAt(t, filepath.Join(home, ".config", "gh"), filepath.Join(home, "gh"))
+			t.Setenv("GH_CONFIG_DIR", filepath.Join(home, "gh"))
+			return file
+		}},
+		{name: "GNUPGHOME inside .gnupg", layout: func(t *testing.T, home string) string {
+			t.Setenv("GNUPGHOME", filepath.Join(home, ".gnupg", "sub"))
+			return linkedOutside(t, home, ".gnupg/sub/key.key")
+		}},
+		{name: "symlink in .claude to a file in .claude", layout: func(t *testing.T, home string) string {
+			file := linkedOutside(t, home, ".claude/settings.json")
+			symlinkAt(t, file, filepath.Join(home, ".claude", "link.json"))
+			return file
+		}},
+		{name: "two symlinks to one file outside", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh", ".claude")
+			file := linkedOutside(t, home, "dotfiles/ssh/config")
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "config"))
+			symlinkAt(t, file, filepath.Join(home, ".claude", "ssh-config"))
+			return file
+		}},
+		{name: "symlink on the data volume to a file in .claude", layout: func(t *testing.T, home string) string {
+			file := linkedOutside(t, home, ".claude/settings.json")
+			requireSpelling(t, dataVolume+file)
+			symlinkAt(t, dataVolume+file, filepath.Join(home, ".claude", "link.json"))
+			return file
+		}},
+		{name: "symlink in upper case to a file in .claude", layout: func(t *testing.T, home string) string {
+			file := linkedOutside(t, home, ".claude/settings.json")
+			requireSpelling(t, strings.ToUpper(file))
+			symlinkAt(t, strings.ToUpper(file), filepath.Join(home, ".claude", "link.json"))
+			return file
+		}},
+		{name: "symlink in upper case to a file outside", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh", ".claude")
+			file := linkedOutside(t, home, "dotfiles/ssh/config")
+			requireSpelling(t, strings.ToUpper(file))
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "config"))
+			symlinkAt(t, strings.ToUpper(file), filepath.Join(home, ".claude", "ssh-config"))
+			return file
+		}},
+		{name: "symlinks to two names of one file outside", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			file := linkedOutside(t, home, "dotfiles/ssh/a")
+			hardLink(t, file, filepath.Join(home, "dotfiles", "ssh", "b"))
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "a"))
+			symlinkAt(t, filepath.Join(home, "dotfiles", "ssh", "b"), filepath.Join(home, ".ssh", "b"))
+			return file
+		}},
+	}
+	checkHardLinkLayouts(t, layouts)
+}
+
+// TestHandleStopsOnASymlinkToAnUnlistedNameOfSeveralLinks covers a symlink
+// that ends at a name that its directory does not list, in another case,
+// while that directory holds more than one link of the file: the handler
+// cannot tell which path the symlink names, and counting it as a path of
+// its own would hide the link in the project directory, so init stops with
+// an error that names the directory and makes no OrbStack call.
+func TestHandleStopsOnASymlinkToAnUnlistedNameOfSeveralLinks(t *testing.T) {
+	home := newBareHome(t)
+	claude := filepath.Join(home, ".claude")
+	file := linkedIntoProject(t, home, ".claude/a")
+	hardLink(t, file, filepath.Join(claude, "b"))
+	requireSpelling(t, filepath.Join(claude, "A"))
+	symlinkAt(t, filepath.Join(claude, "A"), filepath.Join(claude, "x"))
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: filepath.Join(home, "work", "api")})
+
+	want := "A names one of 2 hard links in " + claude + "; point the symlink at a name that the directory lists"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("Handle = %v, want an error that contains %q", err, want)
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("calls = %v, want none", fake.Calls)
+	}
+}
+
+// TestHandleAcceptsHardLinksInsideTheProtectedLocations covers files whose
+// every hard link lies in the protected locations, as Claude Code and GnuPG
+// make them, a subdirectory, which always has more than one link, and a
+// directory where a file that must have one link is expected.
+func TestHandleAcceptsHardLinksInsideTheProtectedLocations(t *testing.T) {
+	checkHardLinkLayouts(t, []hardLinkLayout{
+		{name: "snapshots of Claude Code", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".claude/file-history/two")
+			linkedCredential(t, home, ".claude/file-history/one/snapshot", filepath.Join(home, ".claude", "file-history", "two", "snapshot"))
+			return ""
+		}},
+		{name: "lock pair of GnuPG", layout: func(t *testing.T, home string) string {
+			linkedCredential(t, home, ".gnupg/public-keys.d/pubring.db.lock", filepath.Join(home, ".gnupg", "public-keys.d", ".#lk0x0000.host.123"))
+			return ""
+		}},
+		{name: "link between .claude and .ssh", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			linkedCredential(t, home, ".claude/shared", filepath.Join(home, ".ssh", "shared"))
+			return ""
+		}},
+		{name: "subdirectories", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".claude/projects/one/two", ".ssh/sockets")
+			return ""
+		}},
+		{name: "single link", layout: func(t *testing.T, home string) string {
+			unreadable(t, credentialFile(t, home, ".ssh/config"))
+			return ""
+		}},
+		{name: "snapshots with CLAUDE_CONFIG_DIR as .claude", layout: func(t *testing.T, home string) string {
+			t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+			makeDirs(t, home, ".claude/file-history/two")
+			linkedCredential(t, home, ".claude/file-history/one/snapshot", filepath.Join(home, ".claude", "file-history", "two", "snapshot"))
+			return ""
+		}},
+		{name: "per-file symlink to a file with a link in .ssh", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".ssh")
+			file := linkedCredential(t, home, "dotfiles/ssh/config", filepath.Join(home, ".ssh", "config.bak"))
+			symlinkAt(t, file, filepath.Join(home, ".ssh", "config"))
+			return ""
+		}},
+		{name: "hard link of a file outside the protected locations", layout: func(t *testing.T, home string) string {
+			linkedCredential(t, home, "dotfiles/vim/vimrc", filepath.Join(home, "work", "api", "vimrc"))
+			return ""
+		}},
+		{name: "directory named .claude.json", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, ".claude.json/one", ".claude.json/two")
+			return ""
+		}},
+		{name: "directory named by AWS_CONFIG_FILE", layout: func(t *testing.T, home string) string {
+			makeDirs(t, home, "dotfiles/aws/config/one", "dotfiles/aws/config/two")
+			t.Setenv("AWS_CONFIG_FILE", filepath.Join(home, "dotfiles", "aws", "config"))
+			return ""
+		}},
+	})
+}
+
+// singleLinkFile is a file that the environment moves and that must have
+// one hard link: the variable, its value, and the file, relative to home.
+type singleLinkFile struct {
+	variable string
+	value    string
+	file     string
+}
+
+// singleLinkFiles are the files of every variable that moves one.
+var singleLinkFiles = []singleLinkFile{
+	{variable: "AWS_CONFIG_FILE", value: "dotfiles/aws/config", file: "dotfiles/aws/config"},
+	{variable: "AWS_SHARED_CREDENTIALS_FILE", value: "dotfiles/aws/credentials", file: "dotfiles/aws/credentials"},
+	{variable: "CLAUDE_CONFIG_DIR", value: "dotfiles/claude", file: "dotfiles/claude/.claude.json"},
+}
+
+// TestHandleRefusesHardLinkedFilesThatTheEnvironmentMoves covers the files
+// that the environment moves (#69): like .claude.json, each of them must
+// have one hard link, also when the other link lies in a protected location.
+func TestHandleRefusesHardLinkedFilesThatTheEnvironmentMoves(t *testing.T) {
+	for _, moved := range singleLinkFiles {
+		t.Run(moved.variable, func(t *testing.T) {
+			checkHardLinkLayouts(t, []hardLinkLayout{
+				{name: "other link in the project", layout: func(t *testing.T, home string) string {
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return linkedIntoProject(t, home, moved.file)
+				}},
+				{name: "other link outside every project", layout: func(t *testing.T, home string) string {
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return linkedOutside(t, home, moved.file)
+				}},
+				{name: "other link next to it", layout: func(t *testing.T, home string) string {
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return linkedCredential(t, home, moved.file, filepath.Join(home, moved.file+".bak"))
+				}},
+				{name: "other link of the target of a symlink", layout: func(t *testing.T, home string) string {
+					file := linkedIntoProject(t, home, "store/"+filepath.Base(moved.file))
+					makeDirs(t, home, filepath.Dir(moved.file))
+					symlinkAt(t, file, filepath.Join(home, moved.file))
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return file
+				}},
+				{name: "single link", layout: func(t *testing.T, home string) string {
+					unreadable(t, credentialFile(t, home, moved.file))
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return ""
+				}},
+				{name: "missing", layout: func(t *testing.T, home string) string {
+					makeDirs(t, home, filepath.Dir(moved.file))
+					t.Setenv(moved.variable, filepath.Join(home, moved.value))
+					return ""
+				}},
+			})
+		})
+	}
+}
+
+// TestHandleRefusesEmptyVariablesOfFilesThatMustHaveOneLink covers a
+// variable of a file that must have one hard link that is set and empty:
+// init stops with ErrRelocatedPath before it asks OrbStack anything.
+func TestHandleRefusesEmptyVariablesOfFilesThatMustHaveOneLink(t *testing.T) {
+	for _, variable := range []string{"AWS_CONFIG_FILE", "CLAUDE_CONFIG_DIR"} {
+		t.Run(variable, func(t *testing.T) {
+			home := newBareHome(t)
+			t.Setenv(variable, "")
+			checkRefusals(t, account(home), []refusal{{name: "project", dir: filepath.Join(home, "work", "api"), want: sandbox.ErrRelocatedPath}})
+		})
+	}
+}
+
+// TestHandleStopsOnAProtectedDirectoryThatCannotBeRead covers a subdirectory
+// of a protected directory that the walk cannot read: the handler cannot
+// count the links of the files in it, so init stops.
+func TestHandleStopsOnAProtectedDirectoryThatCannotBeRead(t *testing.T) {
+	home := newBareHome(t)
+	locked := filepath.Join(home, ".claude", "locked")
+	makeDirs(t, home, ".claude/locked")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: filepath.Join(home, "work", "api")})
+
+	if !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), "file in a protected directory") {
+		t.Errorf("Handle = %v, want %v about a file in a protected directory", err, fs.ErrPermission)
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("calls = %v, want none", fake.Calls)
+	}
 }
 
 // TestHandleWithProtectedFilesThatLeadNowhere covers a .claude.json that is
@@ -1349,7 +1775,7 @@ func TestHandleStopsOnSymlinksThatCannotBeFollowed(t *testing.T) {
 		layout func(t *testing.T, home string)
 		want   string
 	}{
-		{name: "symlink loop in .ssh", want: "symlink in a protected directory", layout: func(t *testing.T, home string) {
+		{name: "symlink loop in .ssh", want: "file in a protected directory", layout: func(t *testing.T, home string) {
 			makeDirs(t, home, ".ssh")
 			symlinkAt(t, "loop", filepath.Join(home, ".ssh", "loop"))
 		}},
@@ -1595,7 +2021,7 @@ func TestHandleReportsOrbStackFailures(t *testing.T) {
 			createErr: boom,
 			wantCalls: []orbstacktest.Call{
 				{Op: orbstacktest.OpMounts},
-				{Op: orbstacktest.OpCreate, Name: name, Dir: project},
+				{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true},
 			},
 		},
 		{
@@ -1648,7 +2074,7 @@ func TestHandleDeletesANewMachineWhenProvisioningFails(t *testing.T) {
 	if len(fake.Machines) != 0 {
 		t.Errorf("machines = %v, want the new machine deleted", fake.Machines)
 	}
-	wantCalls := append(createCalls(name, project), orbstacktest.Call{Op: orbstacktest.OpDelete, Name: name})
+	wantCalls := slices.Concat(checkedCreateCalls(name, project), provisionCalls(name)[:1], []orbstacktest.Call{{Op: orbstacktest.OpDelete, Name: name}})
 	if !slices.Equal(fake.Calls, wantCalls) {
 		t.Errorf("calls = %v, want %v", fake.Calls, wantCalls)
 	}
@@ -1661,6 +2087,7 @@ func TestHandleKeepsAnExistingMachineWhenProvisioningFails(t *testing.T) {
 	name := sandbox.MachineName(project)
 	fake := orbstacktest.New(sandbox.NamePrefix)
 	fake.Machines[name] = map[string]string{project: project}
+	fake.Forwarded[name] = true
 	fake.RunAsRootErr = boom
 
 	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
@@ -1671,8 +2098,8 @@ func TestHandleKeepsAnExistingMachineWhenProvisioningFails(t *testing.T) {
 	if _, kept := fake.Machines[name]; !kept {
 		t.Errorf("machines = %v, want the existing machine kept", fake.Machines)
 	}
-	if !slices.Equal(fake.Calls, keepCalls(name)) {
-		t.Errorf("calls = %v, want %v", fake.Calls, keepCalls(name))
+	if want := slices.Concat(checkedKeepCalls(name), provisionCalls(name)[:1]); !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v", fake.Calls, want)
 	}
 }
 
@@ -1682,7 +2109,7 @@ func TestHandleRefusesAScriptThatCannotBeBuiltBeforeItAsksOrbStack(t *testing.T)
 	project := filepath.Join(home, "work", "api")
 	fake := orbstacktest.New(sandbox.NamePrefix)
 	handler := newHandler(fake, account(home))
-	handler.ProvisionScript = func(uint32, []string) ([]byte, error) { return nil, boom }
+	handler.ProvisionScript = func(uint32, []string, bool) ([]byte, error) { return nil, boom }
 
 	_, err := handler.Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
 
@@ -1848,7 +2275,7 @@ func TestHandleRefusesAHostileAgentDomainBeforeItAsksOrbStack(t *testing.T) {
 	handler := newHandler(fake, account(home))
 	handler.Agent = func(string) (sandbox.Agent, error) { return hostile, nil }
 	var gotDomains []string
-	handler.ProvisionScript = func(_ uint32, agentDomains []string) ([]byte, error) {
+	handler.ProvisionScript = func(_ uint32, agentDomains []string, _ bool) ([]byte, error) {
 		gotDomains = agentDomains
 		return nil, refused
 	}
@@ -1872,9 +2299,9 @@ func TestHandleDeletesANewMachineWhenTheInstallFails(t *testing.T) {
 	project := filepath.Join(home, "work", "api")
 	name := sandbox.MachineName(project)
 	fake := orbstacktest.New(sandbox.NamePrefix)
-	fake.RunAsAgentErr = boom
+	failing := failingScript{Fake: fake, script: testInstallScript, err: boom}
 
-	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+	_, err := newHandlerOn(failing, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
 
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "was deleted") {
 		t.Errorf("Handle = %v, want %v and the deletion in the text", err, boom)
@@ -1895,9 +2322,10 @@ func TestHandleKeepsAnExistingMachineWhenTheInstallFails(t *testing.T) {
 	name := sandbox.MachineName(project)
 	fake := orbstacktest.New(sandbox.NamePrefix)
 	fake.Machines[name] = map[string]string{project: project}
-	fake.RunAsAgentErr = boom
+	fake.Forwarded[name] = true
+	failing := failingScript{Fake: fake, script: testInstallScript, err: boom}
 
-	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+	_, err := newHandlerOn(failing, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
 
 	if !errors.Is(err, boom) {
 		t.Errorf("Handle = %v, want %v", err, boom)
@@ -2204,5 +2632,219 @@ func TestHandleFailsClosedOnADirectoryVariableThatNamesAFile(t *testing.T) {
 				t.Errorf("calls = %v, want none", fake.Calls)
 			}
 		})
+	}
+}
+
+func TestHandleCreatesWithoutForwardingWhenAsked(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, NoSSHForwarding: true})
+
+	if err != nil || got != (Output{Name: name, Dir: project, Created: true}) {
+		t.Fatalf("Handle = %+v, %v, want the created sandbox", got, err)
+	}
+	want := []orbstacktest.Call{
+		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: false},
+		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
+		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpActiveMounts, Name: name},
+		{Op: orbstacktest.OpRunAsRoot, Name: name, Script: scriptFor(uint32(os.Getuid()), nil, false)},
+		{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testDockerSetupScript},
+	}
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v", fake.Calls, want)
+	}
+}
+
+func TestHandleProvisionsAnExistingMachineThatMatchesTheFlag(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, NoSSHForwarding: true})
+
+	if err != nil {
+		t.Fatalf("Handle = %v", err)
+	}
+	want := append(checkedKeepCalls(name),
+		orbstacktest.Call{Op: orbstacktest.OpRunAsRoot, Name: name, Script: scriptFor(uint32(os.Getuid()), nil, false)},
+		orbstacktest.Call{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testDockerSetupScript})
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v", fake.Calls, want)
+	}
+}
+
+func TestHandleRefusesAnExistingMachineWhoseForwardingDiffers(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	tests := []struct {
+		name      string
+		forwarded bool
+		input     Input
+	}{
+		{name: "flag against a machine that forwards", forwarded: true, input: Input{Dir: project, NoSSHForwarding: true}},
+		{name: "no flag against a machine that does not forward", forwarded: false, input: Input{Dir: project}},
+		{name: "no flag with an agent against a machine that does not forward", forwarded: false, input: Input{Dir: project, Agent: testAgentName}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			fake.Machines[name] = map[string]string{project: project}
+			fake.Forwarded[name] = test.forwarded
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), test.input)
+
+			if !errors.Is(err, ErrSSHForwardingMismatch) || got != (Output{}) {
+				t.Errorf("Handle = %+v, %v, want %v", got, err, ErrSSHForwardingMismatch)
+			}
+			if err != nil && !strings.Contains(err.Error(), "--no-ssh-forwarding") {
+				t.Errorf("error %q does not name --no-ssh-forwarding", err)
+			}
+			want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
+			if !slices.Equal(fake.Calls, want) {
+				t.Errorf("calls = %v, want only %v: no command in the machine, no start, no delete", fake.Calls, want)
+			}
+			if _, kept := fake.Machines[name]; !kept {
+				t.Error("the existing machine was deleted")
+			}
+		})
+	}
+}
+
+func TestHandleDeletesACreatedMachineThatReportsAnotherForwarding(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	other := false
+	fake.CreatedForwarded = &other
+
+	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+	if !errors.Is(err, ErrSSHForwardingMismatch) || got != (Output{}) {
+		t.Errorf("Handle = %+v, %v, want %v", got, err, ErrSSHForwardingMismatch)
+	}
+	want := []orbstacktest.Call{
+		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true},
+		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
+		{Op: orbstacktest.OpDelete, Name: name},
+	}
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v", fake.Calls, want)
+	}
+	if len(fake.Machines) != 0 {
+		t.Errorf("machines = %v, want the created machine deleted", fake.Machines)
+	}
+}
+
+func TestHandleStopsWhenTheForwardingCannotBeRead(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	boom := errors.New("orb list has no forward_ssh_agent")
+	t.Run("existing machine is kept and untouched", func(t *testing.T) {
+		fake := orbstacktest.New(sandbox.NamePrefix)
+		fake.Machines[name] = map[string]string{project: project}
+		fake.SSHAgentForwardedErr = boom
+
+		_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+		if !errors.Is(err, boom) {
+			t.Errorf("Handle = %v, want %v", err, boom)
+		}
+		want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
+		if !slices.Equal(fake.Calls, want) {
+			t.Errorf("calls = %v, want %v", fake.Calls, want)
+		}
+		if _, kept := fake.Machines[name]; !kept {
+			t.Error("the existing machine was deleted")
+		}
+	})
+	t.Run("created machine is deleted", func(t *testing.T) {
+		fake := orbstacktest.New(sandbox.NamePrefix)
+		fake.SSHAgentForwardedErr = boom
+
+		_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+		if !errors.Is(err, boom) {
+			t.Errorf("Handle = %v, want %v", err, boom)
+		}
+		if len(fake.Machines) != 0 {
+			t.Errorf("machines = %v, want the created machine deleted", fake.Machines)
+		}
+		for _, call := range fake.Calls {
+			if call.Op == orbstacktest.OpRunAsRoot || call.Op == orbstacktest.OpActiveMounts {
+				t.Errorf("call %v ran in the machine before the check passed", call)
+			}
+		}
+	})
+}
+
+func TestHandleSetsUpTheDockerClientAfterProvisioningAndBeforeTheInstall(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	if _, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName}); err != nil {
+		t.Fatalf("Handle = %v", err)
+	}
+
+	want := slices.Concat(checkedCreateCalls(name, project), agentCalls(name))
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v", fake.Calls, want)
+	}
+	if fake.Calls[len(fake.Calls)-2].Script != testDockerSetupScript {
+		t.Error("the client setup does not come right before the install")
+	}
+}
+
+func TestHandleDeletesANewMachineWhenTheClientSetupFails(t *testing.T) {
+	boom := errors.New("orb: setup failed")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	failing := failingScript{Fake: fake, script: testDockerSetupScript, err: boom}
+
+	_, err := newHandlerOn(failing, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "set up the Docker client in sandbox "+name) || !strings.Contains(err.Error(), "was deleted") {
+		t.Errorf("Handle = %v, want the failed client setup and the deletion", err)
+	}
+	want := slices.Concat(checkedCreateCalls(name, project), agentCalls(name)[:2], []orbstacktest.Call{{Op: orbstacktest.OpDelete, Name: name}})
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v (no install)", fake.Calls, want)
+	}
+}
+
+func TestHandleKeepsAnExistingMachineWhenTheClientSetupFails(t *testing.T) {
+	boom := errors.New("orb: setup failed")
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+	fake.Forwarded[name] = true
+	failing := failingScript{Fake: fake, script: testDockerSetupScript, err: boom}
+
+	_, err := newHandlerOn(failing, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+	if !errors.Is(err, boom) {
+		t.Errorf("Handle = %v, want %v", err, boom)
+	}
+	if _, kept := fake.Machines[name]; !kept {
+		t.Errorf("machines = %v, want the existing machine kept", fake.Machines)
+	}
+	if want := slices.Concat(checkedKeepCalls(name), agentCalls(name)[:2]); !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v (no install)", fake.Calls, want)
 	}
 }

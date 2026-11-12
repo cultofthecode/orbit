@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,9 @@ import (
 	"github.com/cultofthecode/orbit/internal/provision"
 	"github.com/cultofthecode/orbit/internal/sandbox"
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
+	"github.com/cultofthecode/orbit/internal/sandbox/shell"
+	"github.com/cultofthecode/orbit/internal/sandbox/start"
+	"github.com/cultofthecode/orbit/internal/sandbox/stop"
 )
 
 // Exit codes of orbit.
@@ -45,7 +49,8 @@ func newOrbit() (*cobra.Command, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newRoot(initCommand(orbstack.New(sandbox.NamePrefix), agents)), nil
+	machines := orbstack.New(sandbox.NamePrefix)
+	return newRoot(initCommand(machines, agents), shellCommand(machines), startCommand(machines), stopCommand(machines)), nil
 }
 
 // initCommand returns the command "orbit init" on machines, with the agents
@@ -58,11 +63,45 @@ func initCommand(machines initialize.Machines, agents *agent.Registry) *cobra.Co
 // agents of the registry.
 func initHandler(machines initialize.Machines, agents *agent.Registry) initialize.Handler {
 	return initialize.Handler{
-		Machines:        machines,
-		Agent:           sandboxAgent(agents),
-		ProvisionScript: provision.Script,
-		CurrentUser:     user.Current,
+		Machines:          machines,
+		Agent:             sandboxAgent(agents),
+		ProvisionScript:   provisionScript,
+		DockerSetupScript: provision.DockerSetupScript,
+		CurrentUser:       user.Current,
 	}
+}
+
+// provisionScript fills the input of provision.Script from the arguments of
+// the handler of "orbit init".
+func provisionScript(defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error) {
+	return provision.Script(provision.ScriptInput{DefaultUID: defaultUID, AgentDomains: agentDomains, ForwardSSHAgent: forwardSSHAgent})
+}
+
+// shellCommand returns the command "orbit shell" on machines, with the
+// readiness check of provisioning.
+func shellCommand(machines shell.Machines) *cobra.Command {
+	return shell.NewCommand(shell.Handler{Machines: machines, ReadinessScript: provision.ReadinessScript})
+}
+
+// startCommand returns the command "orbit start" on machines.
+func startCommand(machines start.Machines) *cobra.Command {
+	return start.NewCommand(startHandler(machines))
+}
+
+// startHandler returns the handler of "orbit start" on machines, with the
+// check scripts of provisioning.
+func startHandler(machines start.Machines) start.Handler {
+	return start.Handler{
+		Machines:          machines,
+		CurrentUser:       user.Current,
+		BootCheckScript:   provision.BootCheckScript,
+		MarkerCheckScript: provision.MarkerCheckScript,
+	}
+}
+
+// stopCommand returns the command "orbit stop" on machines.
+func stopCommand(machines stop.Machines) *cobra.Command {
+	return stop.NewCommand(stop.Handler{Machines: machines})
 }
 
 // sandboxAgent returns a lookup of the agents of the registry that gives a
@@ -91,16 +130,23 @@ func newRoot(commands ...*cobra.Command) *cobra.Command {
 	return root
 }
 
-// run executes root with args and returns the exit code: 0 on success and 1
-// for any error. It drops a failed write to stderr, because no other stream
-// is left to report it on.
+// run executes root with args and returns the exit code: 0 on success, the
+// code of a sandbox.ExitStatus without printing anything, because the
+// command in the sandbox already reported to the user, and 1 for any other
+// error. It drops a failed write to stderr, because no other stream is left
+// to report it on.
 func run(ctx context.Context, root *cobra.Command, args []string, stdout, stderr io.Writer) int {
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	if err := root.ExecuteContext(ctx); err != nil {
-		_, _ = fmt.Fprintf(stderr, "orbit: %v\n", err)
-		return exitFailure
+	err := root.ExecuteContext(ctx)
+	var status sandbox.ExitStatus
+	switch {
+	case err == nil:
+		return exitOK
+	case errors.As(err, &status):
+		return status.Code
 	}
-	return exitOK
+	_, _ = fmt.Fprintf(stderr, "orbit: %v\n", err)
+	return exitFailure
 }

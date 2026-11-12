@@ -62,15 +62,46 @@ var (
 	// ErrMountMismatch reports a machine that does not mount exactly the
 	// project directory, once, at its own path.
 	ErrMountMismatch = errors.New("machine does not mount exactly the project directory at its own path")
+	// ErrSSHForwardingMismatch reports a machine whose SSH agent forwarding
+	// differs from the request. OrbStack fixes the setting when it creates
+	// the machine, so init neither changes nor provisions such a machine.
+	ErrSSHForwardingMismatch = errors.New("the SSH agent forwarding of the sandbox differs from the request")
 	// ErrRelocatedPath reports an environment variable that moves a
 	// protected location to a value that is empty, relative, or has a ".."
 	// segment. Orbit cannot know where the tool puts the location then.
 	ErrRelocatedPath = errors.New("environment variable that moves a protected location is not an absolute path without a .. segment")
-	// ErrHardLinkedFile reports a protected file that has more than one hard
-	// link. Every link is the same file, and Orbit cannot find the other
-	// links without a scan of every volume, so a project directory could
-	// hold one.
+	// ErrHardLinkedFile reports a protected file that has more hard links
+	// than Orbit found in the protected locations. Every link is the same
+	// file, and Orbit cannot find the other links without a scan of every
+	// volume, so a project directory could hold one.
 	ErrHardLinkedFile = errors.New("protected file has more than one hard link")
+)
+
+// Errors that the slices of the sandbox lifecycle report alike.
+var (
+	// ErrNoSandbox reports a project directory without a sandbox: no machine
+	// has the name that MachineName computes for it.
+	ErrNoSandbox = errors.New("no sandbox")
+	// ErrUnexpectedState reports a sandbox in a state other than running or
+	// stopped, such as starting or stopping. Orbit acts on no other state.
+	ErrUnexpectedState = errors.New("wait and try again")
+)
+
+// Errors of the host-side checks that run before Orbit creates or starts a
+// machine.
+var (
+	// ErrNotDirectory reports a project path that is not a directory.
+	ErrNotDirectory = errors.New("project path is not a directory")
+	// ErrLinkedSandboxDir reports another machine whose stored mount path
+	// passes through a symlink. Orbit stores canonical paths, so the host
+	// layout changed after that machine was created, and OrbStack follows
+	// the symlink at its next start. The slices refuse every project
+	// directory until the user fixes the path or deletes that machine.
+	ErrLinkedSandboxDir = errors.New("the project directory of another sandbox passes through a symlink")
+	// ErrLinkedProjectDir reports a stored mount path of the sandbox of the
+	// project directory that passes through a symlink. OrbStack would follow
+	// it when it starts that sandbox.
+	ErrLinkedProjectDir = errors.New("the project directory of this sandbox passes through a symlink")
 )
 
 // protectedNames are the directories of a home directory that never enter a
@@ -107,8 +138,26 @@ var fileRelocations = []relocation{
 	{variable: "AWS_SHARED_CREDENTIALS_FILE"},
 }
 
+// singleLinkRelocations are the variables that move a file that must have
+// one hard link: the files of fileRelocations and the .claude.json of the
+// directory that CLAUDE_CONFIG_DIR moves.
+var singleLinkRelocations = slices.Concat(fileRelocations, []relocation{{variable: "CLAUDE_CONFIG_DIR", name: ".claude.json"}})
+
 // outsideSlug matches every run of characters that a slug cannot hold.
 var outsideSlug = regexp.MustCompile(`[^a-z0-9]+`)
+
+// ExitStatus is the non-zero exit status of a command that Orbit ran in a
+// sandbox for the user, such as the shell of orbit shell. A slice returns it
+// as its error, and cmd/orbit exits with Code and prints nothing.
+type ExitStatus struct {
+	// Code is the exit status, never 0.
+	Code int
+}
+
+// Error returns a description of the status.
+func (e ExitStatus) Error() string {
+	return fmt.Sprintf("exited with status %d", e.Code)
+}
 
 // Agent is what a slice needs to know about the agent of a sandbox. cmd/orbit
 // builds it from the definition of the agent; a slice never compares the
@@ -150,17 +199,23 @@ type ProjectDir struct {
 	// directory that holds a symlink on the chain of such a symlink or on
 	// the path of RelocatedDirs and RelocatedFiles.
 	ProtectedFileDirs []string
-	// ProtectedFileLinks holds the link count of the file that each path of
-	// ProtectedFiles resolves to, for each of those files that exists.
+	// ProtectedFileLinks holds the link count of each protected file that
+	// has more than one hard link: the file that each path of ProtectedFiles
+	// and RelocatedSingleLinkFiles resolves to, and each regular file in a
+	// directory of Protected or that a symlink in one of them leads to.
 	ProtectedFileLinks []FileLinks
 }
 
-// FileLinks is the number of hard links of a file.
+// FileLinks is the number of hard links of a file and the number of them
+// that lie in the protected locations.
 type FileLinks struct {
 	// Path is the absolute, clean path of the file.
 	Path string
 	// Count is the link count that the system reports for the file.
 	Count uint64
+	// Found is the number of distinct paths of the file in the protected
+	// locations. A file that must have one hard link has 1.
+	Found uint64
 }
 
 // Relocated is a protected location that an environment variable moves.
@@ -212,15 +267,23 @@ func RelocatedFiles(lookup func(string) (string, bool)) ([]Relocated, error) {
 	return relocate(fileRelocations, lookup)
 }
 
+// RelocatedSingleLinkFiles returns the protected files that the environment
+// moves and that must have one hard link, by the rules of RelocatedDirs: the
+// files of RelocatedFiles and the .claude.json in the directory of
+// CLAUDE_CONFIG_DIR.
+func RelocatedSingleLinkFiles(lookup func(string) (string, bool)) ([]Relocated, error) {
+	return relocate(singleLinkRelocations, lookup)
+}
+
 // ValidateProjectDir reports whether the project directory dir may be
 // mounted into a sandbox. First it refuses every project directory while a
-// file in dir.ProtectedFileLinks has more than one hard link, with
-// ErrHardLinkedFile naming that file, because another link to it can lie
-// anywhere. Then two independent rules must both accept dir. The first
-// refuses the root of the file system; a home directory and every
-// directory that contains one; a protected directory, every directory inside
-// one, and every directory that contains one; and every directory that
-// contains a protected file. The protected directories are ProtectedDirs of
+// file in dir.ProtectedFileLinks has more hard links than were found in the
+// protected locations, with ErrHardLinkedFile naming each such file once,
+// because the other link can lie anywhere. Then two independent rules must
+// both accept dir. The first refuses the root of the file system; a home
+// directory and every directory that contains one; a protected directory,
+// every directory inside one, and every directory that contains one; and
+// every directory that contains a protected file. The protected directories are ProtectedDirs of
 // every home and the paths in dir.Protected. The directories that hold a
 // protected file are the homes and the paths in dir.ProtectedFileDirs; a
 // directory inside one of them does not contain the file, so it passes. The
@@ -275,6 +338,20 @@ func ValidateMounts(dir string, mounts map[string]string) error {
 	return nil
 }
 
+// CheckSSHForwarding reports whether a machine whose forwarding of the host
+// SSH agent is have matches the request want. It refuses a difference with
+// ErrSSHForwardingMismatch and a message that names the current setting and
+// the two ways out (Q1, D25). It decides only; the caller reads have.
+func CheckSSHForwarding(want, have bool) error {
+	if want == have {
+		return nil
+	}
+	if have {
+		return fmt.Errorf("%w: the sandbox forwards the host SSH agent, and --no-ssh-forwarding was passed; run init without --no-ssh-forwarding to keep it, or delete the sandbox and run init --no-ssh-forwarding again to get one without forwarding", ErrSSHForwardingMismatch)
+	}
+	return fmt.Errorf("%w: the sandbox does not forward the host SSH agent; run init --no-ssh-forwarding to keep it without forwarding, or delete the sandbox and run init again to get forwarding", ErrSSHForwardingMismatch)
+}
+
 // checkFacts refuses facts that the rules cannot decide on: no home
 // directory, or a path that is not absolute and clean.
 func checkFacts(dir ProjectDir) error {
@@ -293,19 +370,20 @@ func linkPaths(files []FileLinks) []string {
 	return paths
 }
 
-// checkHardLinks refuses the files that have more than one hard link and
-// names each of them.
+// checkHardLinks refuses the files that have more hard links than were found
+// in the protected locations and names each of them once.
 func checkHardLinks(files []FileLinks) error {
 	var linked []string
 	for _, file := range files {
-		if file.Count > 1 {
+		if file.Count > file.Found {
 			linked = append(linked, file.Path)
 		}
 	}
 	if len(linked) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: %s; remove the other hard links to it", ErrHardLinkedFile, strings.Join(linked, ", "))
+	slices.Sort(linked)
+	return fmt.Errorf("%w: %s; remove the other hard links to it", ErrHardLinkedFile, strings.Join(slices.Compact(linked), ", "))
 }
 
 // checkPaths refuses a path that is not absolute and clean.

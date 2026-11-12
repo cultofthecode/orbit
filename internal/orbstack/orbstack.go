@@ -10,11 +10,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
+	"os/signal"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
+	"unicode"
 )
 
 // cli is the command of OrbStack.
@@ -37,6 +43,32 @@ const (
 	statusStarting = "Starting"
 	statusStopped  = "Stopped"
 )
+
+// stateDir is the directory under $HOME through which orb finds OrbStack.
+const stateDir = ".orbstack"
+
+// allowedVariables are the only host variables that executeStreams passes to
+// orb, matched by exact name; it removes every other one. orb copies some host
+// variables into the command that it runs in a machine, as root and as the
+// agent, and ORBENV and WSLENV make it copy every host variable that they
+// name (OrbStack 2.2.5), so a host credential could otherwise enter a sandbox
+// without an opt-in (R08). The owner chose this allowlist over a list of
+// forbidden names (#76): a variable that a new version of OrbStack starts to
+// forward stays on the host.
+//
+// OrbStack 2.2.5, probed with only these variables set, runs every command of
+// the adapter with HOME alone and panics without it ("$HOME is not
+// defined"): orb finds OrbStack through $HOME/.orbstack (#70). PATH and
+// TMPDIR are what orb, a Go program, reads to find a program it starts and a
+// directory for temporary files; orb does not copy them into a machine. orb
+// copies TERM, COLORTERM, and the locale variables into the machine, where
+// a terminal needs them: without TERM a command in the machine gets
+// TERM=dumb.
+var allowedVariables = []string{
+	"HOME", "PATH", "TMPDIR",
+	"TERM", "COLORTERM",
+	"LANG", "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC", "LC_TIME",
+}
 
 // mountSeparator divides the source and the destination of a mount.
 const mountSeparator = ":"
@@ -69,10 +101,28 @@ var (
 	// ErrMountTable reports a list of machines or a mount table that does not
 	// say for certain what is mounted where.
 	ErrMountTable = errors.New("mounts cannot be read")
+	// ErrMachineList reports a list of machines that does not say for
+	// certain in which state a machine is.
+	ErrMachineList = errors.New("machine list cannot be read")
+	// ErrMachineName reports a machine name with white space. A name that
+	// sandbox.MachineName computes has none, and Start and Stop pass only
+	// such a name to orb.
+	ErrMachineName = errors.New("machine name holds white space")
 	// ErrNotRunning reports that OrbStack is not running. The client then
 	// runs no other command, because orb starts a stopped OrbStack.
 	ErrNotRunning = errors.New("OrbStack is not running")
+	// ErrHome reports that orb status printed a stopped OrbStack while HOME
+	// does not lead orb to the OrbStack of the account: orb finds OrbStack
+	// through $HOME/.orbstack, so OrbStack may be running. The client runs no
+	// other command, and it never runs orb with another HOME.
+	ErrHome = errors.New("orb cannot reach OrbStack through HOME")
 )
+
+// currentUser returns the account of the process from the user database of
+// the system, which does not read HOME on macOS. A build with the osusergo
+// tag falls back to HOME, and then only the .orbstack check can name HOME.
+// Tests replace it.
+var currentUser = user.Current
 
 // Client drives the orb CLI. It runs a command only after orb status reports
 // a running OrbStack, so that no call starts a stopped OrbStack.
@@ -87,19 +137,37 @@ func New(prefix string) *Client {
 }
 
 // Create creates the isolated machine name with dir as its only mount, at the
-// same absolute path as on the host. It runs no command when name lacks the
-// prefix of the client or dir cannot be mounted.
-func (c *Client) Create(ctx context.Context, name, dir string) error {
+// same absolute path as on the host, and forwards the SSH agent of the host
+// into it only when forwardSSHAgent is true. OrbStack fixes that setting when
+// it creates the machine. It runs no command when name lacks the prefix of
+// the client or dir cannot be mounted.
+func (c *Client) Create(ctx context.Context, name, dir string, forwardSSHAgent bool) error {
 	if err := c.checkOwned(name); err != nil {
 		return err
 	}
 	if err := checkMountable(dir); err != nil {
 		return err
 	}
-	if _, err := run(ctx, createArgs(name, dir), nil); err != nil {
+	if _, err := run(ctx, createArgs(name, dir, forwardSSHAgent), nil); err != nil {
 		return fmt.Errorf("create machine %s: %w", name, err)
 	}
 	return nil
+}
+
+// SSHAgentForwarded reports whether the machine name forwards the SSH agent
+// of the host, as orb list prints it. It runs only orb status and orb list,
+// so it never starts a machine. It fails when no machine has that name, when
+// the entry has no boolean setting, and when the name lacks the prefix of the
+// client, and then it runs no command.
+func (c *Client) SSHAgentForwarded(ctx context.Context, name string) (bool, error) {
+	if err := c.checkOwned(name); err != nil {
+		return false, err
+	}
+	list, err := run(ctx, mountsArgs(), nil)
+	if err != nil {
+		return false, fmt.Errorf("list machines: %w", err)
+	}
+	return parseSSHAgentForwarded([]byte(list), name)
 }
 
 // Exists reports whether a machine with the given name exists.
@@ -137,6 +205,48 @@ func (c *Client) ActiveMounts(ctx context.Context, name string) (map[string]stri
 		return nil, fmt.Errorf("read the mounts of machine %s: %w", name, err)
 	}
 	return parseMountTable(table)
+}
+
+// State returns the state of the machine name as orb list prints it, such
+// as "running" or "stopped", or "" when no machine has that name. It runs
+// only orb status and orb list, so it never starts a machine. It runs no
+// command when name lacks the prefix of the client.
+func (c *Client) State(ctx context.Context, name string) (string, error) {
+	if err := c.checkOwned(name); err != nil {
+		return "", err
+	}
+	list, err := run(ctx, mountsArgs(), nil)
+	if err != nil {
+		return "", fmt.Errorf("list machines: %w", err)
+	}
+	return parseState([]byte(list), name)
+}
+
+// Start starts the machine name, and only that machine: orb start without a
+// name starts every machine that ran when OrbStack last stopped. It runs no
+// command when name lacks the prefix of the client or holds white space.
+func (c *Client) Start(ctx context.Context, name string) error {
+	if err := c.checkNamed(name); err != nil {
+		return err
+	}
+	if _, err := run(ctx, startArgs(name), nil); err != nil {
+		return fmt.Errorf("start machine %s: %w", name, err)
+	}
+	return nil
+}
+
+// Stop stops the machine name, and only that machine: orb stop without a
+// name stops OrbStack with every machine. It keeps the disk of the machine.
+// It runs no command when name lacks the prefix of the client or holds
+// white space.
+func (c *Client) Stop(ctx context.Context, name string) error {
+	if err := c.checkNamed(name); err != nil {
+		return err
+	}
+	if _, err := run(ctx, stopArgs(name), nil); err != nil {
+		return fmt.Errorf("stop machine %s: %w", name, err)
+	}
+	return nil
 }
 
 // Delete deletes the machine name with everything stored in it. It runs no
@@ -178,11 +288,53 @@ func (c *Client) RunAsAgent(ctx context.Context, name string, script []byte) err
 	return nil
 }
 
+// Shell runs the login shell of AgentUser in the machine name, in the
+// directory dir, with in, out, and errOut attached directly to orb, so that
+// orb gives the shell a terminal when in is one. It returns the exit status
+// of orb, which is that of the shell, and an error only when orb could not
+// run. While orb runs, the process catches SIGINT and SIGQUIT, so that the
+// signal ends orb and not the caller. The user is fixed, and dir is the
+// only value of the caller besides name on the command line. It runs no
+// command when name lacks the prefix of the client or dir cannot be mounted.
+func (c *Client) Shell(ctx context.Context, name, dir string, in io.Reader, out, errOut io.Writer) (int, error) {
+	if err := c.checkOwned(name); err != nil {
+		return 0, err
+	}
+	if err := checkMountable(dir); err != nil {
+		return 0, err
+	}
+	if err := checkRunning(ctx); err != nil {
+		return 0, err
+	}
+	var status int
+	err := holdingSignals(func() error {
+		var err error
+		status, err = exitStatus(executeStreams(ctx, shellArgs(name, dir), in, out, errOut))
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("run a shell as %s in machine %s: %w", AgentUser, name, err)
+	}
+	return status, nil
+}
+
 // checkOwned refuses a name that does not consist of the prefix of the client
 // and at least one more character.
 func (c *Client) checkOwned(name string) error {
 	if c.prefix == "" || !strings.HasPrefix(name, c.prefix) || name == c.prefix {
 		return fmt.Errorf("%w %q: %q", ErrForeignMachine, c.prefix, name)
+	}
+	return nil
+}
+
+// checkNamed refuses a name that checkOwned refuses and a name with white
+// space.
+func (c *Client) checkNamed(name string) error {
+	if err := c.checkOwned(name); err != nil {
+		return err
+	}
+	if strings.ContainsFunc(name, unicode.IsSpace) {
+		return fmt.Errorf("%w: %q", ErrMachineName, name)
 	}
 	return nil
 }
@@ -197,18 +349,20 @@ func checkMountable(dir string) error {
 	return nil
 }
 
+// forwardFlag is the flag of orb create that forwards the SSH agent of the
+// host into the machine.
+const forwardFlag = "--forward-ssh-agent"
+
 // createArgs returns the arguments of orb that create the machine name. The
 // machine is always isolated, also on the network, and dir is always mounted
-// at its own path: a mount without a destination lands under /mnt/mac.
-func createArgs(name, dir string) []string {
-	return []string{
-		"create",
-		"--isolated",
-		"--isolate-network",
-		"--mount", dir + mountSeparator + dir,
-		image,
-		name,
+// at its own path: a mount without a destination lands under /mnt/mac. The
+// flag that forwards the SSH agent is there only when forward is true.
+func createArgs(name, dir string, forward bool) []string {
+	args := []string{"create", "--isolated", "--isolate-network"}
+	if forward {
+		args = append(args, forwardFlag)
 	}
+	return append(args, "--mount", dir+mountSeparator+dir, image, name)
 }
 
 // statusArgs returns the arguments of orb that print the state of OrbStack
@@ -235,12 +389,24 @@ func activeMountsArgs(name string) []string {
 	return []string{"-m", name, "-u", "root", "cat", mountTable}
 }
 
+// startArgs returns the arguments of orb that start the machine name.
+func startArgs(name string) []string {
+	return []string{"start", name}
+}
+
+// stopArgs returns the arguments of orb that stop the machine name.
+func stopArgs(name string) []string {
+	return []string{"stop", name}
+}
+
 // machine is the part of an entry of "orb list --format json" that the
 // adapter reads.
 type machine struct {
 	Name   string `json:"name"`
+	State  string `json:"state"`
 	Config struct {
-		Mounts []struct {
+		ForwardSSHAgent *bool `json:"forward_ssh_agent"`
+		Mounts          []struct {
 			Source      string `json:"source"`
 			Destination string `json:"destination"`
 		} `json:"mounts"`
@@ -268,6 +434,58 @@ func parseMounts(list []byte) (map[string]map[string]string, error) {
 		}
 	}
 	return mounts, nil
+}
+
+// parseSSHAgentForwarded returns the SSH agent setting of the machine name in
+// the output of "orb list --format json". It fails on output that it cannot
+// read, on a machine that is not listed or is listed twice, and on an entry
+// whose setting is missing or not a boolean: it never assumes a default.
+func parseSSHAgentForwarded(list []byte, name string) (bool, error) {
+	var machines []machine
+	if err := json.Unmarshal(list, &machines); err != nil {
+		return false, fmt.Errorf("%w: %w", ErrMachineList, err)
+	}
+	var settings []*bool
+	for _, m := range machines {
+		if m.Name == name {
+			settings = append(settings, m.Config.ForwardSSHAgent)
+		}
+	}
+	switch {
+	case len(settings) == 0:
+		return false, fmt.Errorf("%w: machine %q is not listed", ErrMachineList, name)
+	case len(settings) > 1:
+		return false, fmt.Errorf("%w: machine %q is listed twice", ErrMachineList, name)
+	case settings[0] == nil:
+		return false, fmt.Errorf("%w: machine %q has no config.forward_ssh_agent", ErrMachineList, name)
+	}
+	return *settings[0], nil
+}
+
+// parseState returns the state of the machine name in the output of "orb
+// list --format json", or "" when no entry has that name. It fails on output
+// that it cannot read, on a name that appears twice, and on an entry of name
+// without a state.
+func parseState(list []byte, name string) (string, error) {
+	var machines []machine
+	if err := json.Unmarshal(list, &machines); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrMachineList, err)
+	}
+	var states []string
+	for _, m := range machines {
+		if m.Name == name {
+			states = append(states, m.State)
+		}
+	}
+	switch {
+	case len(states) > 1:
+		return "", fmt.Errorf("%w: machine %q is listed twice", ErrMachineList, name)
+	case len(states) == 1 && states[0] == "":
+		return "", fmt.Errorf("%w: machine %q has no state", ErrMachineList, name)
+	case len(states) == 1:
+		return states[0], nil
+	}
+	return "", nil
 }
 
 // parseMountTable returns the mounts of the host file system in a mount table
@@ -362,6 +580,14 @@ func runAsAgentArgs(name string) []string {
 	return []string{"-m", name, "-u", AgentUser, "bash", "-s"}
 }
 
+// shellArgs returns the arguments of orb that run the login shell of
+// AgentUser in the machine name with dir as its working directory. Without
+// a command, orb starts the shell of the user from /etc/passwd as a login
+// shell; without -w, it starts in the home directory of the user.
+func shellArgs(name, dir string) []string {
+	return []string{"-m", name, "-u", AgentUser, "-w", dir}
+}
+
 // listsMachine reports whether name is one of the machine names that orb
 // printed, one on each line.
 func listsMachine(names, name string) bool {
@@ -378,18 +604,24 @@ func run(ctx context.Context, args []string, stdin []byte) (string, error) {
 	return execute(ctx, args, stdin)
 }
 
-// checkRunning fails unless orb status reports a running OrbStack.
+// checkRunning fails unless orb status reports a running OrbStack. It reads
+// HOME before orb runs, because orb creates $HOME/.orbstack.
 func checkRunning(ctx context.Context) error {
+	home := readHome()
 	status, err := execute(ctx, statusArgs(), nil)
-	return statusError(strings.TrimSpace(status), err)
+	return statusError(strings.TrimSpace(status), err, homeCause(home))
 }
 
-// statusError returns the error for the state that orb status printed and
-// for its error: nil only for a running OrbStack, ErrNotRunning for a
-// stopped or starting one, and an error for anything else.
-func statusError(status string, err error) error {
+// statusError returns the error for the state that orb status printed, for
+// its error, and for homeCause, the reason why HOME may not lead orb to
+// OrbStack: nil only for a running OrbStack, ErrHome for a stopped or
+// starting one when homeCause is not empty, ErrNotRunning for a stopped or
+// starting one otherwise, and an error for anything else.
+func statusError(status string, err error, homeCause string) error {
 	switch {
-	case status == statusStopped || status == statusStarting:
+	case isNotRunning(status) && homeCause != "":
+		return fmt.Errorf("%w (orb status: %s): orb finds OrbStack through $HOME/%s, so OrbStack may still be running; %s", ErrHome, status, stateDir, homeCause)
+	case isNotRunning(status):
 		return fmt.Errorf("%w (orb status: %s); start OrbStack, wait until orb status prints Running, and try again", ErrNotRunning, status)
 	case err != nil:
 		return err
@@ -399,19 +631,142 @@ func statusError(status string, err error) error {
 	return nil
 }
 
+// isNotRunning reports whether orb status printed a stopped or starting
+// OrbStack.
+func isNotRunning(status string) bool {
+	return status == statusStopped || status == statusStarting
+}
+
+// home is what decides whether HOME leads orb to the OrbStack of the
+// account.
+type home struct {
+	// env is HOME, canonical when it is absolute.
+	env string
+	// account is the canonical home directory of the account, or empty when
+	// the user database does not give it.
+	account string
+	// hasStateDir reports whether $HOME/.orbstack is a directory.
+	hasStateDir bool
+}
+
+// readHome reads HOME, the home directory of the account, and whether
+// $HOME/.orbstack is a directory. An account home that is the same directory
+// as HOME counts as HOME.
+func readHome() home {
+	h := home{env: canonical(os.Getenv("HOME"))}
+	if account, err := currentUser(); err == nil && account.HomeDir != "" {
+		h.account = sameDirOrSelf(canonical(account.HomeDir), h.env)
+	}
+	if filepath.IsAbs(h.env) {
+		info, err := os.Stat(filepath.Join(h.env, stateDir))
+		h.hasStateDir = err == nil && info.IsDir()
+	}
+	return h
+}
+
+// sameDirOrSelf returns other when path and other name the same directory,
+// also through a firmlink or another letter case, and path otherwise.
+func sameDirOrSelf(path, other string) string {
+	pathInfo, pathErr := os.Stat(path)
+	otherInfo, otherErr := os.Stat(other)
+	if pathErr == nil && otherErr == nil && os.SameFile(pathInfo, otherInfo) {
+		return other
+	}
+	return path
+}
+
+// canonical returns an absolute path with its symlinks resolved, or cleaned
+// when it cannot be resolved. It returns a relative path unchanged.
+func canonical(path string) string {
+	if !filepath.IsAbs(path) {
+		return path
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
+}
+
+// homeCause returns why HOME may not lead orb to the OrbStack of the
+// account, or an empty string when it leads there.
+func homeCause(h home) string {
+	switch {
+	case !filepath.IsAbs(h.env):
+		return fmt.Sprintf("HOME %q is not an absolute path: set HOME to the home directory of the account and try again", h.env)
+	case h.account != "" && h.env != h.account:
+		return fmt.Sprintf("HOME %q is not the home directory of the account, %q: set HOME to that directory and try again", h.env, h.account)
+	case !h.hasStateDir:
+		return fmt.Sprintf("%q is not a directory: start OrbStack once as this account, or set HOME to the directory that holds .orbstack, and try again", filepath.Join(h.env, stateDir))
+	}
+	return ""
+}
+
 // execute runs orb with args and stdin and returns its standard output, also
 // when the command fails. The error of a failed command carries the
 // standard error of orb.
 func execute(ctx context.Context, args []string, stdin []byte) (string, error) {
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, cli, args...)
-	cmd.Stdin = bytes.NewReader(stdin)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := executeStreams(ctx, args, bytes.NewReader(stdin), &stdout, &stderr); err != nil {
 		return stdout.String(), commandError(args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+// executeStreams runs orb with args and the three streams attached as they
+// are. Every orb command of the client runs through it. orb gets only the
+// variables of allowedVariables (HOME, PATH, TMPDIR, TERM, COLORTERM, LANG,
+// and the LC_ variables of POSIX) from the environment of the process.
+func executeStreams(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) error {
+	cmd := exec.CommandContext(ctx, cli, args...)
+	cmd.Env = allowedEnvironment(os.Environ())
+	cmd.Stdin = in
+	cmd.Stdout = out
+	cmd.Stderr = errOut
+	return cmd.Run()
+}
+
+// allowedEnvironment returns a copy of environ, a list of NAME=value entries,
+// with only the entries of allowedVariables, in their order. It removes a name
+// that differs from an allowed one only in letter case or by a prefix or a
+// suffix, because the names of the environment are case-sensitive.
+func allowedEnvironment(environ []string) []string {
+	return slices.DeleteFunc(slices.Clone(environ), isForbidden)
+}
+
+// isForbidden reports whether entry sets a variable that is not in
+// allowedVariables.
+func isForbidden(entry string) bool {
+	name, _, _ := strings.Cut(entry, "=")
+	return !slices.Contains(allowedVariables, name)
+}
+
+// exitStatus returns the exit status of a command that ended with err: 0
+// for nil, the exit code for an exit, and 128 plus the number of the signal
+// for a command that a signal ended, as a shell reports it. Any other error
+// means that the command did not run, and exitStatus returns it.
+func exitStatus(err error) (int, error) {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return 0, err
+	}
+	if wait, ok := exit.Sys().(syscall.WaitStatus); ok && wait.Signaled() {
+		return 128 + int(wait.Signal()), nil
+	}
+	return exit.ExitCode(), nil
+}
+
+// heldSignals are the signals of the terminal that holdingSignals catches.
+var heldSignals = []os.Signal{os.Interrupt, syscall.SIGQUIT}
+
+// holdingSignals runs fn while the process catches heldSignals, so that
+// they do not end it, and restores their handling afterwards. A child that
+// fn starts gets them with their default action: a caught signal, unlike an
+// ignored one, does not pass to the child as ignored.
+func holdingSignals(fn func() error) error {
+	caught := make(chan os.Signal, 1)
+	signal.Notify(caught, heldSignals...)
+	defer signal.Stop(caught)
+	return fn()
 }
 
 // commandError wraps the error of the failed orb subcommand and appends what

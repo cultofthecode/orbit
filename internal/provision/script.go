@@ -13,7 +13,7 @@ import (
 
 // Version is the provisioning version that the root script writes into the
 // marker file as its last action.
-const Version = 1
+const Version = 3
 
 // MarkerPath is the file that exists only in a machine that provisioning
 // completed. A later slice can refuse a machine without it.
@@ -46,7 +46,11 @@ var orbStackDNS = netip.MustParseAddr("0.250.250.200")
 var toolchain = []string{"git", "openssh-client", "curl", "ca-certificates", "jq", "ripgrep", "unzip"}
 
 // infrastructure holds the packages of the firewall and the proxy (D22).
-var infrastructure = []string{"nftables", "tinyproxy"}
+var infrastructure = []string{"nftables", "tinyproxy", netcatPackage}
+
+// forwardedSocketGroup is the group of the socket of the forwarded host SSH
+// agent. The agent user is in it exactly when the machine forwards the agent.
+const forwardedSocketGroup = "orbstack"
 
 // privilegedGroups are the groups that the agent must never be in.
 var privilegedGroups = []string{"sudo", "admin", "adm", "docker", "lxd", "disk", "shadow"}
@@ -55,29 +59,44 @@ var privilegedGroups = []string{"sudo", "admin", "adm", "docker", "lxd", "disk",
 // script.
 var ErrScriptInput = errors.New("invalid provisioning input")
 
-// Script returns the root script that provisions a sandbox machine.
-// defaultUID is the uid of the default user that OrbStack creates: the uid
-// of the Mac user. agentDomains are the egress domains of the agent of the
-// sandbox, nil without an agent; the proxy allows them in addition to the
-// base list (policy.Allowlist). The script is idempotent, keeps the machine
+// ScriptInput is what Script needs to know about the machine.
+type ScriptInput struct {
+	// DefaultUID is the uid of the default user that OrbStack creates: the
+	// uid of the Mac user.
+	DefaultUID uint32
+	// AgentDomains are the egress domains of the agent of the sandbox, nil
+	// without an agent; the proxy allows them in addition to the base list
+	// (policy.Allowlist).
+	AgentDomains []string
+	// ForwardSSHAgent is true when the machine forwards the SSH agent of the
+	// host. The agent user joins the group of the socket only then.
+	ForwardSSHAgent bool
+}
+
+// Script returns the root script that provisions a sandbox machine, as in
+// describes it. The script is idempotent, keeps the machine
 // fail-closed at each step, writes nothing into a home directory, and writes
 // MarkerPath as its last action. The same input yields the same bytes.
-func Script(defaultUID uint32, agentDomains []string) ([]byte, error) {
-	if defaultUID == 0 {
+func Script(in ScriptInput) ([]byte, error) {
+	if in.DefaultUID == 0 {
 		return nil, fmt.Errorf("%w: the default uid is 0", ErrScriptInput)
 	}
-	files, err := scriptFiles(defaultUID, agentDomains)
+	files, err := scriptFiles(in.DefaultUID, in.AgentDomains)
 	if err != nil {
 		return nil, err
 	}
 	sections := [][]string{
 		prelude(),
 		installPackages(),
+		installDocker(),
+		maskRootfulDocker(),
 		staticDNS(),
 		writeFiles(files),
 		startBoundary(),
-		createAgent(),
-		selfCheck(defaultUID),
+		createAgent(in.ForwardSSHAgent),
+		helperPermissions(),
+		startEngine(),
+		selfCheck(in.DefaultUID, in.ForwardSSHAgent),
 		writeMarker(),
 	}
 	return []byte(lines(group(slices.Concat(sections...))...)), nil
@@ -105,6 +124,7 @@ func scriptFiles(defaultUID uint32, agentDomains []string) ([]File, error) {
 		{Path: environmentPath, Mode: 0o644, Content: environment()},
 	}
 	files = append(files, Units(defaultUID)...)
+	files = append(files, sshFiles()...)
 	return files, checkDelimiter(files)
 }
 
@@ -221,36 +241,40 @@ func putFile(file File) []string {
 
 // startBoundary enables the units and starts them. It loads the rules with
 // nft and never restarts the nftables unit, whose stop flushes the ruleset.
+// It starts systemd-user-sessions.service last, because a restart that a
+// required unit propagates does not start it again after it failed.
 func startBoundary() []string {
 	return []string{
 		"systemctl daemon-reload",
-		"systemctl enable " + strings.Join(boundaryUnits(), " ") + " >/dev/null",
+		"systemctl enable " + strings.Join(append(boundaryUnits(), unitGate), " ") + " >/dev/null",
 		"systemctl start " + unitProxyAddress,
 		"nft -f " + firewallPath,
 		"systemctl start " + unitFirewall,
 		"systemctl restart " + unitProxy,
 		"systemctl restart " + unitHarden,
+		"systemctl start " + unitUserSessions,
 	}
 }
 
 // createAgent creates the agent user once, without any extra group, and
-// refuses a uid below the floor.
-func createAgent() []string {
-	return []string{
+// refuses a uid below the floor. It adds the agent to the group of the
+// forwarded socket only when the machine forwards the SSH agent.
+func createAgent(forwardSSHAgent bool) []string {
+	script := []string{
 		fmt.Sprintf("id -u %s >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --user-group %s", AgentUser, AgentUser),
 		fmt.Sprintf("passwd -l %s >/dev/null", AgentUser),
 		fmt.Sprintf(`[ "$(id -u %s)" -ge %d ] || fail "the uid of %s is below %d"`, AgentUser, uidFloor, AgentUser, uidFloor),
 	}
+	if forwardSSHAgent {
+		script = append(script, fmt.Sprintf("usermod -aG %s %s", forwardedSocketGroup, AgentUser))
+	}
+	return script
 }
 
 // selfCheck verifies, as root, what the boundary depends on. Any failure
 // stops the script before the marker is written.
-func selfCheck(defaultUID uint32) []string {
-	script := []string{
-		`nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`,
-		"for unit in " + strings.Join(boundaryUnits(), " ") + "; do",
-		`  systemctl is-active --quiet "$unit" || fail "$unit is not active"`,
-		"done",
+func selfCheck(defaultUID uint32, forwardSSHAgent bool) []string {
+	script := slices.Concat(boundaryCheck(), []string{
 		"for unit in " + strings.Join(resolvedUnits, " ") + "; do",
 		`  [ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" = masked ] || fail "$unit is not masked"`,
 		`  if systemctl is-active --quiet "$unit"; then fail "$unit is active"; fi`,
@@ -268,8 +292,51 @@ func selfCheck(defaultUID uint32) []string {
 		fmt.Sprintf("for group in %s; do", strings.Join(privilegedGroups, " ")),
 		fmt.Sprintf(`  case " $(id -nG %s) " in *" $group "*) fail "%s is in the group $group";; esac`, AgentUser, AgentUser),
 		"done",
-	}
+	}, sshCheck(forwardSSHAgent), dockerCheck())
 	return script
+}
+
+// sshCheck fails unless the SSH files exist, netcatPath belongs to
+// netcatPackage, and the agent user is in the group of the forwarded socket
+// exactly when the machine forwards the SSH agent: a membership in the wrong
+// direction fails too.
+func sshCheck(forwardSSHAgent bool) []string {
+	script := []string{
+		fmt.Sprintf(`[ -f %s ] || fail "%s is missing"`, sshConfigPath, sshConfigPath),
+		fmt.Sprintf(`[ -f %s ] || fail "%s is missing"`, knownHostsPath, knownHostsPath),
+		fmt.Sprintf(`owner=$(dpkg -S %s 2>/dev/null || true)`, netcatPath),
+		fmt.Sprintf(`[ "$owner" = "%s: %s" ] || fail "%s does not belong to %s"`, netcatPackage, netcatPath, netcatPath, netcatPackage),
+	}
+	member := fmt.Sprintf(`case " $(id -nG %s) " in *" %s "*)`, AgentUser, forwardedSocketGroup)
+	if forwardSSHAgent {
+		return append(script, member+`;; *) fail "`+AgentUser+` is not in the group `+forwardedSocketGroup+`";; esac`)
+	}
+	return append(script, member+` fail "`+AgentUser+` is in the group `+forwardedSocketGroup+`";; esac`)
+}
+
+// boundaryCheck fails, through the shell function fail, unless the firewall
+// table is loaded and every boundary unit and systemd-user-sessions.service
+// is active. An active nftables.service alone does not prove the table.
+func boundaryCheck() []string {
+	return unitsCheck(append(boundaryUnits(), unitUserSessions))
+}
+
+// boundaryUnitsCheck is boundaryCheck without
+// systemd-user-sessions.service: the gate that user managers wait for cannot
+// wait for the unit that ends the login gate.
+func boundaryUnitsCheck() []string {
+	return unitsCheck(boundaryUnits())
+}
+
+// unitsCheck fails unless the firewall table is loaded and every unit of
+// units is active.
+func unitsCheck(units []string) []string {
+	return []string{
+		`nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`,
+		"for unit in " + strings.Join(units, " ") + "; do",
+		`  systemctl is-active --quiet "$unit" || fail "$unit is not active"`,
+		"done",
+	}
 }
 
 // writeMarker writes MarkerPath as the last action of the script.

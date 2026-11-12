@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -25,9 +27,20 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
 )
 
-// provisionTimeout bounds the provisioning test: two runs of the root
-// script, each with a package install, and the probes.
+// provisionTimeout bounds the provisioning of one test when the test
+// binary has no deadline: two runs of the root script, each with a package
+// install, and the probes.
 const provisionTimeout = 10 * time.Minute
+
+// cleanupGrace is the time that provisionContext leaves before the
+// deadline of the test binary, so that t.Cleanup can delete the machine.
+const cleanupGrace = 3 * time.Minute
+
+// initLockPath is the file that serializes the integration runs on one
+// host: TestActiveMountsShowASwappedPath in internal/orbstack holds an
+// exclusive lock on the same path while its machine makes init refuse
+// every directory.
+const initLockPath = "/tmp/orbit-integration-init.lock"
 
 // macBridgeAddr is the address of the Mac on the bridge of OrbStack, as the
 // spike of 2026-11-10 found it reachable from a machine.
@@ -83,11 +96,12 @@ MAC_PORT=%d
 HOST_CONTAINER=%s
 PROJECT_DIR='%s'
 ROOT_ONLY_FILES="%s"
+PROVISION_VERSION=%d
 DEFAULT_USER=$(getent passwd "$DEFAULT_UID" | cut -d: -f1)
 
-[ "$(cat /etc/orbit/provisioned)" = 1 ] || fail "marker"
+[ "$(cat /etc/orbit/provisioned)" = "$PROVISION_VERSION" ] || fail "marker"
 [ "$(id -u agent)" -ge 1000 ] || fail "agent uid below 1000"
-[ "$(id -nG agent)" = agent ] || fail "agent has groups: $(id -nG agent)"
+[ "$(id -nG agent)" = "agent orbstack" ] || fail "agent has groups: $(id -nG agent), want agent orbstack: the default init forwards the SSH agent"
 blocked "agent sudo" as_agent sudo -n true
 blocked "agent su to root" as_agent su -c true root </dev/null
 blocked "agent su to the default user" as_agent su -c true "$DEFAULT_USER" </dev/null
@@ -102,6 +116,7 @@ allowed "agent write in the project directory" as_agent sh -c 'echo "$2" > "$1"'
 
 for socket in /var/run/docker.sock /run/docker.sock; do blocked "agent sees $socket" as_agent test -e "$socket"; done
 for socket in $(find / \( -path /proc -o -path /sys \) -prune -o -type s -print 2>/dev/null); do
+  [ "$socket" != "/run/user/$(id -u agent)/docker.sock" ] || continue
   [ "$(as_agent curl -s -m 2 --unix-socket "$socket" http://engine/_ping 2>/dev/null)" != OK ] || fail "agent reached an engine on $socket"
 done
 
@@ -135,8 +150,10 @@ refused_by_proxy "agent proxy to github.com:22" as_agent curl -sSf -m 15 -x http
 blocked "proxy user to 169.254.169.254" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 http://169.254.169.254
 blocked "proxy user to 198.19.249.1" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 http://198.19.249.1
 blocked "proxy user to 127.0.0.1:22" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 telnet://127.0.0.1:22
-blocked "proxy user to port 80" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 http://1.1.1.1
+allowed "proxy user to port 80" as_uid tinyproxy curl -sS --noproxy '*' -m 5 -o /dev/null http://deb.debian.org
 allowed "proxy user to port 443" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 -k -o /dev/null https://1.1.1.1
+blocked "proxy user to port 22" as_uid tinyproxy curl -sS --noproxy '*' -m 5 telnet://1.1.1.1:22
+blocked "proxy user to port 8080" as_uid tinyproxy curl -sS --noproxy '*' -m 5 http://deb.debian.org:8080
 
 if [ "$MAC_PORT" -gt 0 ]; then
   MAC="http://` + macBridgeAddr + `:$MAC_PORT"
@@ -187,39 +204,124 @@ blocked "agent direct to 1.1.1.1 after the attempts of the agent" as_agent curl 
 `
 
 func TestInitProvisionsTheSandbox(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	waitToRunInit(t)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
-	dir := projectDir(t)
-	name := sandbox.MachineName(dir)
-	if exists, err := client.Exists(ctx, name); err != nil || exists {
-		t.Fatalf("Exists(%q) before init = %v, %v, want false", name, exists, err)
-	}
-	t.Cleanup(func() {
-		if err := client.Delete(context.WithoutCancel(ctx), name); err != nil {
-			t.Errorf("Delete(%q) = %v", name, err)
-		}
-	})
+	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
 
 	first, err := handler.Handle(ctx, initialize.Input{Dir: dir})
 	if err != nil || !first.Created {
-		t.Fatalf("first Handle = %+v, %v, want a created sandbox", first, err)
+		t.Fatalf("first Handle = %+v, %v, want a created sandbox; machines that this test did not create: %s", first, err, otherMachines(ctx, client, name))
 	}
 	second, err := handler.Handle(ctx, initialize.Input{Dir: dir})
 	if err != nil || second.Created {
-		t.Fatalf("second Handle = %+v, %v, want the existing sandbox provisioned again", second, err)
+		t.Fatalf("second Handle = %+v, %v, want the existing sandbox provisioned again; machines that this test did not create: %s", second, err, otherMachines(ctx, client, name))
 	}
 
 	port := macPortReachableByRoot(ctx, t, client, name)
 	container := hostContainerReachableByRoot(ctx, t, client, name)
 	writeHostFile(t, dir)
-	script := fmt.Sprintf(probeScript, os.Getuid(), port, container, dir, strings.Join(rootOnlyPaths(), " "))
+	script := fmt.Sprintf(probeScript, os.Getuid(), port, container, dir, strings.Join(rootOnlyPaths(), " "), provision.Version)
 	if err := client.RunAsRoot(ctx, name, []byte(script)); err != nil {
 		t.Errorf("probes in %s:\n%v", name, err)
 	}
 	checkAgentWroteTheProject(t, dir)
 	checkProxyClosedFromTheMac(t, name)
+}
+
+// waitToRunInit holds a shared lock on initLockPath until the end of t. It
+// waits while a test of any run on the host holds the exclusive lock, so
+// that init does not refuse because of a machine of another run. Call it
+// before the deadline of the test starts.
+func waitToRunInit(t *testing.T) {
+	t.Helper()
+	file, err := os.OpenFile(initLockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err == nil {
+		return
+	}
+	t.Logf("waiting for a test of another run that blocks init (%s)", initLockPath)
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH); err != nil {
+		t.Fatalf("lock %s: %v", initLockPath, err)
+	}
+}
+
+// provisionContext returns a context that ends cleanupGrace before the
+// deadline of the test binary, so that the -timeout the caller chose
+// absorbs the load of other runs on one OrbStack and t.Cleanup still
+// deletes the machine. Without a deadline it ends after provisionTimeout.
+func provisionContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(context.Background(), provisionDeadline(t))
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// provisionDeadline returns the end of the context of provisionContext.
+func provisionDeadline(t *testing.T) time.Time {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		return deadline.Add(-cleanupGrace)
+	}
+	return time.Now().Add(provisionTimeout)
+}
+
+// otherMachines returns the names of the machines on the host besides
+// name, for the failure message of an init test: init checks the mounts of
+// every machine, so a machine that the test did not create can make it
+// refuse.
+func otherMachines(ctx context.Context, client *orbstack.Client, name string) string {
+	mounts, err := client.Mounts(context.WithoutCancel(ctx))
+	if err != nil {
+		return fmt.Sprintf("unknown (%v)", err)
+	}
+	names := slices.DeleteFunc(slices.Sorted(maps.Keys(mounts)), func(machine string) bool { return machine == name })
+	return strings.Join(names, ", ")
+}
+
+// hardenRestarts restarts the harden unit as every run of init does, one
+// time more than the default start limit of systemd allows (5 starts in
+// 10 s). Each restart also restarts systemd-user-sessions.service, which
+// requires the harden unit. The burst does not depend on how fast apt-get
+// runs in init. Both units stay active, and logins stay enabled. The
+// restart of the harden unit returns before the restart of user sessions
+// ends, so the script waits until user sessions leave a transient state.
+const hardenRestarts = `
+set -eu
+for run in 1 2 3 4 5 6; do systemctl restart orbit-harden.service; done
+for wait in $(seq 300); do
+	case "$(systemctl is-active systemd-user-sessions.service)" in activating|deactivating|reloading) sleep 0.1;; *) break;; esac
+done
+systemctl is-active --quiet orbit-harden.service
+systemctl is-active --quiet systemd-user-sessions.service
+! test -e /run/nologin
+`
+
+// TestInitRunsAgainAfterRepeatedRuns re-runs init on one sandbox right
+// after the harden unit restarted more often than the default start limit
+// of systemd allows (#66).
+func TestInitRunsAgainAfterRepeatedRuns(t *testing.T) {
+	waitToRunInit(t)
+	ctx := provisionContext(t)
+	client := orbstack.New(sandbox.NamePrefix)
+	dir, name := newSandboxDir(ctx, t, client)
+	handler := initHandler(client, claudeRegistry(t))
+
+	if _, err := handler.Handle(ctx, initialize.Input{Dir: dir}); err != nil {
+		t.Fatalf("first Handle = %v; machines that this test did not create: %s", err, otherMachines(ctx, client, name))
+	}
+	for run := 2; run <= 3; run++ {
+		if err := client.RunAsRoot(ctx, name, []byte(hardenRestarts)); err != nil {
+			t.Fatalf("restarts of orbit-harden.service before run %d in %s:\n%v", run, name, err)
+		}
+		if out, err := handler.Handle(ctx, initialize.Input{Dir: dir}); err != nil || out.Created {
+			t.Fatalf("Handle run %d = %+v, %v, want the existing sandbox provisioned again; machines that this test did not create: %s", run, out, err, otherMachines(ctx, client, name))
+		}
+	}
 }
 
 // rootOnlyPaths returns rootOnlyFiles and the units and the harden script of

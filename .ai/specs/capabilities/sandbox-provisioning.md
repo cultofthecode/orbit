@@ -3,11 +3,17 @@
 Root provisions a sandbox machine so that the agent runs without privileges behind a root-owned firewall and egress proxy.
 
 ## Requirement: Agent user without privileges
-The system SHALL create the user `agent` with a uid from 1000 up, no sudo rule, and no privileged group (`sudo`, `admin`, `adm`, `docker`, `lxd`, `disk`, `shadow`). Provisioning adds the agent to no group; E01-S04 adds `orbstack` for the forwarded SSH agent socket (R08).
+The system SHALL create the user `agent` with a uid from 1000 up, no sudo rule, and no privileged group (`sudo`, `admin`, `adm`, `docker`, `lxd`, `disk`, `shadow`). The system SHALL add `agent` to the group `orbstack` exactly when the machine forwards the host SSH agent, and to no other group.
 
 ### Scenario: The agent tries to become root
 - WHEN a process of `agent` runs `sudo -n true`, `su root`, or `su <default user>`
 - THEN each command fails
+
+### Scenario: Group of the forwarded socket
+- WHEN provisioning runs on a machine that forwards the agent, and again on one that does not
+- THEN `id -nG agent` holds `orbstack` on the first and not on the second
+
+Frozen by: `internal/provision/script_test.go` (`TestScriptCreatesTheAgentOnceWithOnlyTheSocketGroup`)
 
 ## Requirement: Default user without sudo
 The system SHALL leave no sudo rule, no membership in `sudo`, `admin`, or `adm`, and no usable password for any account except root, also after a restart of the machine.
@@ -39,11 +45,23 @@ The system SHALL drop every connection to port 3128 that does not arrive on the 
 - THEN the connection fails
 
 ## Requirement: Proxy allowlist
-The system SHALL let the proxy open a `CONNECT` tunnel on port 443 only to a host of the base allowlist (D24) or of the `EgressDomains` of the agent of the last `init`, matched exactly and without case. Each `init` rebuilds the allowlist from its own `--agent`.
+The system SHALL let the proxy open a `CONNECT` tunnel on port 443 only, and forward a plain HTTP request, to a host of the base allowlist (D26: the hosts of D24, `dl-cdn.alpinelinux.org` included, plus `ghcr.io` and `pkg-containers.githubusercontent.com`, `deb.debian.org`, `archive.ubuntu.com`, `security.ubuntu.com`, and `ports.ubuntu.com`) or of the `EgressDomains` of the agent of the last `init`, matched exactly and without case. The proxy does not limit the port of a plain HTTP request; the firewall does (Requirement "Proxy refuses non-public destinations"): it reaches only ports 80 and 443. Each `init` rebuilds the allowlist from its own `--agent`.
 
 ### Scenario: Allowed and refused hosts
 - WHEN `agent` asks the proxy for `CONNECT github.com:443`, `CONNECT example.org:443`, and `CONNECT github.com:22`
 - THEN the first succeeds and the other two get 403
+
+### Scenario: GHCR hosts
+- WHEN the owner runs `orbit init` without `--agent`, and `agent` asks the proxy for `CONNECT ghcr.io:443`, `CONNECT pkg-containers.githubusercontent.com:443`, and `CONNECT quay.io:443`
+- THEN the first two succeed and the third gets 403
+
+### Scenario: Alpine mirror
+- WHEN the owner runs `orbit init` without `--agent`, and `agent` asks the proxy for `CONNECT dl-cdn.alpinelinux.org:443`
+- THEN it succeeds
+
+### Scenario: Plain HTTP to the package mirrors
+- WHEN `agent` asks the proxy for `GET http://deb.debian.org/debian/dists/trixie/InRelease`, `GET http://ports.ubuntu.com/ubuntu-ports/dists/resolute/InRelease`, `GET http://example.org/`, `CONNECT deb.debian.org:80`, and `GET http://deb.debian.org:8080/`, and connects to `deb.debian.org:80` without the proxy
+- THEN the first two succeed, the proxy answers 403 to the third and the fourth, the fifth fails because the firewall refuses the connection of the proxy to port 8080, and the direct connection fails
 
 ### Scenario: Hostile domain in a definition
 - WHEN a definition holds `*.anthropic.com`, `1.2.3.4`, `localhost`, `Claude.AI`, or `example.com:22`
@@ -60,11 +78,17 @@ The system SHALL let the proxy open a `CONNECT` tunnel on port 443 only to a hos
 Source: .ai/specs/2026-11-11-claude-code-agent-definition.md
 
 ## Requirement: Proxy refuses non-public destinations
-The system SHALL reject every connection of the proxy user to a loopback, private, link-local, shared, benchmark, multicast, or reserved address, except port 53 on its DNS resolvers, and every connection of the proxy user to a port other than 443 and 53.
+The system SHALL reject every connection of the proxy user to a loopback, private, link-local, shared, benchmark, multicast, or reserved address, except port 53 on its DNS resolvers, and every connection of the proxy user to a port other than 80, 443, and 53.
 
 ### Scenario: Proxy user to a private address
 - WHEN a process of the proxy user connects to `192.168.139.3`, `198.19.249.1`, `169.254.169.254`, `127.0.0.1:22`, or `fd07:b51a:cc66:f0::fe`
 - THEN the connection fails
+
+### Scenario: Proxy user to a refused port
+- WHEN a process of the proxy user connects to the public address of `deb.debian.org` on port 80, 443, 22, and 8080
+- THEN the connections to ports 80 and 443 succeed, and the connections to ports 22 and 8080 fail
+
+Source: .ai/specs/2026-11-11-rootless-docker.md
 
 ## Requirement: Enforcement survives a restart
 The system SHALL start the firewall, the proxy address, and the proxy as enabled units before `systemd-user-sessions.service`.
@@ -81,18 +105,35 @@ The system SHALL install git, openssh-client, curl, ca-certificates, jq, ripgrep
 - THEN it fails, and `git`, `ssh`, `curl`, `jq`, `rg`, and `unzip` run
 
 ## Requirement: Init of a project directory
-The system SHALL create the machine of the project directory when it does not exist, and SHALL then provision it, also when it already existed. When provisioning fails on a machine that the same call created, the system SHALL delete that machine and report the failure.
+The system SHALL create the machine of the project directory when it does not exist, and SHALL then provision it and set up the Docker client of `agent`, also when it already existed. When provisioning or the client setup fails on a machine that the same call created, the system SHALL delete that machine and report the failure.
 
 ### Scenario: First init
 - WHEN `init` runs in a project directory without a machine
-- THEN the machine is created and provisioned, and `Created` is true
+- THEN the machine is created and provisioned, the client setup runs as `agent`, and `Created` is true
 
 ### Scenario: Init of an existing machine
 - WHEN `init` runs in a project directory whose machine exists
-- THEN the machine is provisioned again and is not created or deleted, and `Created` is false
+- THEN the machine is provisioned again and the client setup runs again, `~/.docker/config.json` keeps its other keys, the machine is not created or deleted, and `Created` is false
 
 ### Scenario: Provisioning fails on a new machine
 - WHEN provisioning fails on a machine that this call created
 - THEN the machine is deleted and the error names the failed provisioning
 
+### Scenario: Client setup fails on a new machine
+- WHEN the client setup fails on a machine that this call created
+- THEN the machine is deleted, the agent is not installed, and the error names the client setup
+
+Source: .ai/specs/2026-11-11-rootless-docker.md
+
 Source: .ai/specs/2026-11-10-sandbox-provisioning.md
+
+## Requirement: Provisioning keeps the agent and its home
+The system SHALL create the user `agent` only when it does not exist, and the root script SHALL NOT remove, move, or recreate the user or any directory under `/home`.
+
+### Scenario: Script content
+- WHEN the root script is rendered
+- THEN it holds no `userdel`, no `deluser`, no `usermod` of `agent`, and no line that names `/home` (besides the `/home/*)` pattern of the self-check)
+
+Frozen by: `internal/provision/script_test.go` (`TestScriptWritesNothingIntoAHome`, `TestScriptCreatesTheAgentOnceWithoutGroups`)
+
+Source: .ai/specs/2026-11-11-subscription-sign-in.md

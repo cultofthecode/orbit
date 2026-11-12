@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -163,6 +164,43 @@ func TestRelocatedFiles(t *testing.T) {
 
 	if err != nil || !slices.Equal(got, want) {
 		t.Errorf("RelocatedFiles = %v, %v, want %v", got, err, want)
+	}
+}
+
+func TestRelocatedSingleLinkFiles(t *testing.T) {
+	env := map[string]string{
+		"AWS_CONFIG_FILE":             "/Users/dev/dotfiles/aws/config",
+		"AWS_SHARED_CREDENTIALS_FILE": "/Users/dev/dotfiles/aws/credentials/",
+		"CLAUDE_CONFIG_DIR":           "/Users/dev/dotfiles/claude/",
+		"GNUPGHOME":                   "/Users/dev/dotfiles/gnupg",
+	}
+	want := []Relocated{
+		{Variable: "AWS_CONFIG_FILE", Path: "/Users/dev/dotfiles/aws/config"},
+		{Variable: "AWS_SHARED_CREDENTIALS_FILE", Path: "/Users/dev/dotfiles/aws/credentials"},
+		{Variable: "CLAUDE_CONFIG_DIR", Path: "/Users/dev/dotfiles/claude/.claude.json"},
+	}
+
+	got, err := RelocatedSingleLinkFiles(environment(env))
+
+	if err != nil || !slices.Equal(got, want) {
+		t.Errorf("RelocatedSingleLinkFiles = %v, %v, want %v", got, err, want)
+	}
+}
+
+// TestRelocatedSingleLinkFilesFailClosed covers a variable of
+// RelocatedSingleLinkFiles that is set to a value that names no absolute
+// path that Orbit can check.
+func TestRelocatedSingleLinkFilesFailClosed(t *testing.T) {
+	for _, variable := range []string{"AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "CLAUDE_CONFIG_DIR"} {
+		for _, value := range []string{"", "dotfiles/claude", "/Users/dev/link/../claude"} {
+			t.Run(variable+"="+value, func(t *testing.T) {
+				got, err := RelocatedSingleLinkFiles(environment(map[string]string{variable: value}))
+
+				if !errors.Is(err, ErrRelocatedPath) || !strings.Contains(err.Error(), variable+"=") {
+					t.Errorf("%s=%q: got %v, %v, want %v naming %s", variable, value, got, err, ErrRelocatedPath, variable)
+				}
+			})
+		}
 	}
 }
 
@@ -389,12 +427,15 @@ func TestValidateProjectDir(t *testing.T) {
 }
 
 // TestValidateProjectDirRefusesHardLinkedFiles covers a protected file with
-// more than one hard link (#37): every project directory is refused, wherever
-// the other link is, and the error names the file.
+// more hard links than were found in the protected locations (#37, #69):
+// every project directory is refused, wherever the other link is, and the
+// error names the file.
 func TestValidateProjectDirRefusesHardLinkedFiles(t *testing.T) {
 	homes := []string{"/Users/dev", "/System/Volumes/Data/Users/dev"}
 	file := "/Users/dev/.claude.json"
 	dataFile := "/System/Volumes/Data/Users/dev/.claude.json"
+	settings := "/Users/dev/.claude/settings.json"
+	sshConfig := "/Users/dev/.ssh/config"
 	tests := []struct {
 		name  string
 		path  string
@@ -402,19 +443,26 @@ func TestValidateProjectDirRefusesHardLinkedFiles(t *testing.T) {
 		want  error
 		names []string
 	}{
-		{name: "single link", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: file, Count: 1}}},
-		{name: "single link in both spellings", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: dataFile, Count: 1}, {Path: file, Count: 1}}},
+		{name: "single link", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: file, Count: 1, Found: 1}}},
+		{name: "single link in both spellings", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: dataFile, Count: 1, Found: 1}, {Path: file, Count: 1, Found: 1}}},
 		{name: "no protected file", path: "/Users/dev/Project/orbit"},
-		{name: "other link in the project directory", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: file, Count: 2}}, want: ErrHardLinkedFile, names: []string{file}},
-		{name: "other link outside every project directory", path: "/private/tmp/work", links: []FileLinks{{Path: file, Count: 2}}, want: ErrHardLinkedFile, names: []string{file}},
-		{name: "many links", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: file, Count: 65535}}, want: ErrHardLinkedFile, names: []string{file}},
-		{name: "every spelling is named", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: dataFile, Count: 2}, {Path: file, Count: 2}}, want: ErrHardLinkedFile, names: []string{dataFile, file}},
-		{name: "target of a symlink", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: "/Users/dev/dotfiles/claude.json", Count: 3}}, want: ErrHardLinkedFile, names: []string{"/Users/dev/dotfiles/claude.json"}},
-		{name: "before the path rules", path: "/Users/dev", links: []FileLinks{{Path: file, Count: 2}}, want: ErrHardLinkedFile, names: []string{file}},
-		{name: "path rules still apply to a single link", path: "/Users/dev", links: []FileLinks{{Path: file, Count: 1}}, want: ErrHomeDir},
-		{name: "relative path of a file", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: ".claude.json", Count: 2}}, want: ErrPathNotClean},
-		{name: "path of a file with dot dot", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: "/Users/dev/Project/../.claude.json", Count: 1}}, want: ErrPathNotClean},
-		{name: "empty path of a file", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: "", Count: 1}}, want: ErrPathNotClean},
+		{name: "every link found", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: settings, Count: 2, Found: 2}}},
+		{name: "every one of many links found", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: settings, Count: 65535, Found: 65535}}},
+		{name: "more found than counted", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: settings, Count: 2, Found: 3}}},
+		{name: "one link more than found", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: settings, Count: 3, Found: 2}}, want: ErrHardLinkedFile, names: []string{settings}},
+		{name: "nothing found", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: settings, Count: 1}}, want: ErrHardLinkedFile, names: []string{settings}},
+		{name: "other link in the project directory", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: file, Count: 2, Found: 1}}, want: ErrHardLinkedFile, names: []string{file}},
+		{name: "other link outside every project directory", path: "/private/tmp/work", links: []FileLinks{{Path: file, Count: 2, Found: 1}}, want: ErrHardLinkedFile, names: []string{file}},
+		{name: "many links", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: file, Count: 65535, Found: 1}}, want: ErrHardLinkedFile, names: []string{file}},
+		{name: "every spelling is named", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: dataFile, Count: 2, Found: 1}, {Path: file, Count: 2, Found: 1}}, want: ErrHardLinkedFile, names: []string{dataFile, file}},
+		{name: "every file is named", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: sshConfig, Count: 2, Found: 1}, {Path: file, Count: 1, Found: 1}, {Path: settings, Count: 4, Found: 3}}, want: ErrHardLinkedFile, names: []string{sshConfig, settings}},
+		{name: "target of a symlink", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: "/Users/dev/dotfiles/claude.json", Count: 3, Found: 1}}, want: ErrHardLinkedFile, names: []string{"/Users/dev/dotfiles/claude.json"}},
+		{name: "before the path rules", path: "/Users/dev", links: []FileLinks{{Path: file, Count: 2, Found: 1}}, want: ErrHardLinkedFile, names: []string{file}},
+		{name: "path rules still apply to a single link", path: "/Users/dev", links: []FileLinks{{Path: file, Count: 1, Found: 1}}, want: ErrHomeDir},
+		{name: "path rules still apply when every link is found", path: "/Users/dev/.claude", links: []FileLinks{{Path: settings, Count: 2, Found: 2}}, want: ErrProtectedDir},
+		{name: "relative path of a file", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: ".claude.json", Count: 2, Found: 1}}, want: ErrPathNotClean},
+		{name: "path of a file with dot dot", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: "/Users/dev/Project/../.claude.json", Count: 1, Found: 1}}, want: ErrPathNotClean},
+		{name: "empty path of a file", path: "/Users/dev/Project/orbit", links: []FileLinks{{Path: "", Count: 1, Found: 1}}, want: ErrPathNotClean},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -429,6 +477,19 @@ func TestValidateProjectDirRefusesHardLinkedFiles(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestValidateProjectDirNamesEachHardLinkedFileOnce covers a file that the
+// facts hold twice: the error names it once.
+func TestValidateProjectDirNamesEachHardLinkedFileOnce(t *testing.T) {
+	file := "/Users/dev/dotfiles/claude.json"
+	dir := ProjectDir{Path: "/Users/dev/Project/orbit", OwnerUID: 501, UserUID: 501, Homes: []string{"/Users/dev"}, ProtectedFileLinks: []FileLinks{{Path: file, Count: 2, Found: 1}, {Path: file, Count: 2, Found: 1}}}
+
+	err := ValidateProjectDir(dir)
+
+	if !errors.Is(err, ErrHardLinkedFile) || strings.Count(err.Error(), file) != 1 {
+		t.Errorf("ValidateProjectDir(%+v) = %v, want %v that names %s once", dir, err, ErrHardLinkedFile, file)
 	}
 }
 
@@ -543,6 +604,42 @@ func TestValidateMounts(t *testing.T) {
 			err := ValidateMounts(test.dir, test.mounts)
 			if !errors.Is(err, test.want) {
 				t.Errorf("ValidateMounts(%q, %v) = %v, want %v", test.dir, test.mounts, err, test.want)
+			}
+		})
+	}
+}
+
+func TestExitStatusError(t *testing.T) {
+	var target ExitStatus
+	err := fmt.Errorf("shell: %w", ExitStatus{Code: 3})
+	if !errors.As(err, &target) || target.Code != 3 || err.Error() != "shell: exited with status 3" {
+		t.Errorf("ExitStatus = %q, as %+v", err, target)
+	}
+}
+
+func TestCheckSSHForwarding(t *testing.T) {
+	tests := []struct {
+		name     string
+		want     bool
+		have     bool
+		mismatch bool
+		mentions []string
+	}{
+		{name: "forward and forwards", want: true, have: true},
+		{name: "leave out and leaves out", want: false, have: false},
+		{name: "forward but the machine does not", want: true, have: false, mismatch: true, mentions: []string{"does not forward", "init --no-ssh-forwarding", "delete the sandbox"}},
+		{name: "leave out but the machine forwards", want: false, have: true, mismatch: true, mentions: []string{"forwards the host SSH agent", "delete the sandbox"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := CheckSSHForwarding(test.want, test.have)
+			if errors.Is(err, ErrSSHForwardingMismatch) != test.mismatch || (err != nil) != test.mismatch {
+				t.Fatalf("CheckSSHForwarding(%t, %t) = %v, want a mismatch: %t", test.want, test.have, err, test.mismatch)
+			}
+			for _, part := range test.mentions {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("CheckSSHForwarding(%t, %t) = %q, want it to mention %q", test.want, test.have, err, part)
+				}
 			}
 		})
 	}

@@ -46,14 +46,14 @@ const proxyInterface = "orbit0"
 // one of them has failed. defaultUID is the uid of the default user, whose
 // password the harden script locks.
 func Units(defaultUID uint32) []File {
-	return []File{
+	return append([]File{
 		{Path: systemdDir + unitProxyAddress, Mode: 0o644, Content: proxyAddressUnit()},
 		{Path: systemdDir + unitFirewall + ".d/orbit.conf", Mode: 0o644, Content: firewallDropIn()},
 		{Path: systemdDir + unitProxy + ".d/orbit.conf", Mode: 0o644, Content: proxyDropIn()},
 		{Path: systemdDir + unitHarden, Mode: 0o644, Content: hardenUnit()},
 		{Path: systemdDir + unitUserSessions + ".d/orbit.conf", Mode: 0o644, Content: userSessionsDropIn()},
 		{Path: hardenPath, Mode: 0o755, Content: hardenScript(defaultUID)},
-	}
+	}, dockerUnits()...)
 }
 
 // boundaryUnits returns the units that user sessions require.
@@ -107,12 +107,14 @@ func proxyDropIn() string {
 }
 
 // hardenUnit runs the harden script at every boot, in case OrbStack
-// restores the sudo rule of its default user.
+// restores the sudo rule of its default user. It has no start limit,
+// because every run of the root script restarts it.
 func hardenUnit() string {
 	return lines(
 		"[Unit]",
 		"Description=Orbit: remove sudo from every account except root",
 		"Before="+unitUserSessions,
+		"StartLimitIntervalSec=0",
 		"",
 		"[Service]",
 		"Type=oneshot",
@@ -125,13 +127,15 @@ func hardenUnit() string {
 }
 
 // userSessionsDropIn keeps logins disabled while a unit of the boundary has
-// not started.
+// not started. It has no start limit, because every restart of a unit that
+// it requires restarts it too.
 func userSessionsDropIn() string {
 	units := strings.Join(boundaryUnits(), " ")
 	return lines(
 		"[Unit]",
 		"Requires="+units,
 		"After="+units,
+		"StartLimitIntervalSec=0",
 	)
 }
 

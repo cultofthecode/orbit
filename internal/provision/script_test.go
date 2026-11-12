@@ -2,6 +2,8 @@ package provision
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"slices"
 	"strings"
@@ -12,7 +14,7 @@ import (
 
 func script(t *testing.T) []string {
 	t.Helper()
-	got, err := Script(501, nil)
+	got, err := Script(ScriptInput{DefaultUID: 501, ForwardSSHAgent: true})
 	if err != nil {
 		t.Fatalf("Script: %v", err)
 	}
@@ -37,9 +39,10 @@ func TestScriptStopsAtTheFirstFailureAndRemovesTheMarkerFirst(t *testing.T) {
 
 func TestScriptInstallsExactlyTheToolchainAndInfrastructure(t *testing.T) {
 	lines := script(t)
-	i := lineIndex(t, lines, "apt-get -o DPkg::Lock::Timeout=120 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y -q --no-install-recommends git openssh-client curl ca-certificates jq ripgrep unzip nftables tinyproxy </dev/null")
+	i := lineIndex(t, lines, "apt-get -o DPkg::Lock::Timeout=120 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y -q --no-install-recommends git openssh-client curl ca-certificates jq ripgrep unzip nftables tinyproxy netcat-openbsd </dev/null")
+	j := lineIndex(t, lines, "apt-get -o DPkg::Lock::Timeout=120 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y -q --no-install-recommends docker.io docker-buildx docker-compose-v2 rootlesskit uidmap slirp4netns dbus-user-session </dev/null")
 	for _, line := range lines {
-		if strings.HasPrefix(line, "apt-get") && strings.Contains(line, " install") && line != lines[i] {
+		if strings.HasPrefix(line, "apt-get") && strings.Contains(line, " install") && line != lines[i] && line != lines[j] {
 			t.Errorf("unexpected install: %q", line)
 		}
 	}
@@ -78,16 +81,129 @@ func TestScriptWritesNothingIntoAHome(t *testing.T) {
 	}
 }
 
-func TestScriptCreatesTheAgentOnceWithoutGroups(t *testing.T) {
-	lines := script(t)
-	i := lineIndex(t, lines, "id -u agent >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --user-group agent")
-	if strings.Contains(lines[i], "-G") || strings.Contains(lines[i], "--groups") {
-		t.Errorf("agent gets extra groups: %q", lines[i])
+func scriptFor(t *testing.T, forward bool) []string {
+	t.Helper()
+	got, err := Script(ScriptInput{DefaultUID: 501, ForwardSSHAgent: forward})
+	if err != nil {
+		t.Fatalf("Script: %v", err)
 	}
-	lineIndex(t, lines, `[ "$(id -u agent)" -ge 1000 ] || fail "the uid of agent is below 1000"`)
+	return strings.Split(string(got), "\n")
+}
+
+func usermodLines(lines []string) []string {
+	var found []string
 	for _, line := range lines {
-		if strings.Contains(line, "usermod") && strings.Contains(line, "agent") {
-			t.Errorf("script changes the groups of agent: %q", line)
+		if strings.Contains(line, "usermod") || strings.Contains(line, "gpasswd -a") || strings.Contains(line, "adduser") {
+			found = append(found, line)
+		}
+	}
+	return found
+}
+
+func TestScriptCreatesTheAgentOnceWithOnlyTheSocketGroup(t *testing.T) {
+	for _, forward := range []bool{true, false} {
+		lines := scriptFor(t, forward)
+		i := lineIndex(t, lines, "id -u agent >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --user-group agent")
+		if strings.Contains(lines[i], "-G") || strings.Contains(lines[i], "--groups") {
+			t.Errorf("forward %t: agent gets extra groups at creation: %q", forward, lines[i])
+		}
+		lineIndex(t, lines, `[ "$(id -u agent)" -ge 1000 ] || fail "the uid of agent is below 1000"`)
+		want := []string(nil)
+		if forward {
+			want = []string{"usermod -aG orbstack agent"}
+		}
+		if got := usermodLines(lines); !slices.Equal(got, want) {
+			t.Errorf("forward %t: group changes = %q, want %q", forward, got, want)
+		}
+	}
+}
+
+func TestScriptChecksTheSocketGroupInBothDirections(t *testing.T) {
+	member := `case " $(id -nG agent) " in *" orbstack "*)`
+	with := strings.Join(scriptFor(t, true), "\n")
+	without := strings.Join(scriptFor(t, false), "\n")
+	if !strings.Contains(with, member+`;; *) fail "agent is not in the group orbstack";; esac`) {
+		t.Error("the script that forwards does not fail when agent is not in orbstack")
+	}
+	if !strings.Contains(without, member+` fail "agent is in the group orbstack";; esac`) {
+		t.Error("the script that does not forward does not fail when agent is in orbstack")
+	}
+	if strings.Contains(with, "agent is in the group orbstack") || strings.Contains(without, "agent is not in the group orbstack") {
+		t.Error("a script checks the membership in the wrong direction")
+	}
+}
+
+func TestScriptChecksTheSSHRoute(t *testing.T) {
+	lines := script(t)
+	for _, want := range []string{
+		`[ -f /etc/ssh/ssh_config.d/00-orbit.conf ] || fail "/etc/ssh/ssh_config.d/00-orbit.conf is missing"`,
+		`[ -f /etc/ssh/ssh_known_hosts ] || fail "/etc/ssh/ssh_known_hosts is missing"`,
+		"owner=$(dpkg -S /usr/bin/nc.openbsd 2>/dev/null || true)",
+		`[ "$owner" = "netcat-openbsd: /usr/bin/nc.openbsd" ] || fail "/usr/bin/nc.openbsd does not belong to netcat-openbsd"`,
+	} {
+		lineIndex(t, lines, want)
+	}
+}
+
+func TestScriptWritesTheSSHRouteInEverySandbox(t *testing.T) {
+	for _, forward := range []bool{true, false} {
+		lines := scriptFor(t, forward)
+		lineIndex(t, lines, "put /etc/ssh/ssh_config.d/00-orbit.conf 0644 <<'ORBIT_EOF'")
+		lineIndex(t, lines, "put /etc/ssh/ssh_known_hosts 0644 <<'ORBIT_EOF'")
+	}
+}
+
+func TestSSHConfigMatchesGolden(t *testing.T) {
+	compareGolden(t, "00-orbit.conf", sshConfig())
+}
+
+func TestKnownHostsMatchesGolden(t *testing.T) {
+	compareGolden(t, "ssh_known_hosts", knownHosts())
+}
+
+func TestPinnedHostKeysMatchTheFingerprintsOfGitHub(t *testing.T) {
+	published := map[string]string{
+		"ssh-ed25519":         "+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU",
+		"ecdsa-sha2-nistp256": "p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM",
+		"ssh-rsa":             "uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s",
+	}
+	if len(gitHubHostKeys) != len(published) {
+		t.Fatalf("%d pinned keys, want %d", len(gitHubHostKeys), len(published))
+	}
+	for _, key := range gitHubHostKeys {
+		fields := strings.Fields(key)
+		if len(fields) != 2 {
+			t.Fatalf("pinned key %q is not a type and a key", key)
+		}
+		blob, err := base64.StdEncoding.DecodeString(fields[1])
+		if err != nil {
+			t.Fatalf("pinned %s key: %v", fields[0], err)
+		}
+		sum := sha256.Sum256(blob)
+		if got := base64.RawStdEncoding.EncodeToString(sum[:]); got != published[fields[0]] {
+			t.Errorf("fingerprint of the pinned %s key = %s, want %s from api.github.com/meta", fields[0], got, published[fields[0]])
+		}
+	}
+}
+
+func TestSSHConfigRoutesGitHubThroughTheProxyAndPinsTheKeys(t *testing.T) {
+	config := sshConfig()
+	for _, want := range []string{
+		"Host github.com ssh.github.com\n",
+		"    HostName ssh.github.com\n",
+		"    Port 443\n",
+		"    HostKeyAlias github.com\n",
+		"    StrictHostKeyChecking yes\n",
+		"    ProxyCommand /usr/bin/nc.openbsd -X connect -x 127.0.0.1:3128 %h %p\n",
+		"Match localuser agent\n    IdentityAgent SSH_AUTH_SOCK\n",
+	} {
+		if !strings.Contains(config, want) {
+			t.Errorf("00-orbit.conf lacks %q", want)
+		}
+	}
+	for _, line := range strings.Split(knownHosts(), "\n") {
+		if line != "" && !strings.HasPrefix(line, "github.com ssh-") && !strings.HasPrefix(line, "github.com ecdsa-") {
+			t.Errorf("ssh_known_hosts holds %q, want only keys of github.com", line)
 		}
 	}
 }
@@ -102,8 +218,18 @@ func TestScriptCreatesTheAgentAfterTheBoundaryStarts(t *testing.T) {
 	}
 }
 
+func TestScriptStartsUserSessionsAfterTheRestarts(t *testing.T) {
+	lines := script(t)
+	start := lineIndex(t, lines, "systemctl start systemd-user-sessions.service")
+	for _, step := range []string{"systemctl restart tinyproxy.service", "systemctl restart orbit-harden.service"} {
+		if lineIndex(t, lines, step) > start {
+			t.Errorf("%q runs after the start of systemd-user-sessions.service", step)
+		}
+	}
+}
+
 func TestScriptGrantsNoSudo(t *testing.T) {
-	got, err := Script(501, nil)
+	got, err := Script(ScriptInput{DefaultUID: 501})
 	if err != nil {
 		t.Fatalf("Script: %v", err)
 	}
@@ -120,6 +246,7 @@ func TestScriptSelfChecks(t *testing.T) {
 	lines := script(t)
 	for _, want := range []string{
 		`nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`,
+		"for unit in nftables.service orbit-proxy-address.service tinyproxy.service orbit-harden.service systemd-user-sessions.service; do",
 		"for unit in systemd-resolved.service systemd-resolved-varlink.socket systemd-resolved-monitor.socket; do",
 		`  if [ "$uid" -lt 1000 ] && [ "$uid" -ne 501 ]; then`,
 		`if runuser -u agent -- sudo -n true 2>/dev/null; then fail "agent can use sudo"; fi`,
@@ -149,7 +276,7 @@ func TestScriptWritesTheMarkerLast(t *testing.T) {
 	want := []string{
 		"mkdir -p /etc/orbit",
 		"put /etc/orbit/provisioned 0644 <<'ORBIT_EOF'",
-		"1",
+		"3",
 		"ORBIT_EOF",
 		"}",
 	}
@@ -201,7 +328,7 @@ func TestScriptWritesEveryFileFromAQuotedHeredoc(t *testing.T) {
 }
 
 func TestScriptCarriesTheDefaultUID(t *testing.T) {
-	got, err := Script(502, nil)
+	got, err := Script(ScriptInput{DefaultUID: 502})
 	if err != nil {
 		t.Fatalf("Script: %v", err)
 	}
@@ -211,18 +338,18 @@ func TestScriptCarriesTheDefaultUID(t *testing.T) {
 }
 
 func TestScriptRefusesDefaultUIDZero(t *testing.T) {
-	got, err := Script(0, nil)
+	got, err := Script(ScriptInput{})
 	if !errors.Is(err, ErrScriptInput) || got != nil {
-		t.Errorf("Script(0, nil) = %q, %v, want nil, %v", got, err, ErrScriptInput)
+		t.Errorf("Script(ScriptInput{}) = %q, %v, want nil, %v", got, err, ErrScriptInput)
 	}
 }
 
 func TestScriptAllowsTheAgentDomainsOnlyWithAnAgent(t *testing.T) {
-	withAgent, err := Script(501, []string{"claude.ai", "api.anthropic.com"})
+	withAgent, err := Script(ScriptInput{DefaultUID: 501, AgentDomains: []string{"claude.ai", "api.anthropic.com"}})
 	if err != nil {
 		t.Fatalf("Script with agent domains: %v", err)
 	}
-	withoutAgent, err := Script(501, nil)
+	withoutAgent, err := Script(ScriptInput{DefaultUID: 501, ForwardSSHAgent: true})
 	if err != nil {
 		t.Fatalf("Script without agent domains: %v", err)
 	}
@@ -243,7 +370,7 @@ func TestScriptAllowsTheAgentDomainsOnlyWithAnAgent(t *testing.T) {
 
 func TestScriptRefusesAHostileAgentDomain(t *testing.T) {
 	for _, domain := range []string{"*.anthropic.com", "1.2.3.4", "localhost", "Claude.AI", "example.com:22", "claude.ai\n^.*$"} {
-		got, err := Script(501, []string{"claude.ai", domain})
+		got, err := Script(ScriptInput{DefaultUID: 501, AgentDomains: []string{"claude.ai", domain}})
 		if !errors.Is(err, policy.ErrInvalidHost) || got != nil {
 			t.Errorf("Script with %q = %q, %v, want nil, %v", domain, got, err, policy.ErrInvalidHost)
 		}
@@ -251,11 +378,11 @@ func TestScriptRefusesAHostileAgentDomain(t *testing.T) {
 }
 
 func TestScriptIsDeterministic(t *testing.T) {
-	first, err := Script(501, nil)
+	first, err := Script(ScriptInput{DefaultUID: 501, ForwardSSHAgent: true})
 	if err != nil {
 		t.Fatalf("Script: %v", err)
 	}
-	second, err := Script(501, nil)
+	second, err := Script(ScriptInput{DefaultUID: 501, ForwardSSHAgent: true})
 	if err != nil {
 		t.Fatalf("Script: %v", err)
 	}
@@ -295,4 +422,51 @@ func lineIndex(t *testing.T, lines []string, want string) int {
 
 func modeString(file File) string {
 	return map[bool]string{true: "0755", false: "0644"}[file.Mode == 0o755]
+}
+
+// changesTheAgentUser reports whether line removes the agent user or alters
+// it with usermod, except the one change that adds the agent to the group
+// orbstack: the login of the agent lives in its home, which provisioning never
+// removes or recreates.
+func changesTheAgentUser(line string) bool {
+	if strings.Contains(line, "userdel") || strings.Contains(line, "deluser") {
+		return true
+	}
+	if strings.TrimSpace(line) == "usermod -aG orbstack agent" {
+		return false
+	}
+	return strings.Contains(line, "usermod") && strings.Contains(line, "agent")
+}
+
+func TestChangesTheAgentUserRefusesHostileLines(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"userdel agent", true},
+		{"userdel --remove agent", true},
+		{"deluser agent", true},
+		{"deluser --remove-home agent", true},
+		{"usermod -d /x agent", true},
+		{"usermod -aG sudo agent", true},
+		{"usermod -aG orbstack,sudo agent", true},
+		{"usermod -aG orbstack agent", false},
+		{"id -u agent >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --user-group agent", false},
+		{`[ "$(id -u agent)" -ge 1000 ] || fail "the uid of agent is below 1000"`, false},
+	}
+	for _, c := range cases {
+		if got := changesTheAgentUser(c.line); got != c.want {
+			t.Errorf("changesTheAgentUser(%q) = %v, want %v", c.line, got, c.want)
+		}
+	}
+}
+
+func TestScriptNeverRemovesOrAltersTheAgentUser(t *testing.T) {
+	for _, forward := range []bool{true, false} {
+		for _, line := range scriptFor(t, forward) {
+			if changesTheAgentUser(line) {
+				t.Errorf("forward %t: script changes or removes the agent user: %q", forward, line)
+			}
+		}
+	}
 }
