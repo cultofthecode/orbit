@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/cultofthecode/orbit/internal/sandbox"
 )
 
 // failingWriter is a stream that refuses every write.
@@ -19,7 +21,18 @@ func (failingWriter) Write([]byte) (int, error) {
 }
 
 func testRoot() *cobra.Command {
-	return newRoot(echoCommand(), failCommand())
+	return newRoot(echoCommand(), failCommand(), statusCommand())
+}
+
+func statusCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Return the exit status of a command in a sandbox",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return fmt.Errorf("shell: %w", sandbox.ExitStatus{Code: 3})
+		},
+	}
 }
 
 func echoCommand() *cobra.Command {
@@ -74,6 +87,7 @@ func TestRun(t *testing.T) {
 	}{
 		{name: "command gets its arguments", args: []string{"echo", "a", "b"}, wantCode: exitOK, wantStdout: "a b\n"},
 		{name: "command returns an error", args: []string{"fail"}, wantCode: exitFailure, wantStderr: "orbit: boom\n"},
+		{name: "command returns the exit status of a sandbox command", args: []string{"status"}, wantCode: 3},
 		{name: "unknown command", args: []string{"bogus"}, wantCode: exitFailure, wantStderr: "orbit: unknown command \"bogus\" for \"orbit\"\n"},
 		{name: "misspelled command gets a suggestion", args: []string{"ech"}, wantCode: exitFailure, wantStderr: "orbit: unknown command \"ech\" for \"orbit\"\n\nDid you mean this?\n\techo\n\n"},
 		{name: "unknown flag", args: []string{"echo", "--nope"}, wantCode: exitFailure, wantStderr: "orbit: unknown flag: --nope\n"},

@@ -1,17 +1,21 @@
 package orbstack
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"os/exec"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 const testPrefix = "orbit-"
@@ -21,14 +25,26 @@ func TestCreateArgs(t *testing.T) {
 		name    string
 		machine string
 		dir     string
+		forward bool
 		want    []string
 	}{
 		{
-			name:    "project directory",
+			name:    "project directory without forwarding",
 			machine: "orbit-api-1d9b22c9",
 			dir:     "/Users/dev/Project/api",
 			want: []string{
 				"create", "--isolated", "--isolate-network",
+				"--mount", "/Users/dev/Project/api:/Users/dev/Project/api",
+				"ubuntu:26.04", "orbit-api-1d9b22c9",
+			},
+		},
+		{
+			name:    "project directory with forwarding",
+			machine: "orbit-api-1d9b22c9",
+			dir:     "/Users/dev/Project/api",
+			forward: true,
+			want: []string{
+				"create", "--isolated", "--isolate-network", "--forward-ssh-agent",
 				"--mount", "/Users/dev/Project/api:/Users/dev/Project/api",
 				"ubuntu:26.04", "orbit-api-1d9b22c9",
 			},
@@ -44,7 +60,18 @@ func TestCreateArgs(t *testing.T) {
 			},
 		},
 		{
-			name:    "directory that looks like a flag",
+			name:    "directory that looks like a flag, with forwarding",
+			machine: "orbit-x-00000000",
+			dir:     "/--forward-ssh-agent",
+			forward: true,
+			want: []string{
+				"create", "--isolated", "--isolate-network", "--forward-ssh-agent",
+				"--mount", "/--forward-ssh-agent:/--forward-ssh-agent",
+				"ubuntu:26.04", "orbit-x-00000000",
+			},
+		},
+		{
+			name:    "directory that looks like a flag, without forwarding",
 			machine: "orbit-x-00000000",
 			dir:     "/--forward-ssh-agent",
 			want: []string{
@@ -56,12 +83,12 @@ func TestCreateArgs(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := createArgs(test.machine, test.dir)
+			got := createArgs(test.machine, test.dir, test.forward)
 			if !slices.Equal(got, test.want) {
-				t.Errorf("createArgs(%q, %q) =\n%q, want\n%q", test.machine, test.dir, got, test.want)
+				t.Errorf("createArgs(%q, %q, %t) =\n%q, want\n%q", test.machine, test.dir, test.forward, got, test.want)
 			}
-			if slices.Contains(got, "--forward-ssh-agent") {
-				t.Errorf("createArgs(%q, %q) = %q, want no SSH agent forwarding", test.machine, test.dir, got)
+			if count := strings.Count(strings.Join(got, "\x00"), "\x00--forward-ssh-agent\x00"); (count == 1) != test.forward {
+				t.Errorf("createArgs(%q, %q, %t) = %q, want the flag %t", test.machine, test.dir, test.forward, got, test.forward)
 			}
 		})
 	}
@@ -264,6 +291,15 @@ func TestParseMountTableRefusesWhatItCannotRead(t *testing.T) {
 	}
 }
 
+func TestParseMountTableNamesAnEmptyTable(t *testing.T) {
+	for _, table := range []string{"", "\n", " \n\n"} {
+		_, err := parseMountTable(table)
+		if !errors.Is(err, ErrMountTable) || !strings.Contains(err.Error(), "the mount table is empty") || strings.Contains(err.Error(), "entry") {
+			t.Errorf("parseMountTable(%q) error = %v, want %v naming the empty table", table, err, ErrMountTable)
+		}
+	}
+}
+
 func TestMountsAndActiveMountsReadOrb(t *testing.T) {
 	const project = "/Users/dev/Project/api"
 	useFakeCLI(t, "if [ \"$1\" = list ]; then printf '%s\\n' '"+machineList+"'\n"+
@@ -279,6 +315,14 @@ func TestMountsAndActiveMountsReadOrb(t *testing.T) {
 	active, err := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
 	if err != nil || !reflect.DeepEqual(active, want) {
 		t.Errorf("ActiveMounts = %v, %v, want %v", active, err, want)
+	}
+}
+
+func TestActiveMountsNamesAnEmptyRead(t *testing.T) {
+	useFakeCLI(t, listsRunning+"if [ \"$1\" = -m ]; then :; fi\n")
+	active, err := New(testPrefix).ActiveMounts(context.Background(), "orbit-api-1d9b22c9")
+	if !errors.Is(err, ErrMountTable) || !strings.Contains(err.Error(), "the mount table is empty") || active != nil {
+		t.Errorf("ActiveMounts = %v, %v, want nil and %v naming the empty table", active, err, ErrMountTable)
 	}
 }
 
@@ -369,7 +413,7 @@ func TestGuardsRunNoCommand(t *testing.T) {
 	client := New(testPrefix)
 	ctx := context.Background()
 
-	if err := client.Create(ctx, "ubuntu", "/Users/dev/Project/api"); !errors.Is(err, ErrForeignMachine) {
+	if err := client.Create(ctx, "ubuntu", "/Users/dev/Project/api", true); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("Create of a foreign machine = %v, want %v", err, ErrForeignMachine)
 	}
 	if err := client.Delete(ctx, "ubuntu"); !errors.Is(err, ErrForeignMachine) {
@@ -393,10 +437,10 @@ func TestGuardsRunNoCommand(t *testing.T) {
 	if err := New("").RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true\n")); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("RunAsAgent of a client without a prefix = %v, want %v", err, ErrForeignMachine)
 	}
-	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/.ssh:x"); !errors.Is(err, ErrMountPath) {
+	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/.ssh:x", true); !errors.Is(err, ErrMountPath) {
 		t.Errorf("Create with a colon in the directory = %v, want %v", err, ErrMountPath)
 	}
-	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/a,b"); !errors.Is(err, ErrMountPath) {
+	if err := client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/a,b", true); !errors.Is(err, ErrMountPath) {
 		t.Errorf("Create with a comma in the directory = %v, want %v", err, ErrMountPath)
 	}
 }
@@ -407,12 +451,14 @@ func TestFailedCommandCarriesStderr(t *testing.T) {
 	ctx := context.Background()
 	_, existsErr := client.Exists(ctx, "orbit-api-1d9b22c9")
 	_, mountsErr := client.Mounts(ctx)
+	_, listErr := client.List(ctx)
 	_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
 	_, stateErr := client.State(ctx, "orbit-api-1d9b22c9")
 	failures := map[string]error{
-		"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
+		"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", true),
 		"Exists":       existsErr,
 		"Mounts":       mountsErr,
+		"List":         listErr,
 		"ActiveMounts": activeMountsErr,
 		"State":        stateErr,
 		"Start":        client.Start(ctx, "orbit-api-1d9b22c9"),
@@ -499,6 +545,22 @@ func TestExistsReadsTheList(t *testing.T) {
 // reportsRunning makes a fake orb report a running OrbStack to orb status.
 const reportsRunning = "if [ \"$1\" = status ]; then echo Running; exit 0; fi\n"
 
+// guardedInvocations is the number of orb commands that the state check adds
+// to the two that every operation runs (orb status and its own command):
+// ActiveMounts, RunAsRoot, and RunAsAgent add orb status and orb list, and
+// Shell adds orb list, because its orb status is the one of State.
+const guardedInvocations = 7
+
+// listsRunning makes a fake orb report orbit-api-1d9b22c9 as running to
+// orb list --format json, which every command in a machine reads first.
+var listsRunning = listsRunningMachine("orbit-api-1d9b22c9")
+
+// listsRunningMachine makes a fake orb report the machine name as running to
+// orb list --format json.
+func listsRunningMachine(name string) string {
+	return "if [ \"$1\" = list ] && [ \"$2\" = --format ]; then echo '[{\"name\":\"" + name + "\",\"state\":\"running\"}]'; exit 0; fi\n"
+}
+
 // useFakeCLI makes a shell script with the given body the only orb on PATH.
 // The script reports a running OrbStack to orb status.
 func useFakeCLI(t *testing.T, body string) {
@@ -580,12 +642,15 @@ func TestNoCallStartsAStoppedOrbStack(t *testing.T) {
 			useAccountHome(t)
 			_, existsErr := client.Exists(ctx, "orbit-api-1d9b22c9")
 			_, mountsErr := client.Mounts(ctx)
+			_, listErr := client.List(ctx)
 			_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
 			_, stateErr := client.State(ctx, "orbit-api-1d9b22c9")
+			_, shellErr := client.Shell(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 			results := map[string]error{
-				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
+				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", true),
 				"Exists":       existsErr,
 				"Mounts":       mountsErr,
+				"List":         listErr,
 				"ActiveMounts": activeMountsErr,
 				"State":        stateErr,
 				"Start":        client.Start(ctx, "orbit-api-1d9b22c9"),
@@ -593,6 +658,7 @@ func TestNoCallStartsAStoppedOrbStack(t *testing.T) {
 				"Delete":       client.Delete(ctx, "orbit-api-1d9b22c9"),
 				"RunAsRoot":    client.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
 				"RunAsAgent":   client.RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
+				"Shell":        shellErr,
 			}
 
 			for operation, err := range results {
@@ -865,15 +931,19 @@ func TestStoppedUnderAnotherHomeNamesHome(t *testing.T) {
 			ctx := context.Background()
 			_, existsErr := client.Exists(ctx, "orbit-api-1d9b22c9")
 			_, mountsErr := client.Mounts(ctx)
+			_, listErr := client.List(ctx)
 			_, activeMountsErr := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
+			_, shellErr := client.Shell(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 			results := map[string]error{
-				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api"),
+				"Create":       client.Create(ctx, "orbit-api-1d9b22c9", "/Users/dev/Project/api", true),
 				"Exists":       existsErr,
 				"Mounts":       mountsErr,
+				"List":         listErr,
 				"ActiveMounts": activeMountsErr,
 				"Delete":       client.Delete(ctx, "orbit-api-1d9b22c9"),
 				"RunAsRoot":    client.RunAsRoot(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
 				"RunAsAgent":   client.RunAsAgent(ctx, "orbit-api-1d9b22c9", []byte("true\n")),
+				"Shell":        shellErr,
 			}
 
 			for operation, err := range results {
@@ -915,7 +985,7 @@ func TestRunAsRootArgs(t *testing.T) {
 
 func TestRunAsRootPassesTheScriptOnStdin(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "received")
-	useFakeCLI(t, "printf '%s\\n' \"$*\" > '"+out+".args'\n/bin/cat > '"+out+"'\n")
+	useFakeCLI(t, listsRunning+"printf '%s\\n' \"$*\" > '"+out+".args'\n/bin/cat > '"+out+"'\n")
 	script := []byte("#!/bin/bash\necho 'it is $HOME' ; exit 0\n")
 	if err := New(testPrefix).RunAsRoot(context.Background(), "orbit-api-1d9b22c9", script); err != nil {
 		t.Fatalf("RunAsRoot = %v", err)
@@ -956,7 +1026,7 @@ func TestRunAsAgentPutsNoCallerValueOnTheCommandLine(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "received")
-			useFakeCLI(t, "for arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > '"+out+".args'\n/bin/cat > '"+out+"'\n")
+			useFakeCLI(t, listsRunningMachine(test.machine)+"for arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > '"+out+".args'\n/bin/cat > '"+out+"'\n")
 
 			if err := New(testPrefix).RunAsAgent(context.Background(), test.machine, []byte(test.script)); err != nil {
 				t.Fatalf("RunAsAgent = %v", err)
@@ -1079,12 +1149,13 @@ func TestStopArgs(t *testing.T) {
 	}
 }
 
-// TestStartAndStopRefuseHostileNamesBeforeAnyCommand checks that Start and
-// Stop never reach orb with a name that is not one machine of the client:
-// orb stop without a machine stops OrbStack with every machine, and orb
-// start without one starts every machine that ran when OrbStack last
-// stopped.
-func TestStartAndStopRefuseHostileNamesBeforeAnyCommand(t *testing.T) {
+// TestStartStopAndDeleteRefuseHostileNamesBeforeAnyCommand checks that
+// Start, Stop, and Delete never reach orb with a name that is not one
+// machine of the client: orb stop without a machine stops OrbStack with
+// every machine, orb start without one starts every machine that ran when
+// OrbStack last stopped, and orb delete takes several names and -a deletes
+// every machine. Not even orb status runs.
+func TestStartStopAndDeleteRefuseHostileNamesBeforeAnyCommand(t *testing.T) {
 	tests := []struct {
 		name    string
 		prefix  string
@@ -1097,6 +1168,7 @@ func TestStartAndStopRefuseHostileNamesBeforeAnyCommand(t *testing.T) {
 		{name: "long flag", prefix: testPrefix, machine: "--all", want: ErrForeignMachine},
 		{name: "force flag", prefix: testPrefix, machine: "-f", want: ErrForeignMachine},
 		{name: "name and a flag", prefix: testPrefix, machine: "orbit-x --all", want: ErrMachineName},
+		{name: "two names", prefix: testPrefix, machine: "orbit-a orbit-b", want: ErrMachineName},
 		{name: "name with a tab", prefix: testPrefix, machine: "orbit-x\t-a", want: ErrMachineName},
 		{name: "name with a newline", prefix: testPrefix, machine: "orbit-x\n", want: ErrMachineName},
 		{name: "foreign name", prefix: testPrefix, machine: "ubuntu", want: ErrForeignMachine},
@@ -1114,6 +1186,9 @@ func TestStartAndStopRefuseHostileNamesBeforeAnyCommand(t *testing.T) {
 			if err := client.Stop(ctx, test.machine); !errors.Is(err, test.want) {
 				t.Errorf("Stop(%q) = %v, want %v", test.machine, err, test.want)
 			}
+			if err := client.Delete(ctx, test.machine); !errors.Is(err, test.want) {
+				t.Errorf("Delete(%q) = %v, want %v", test.machine, err, test.want)
+			}
 			if received, err := os.ReadFile(calls); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("orb ran %q, %v, want no command", received, err)
 			}
@@ -1129,15 +1204,15 @@ var shellVariables = []string{"PWD", "OLDPWD", "SHLVL", "_"}
 // forbidden ones: credentials, endpoints of the host, values that orb
 // forwards, names near an allowed name, and ORBENV and WSLENV naming a
 // variable of the test process. It runs every operation of the client
-// against a fake orb that records its environment, and checks that every
-// command of orb, orb status included, gets every allowed variable and no
-// other one.
+// against a fake orb that records its environment, Shell included, and
+// checks that every command of orb, orb status included, gets every allowed
+// variable and no other one.
 func TestEveryCommandGetsOnlyAllowedVariables(t *testing.T) {
 	const machineName = "orbit-api-1d9b22c9"
 	dir := t.TempDir()
 	useBareFakeCLI(t, "/usr/bin/env > \"$(/usr/bin/mktemp '"+dir+"/env.XXXXXX')\"\n"+
 		reportsRunning+
-		"if [ \"$1\" = list ] && [ \"$2\" = --format ]; then echo '[]'; exit 0; fi\n"+
+		listsRunning+
 		"if [ \"$5\" = cat ]; then echo '195 125 0:35 /p /p rw - virtiofs mac rw'; fi\n")
 	for _, name := range allowedVariables {
 		if name != "HOME" && name != "PATH" {
@@ -1158,12 +1233,15 @@ func TestEveryCommandGetsOnlyAllowedVariables(t *testing.T) {
 
 	_, existsErr := client.Exists(ctx, machineName)
 	_, mountsErr := client.Mounts(ctx)
+	_, listErr := client.List(ctx)
 	_, activeMountsErr := client.ActiveMounts(ctx, machineName)
 	_, stateErr := client.State(ctx, machineName)
+	_, shellErr := client.Shell(ctx, machineName, "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	operations := map[string]error{
-		"Create":       client.Create(ctx, machineName, "/Users/dev/Project/api"),
+		"Create":       client.Create(ctx, machineName, "/Users/dev/Project/api", true),
 		"Exists":       existsErr,
 		"Mounts":       mountsErr,
+		"List":         listErr,
 		"ActiveMounts": activeMountsErr,
 		"State":        stateErr,
 		"Start":        client.Start(ctx, machineName),
@@ -1171,6 +1249,7 @@ func TestEveryCommandGetsOnlyAllowedVariables(t *testing.T) {
 		"Delete":       client.Delete(ctx, machineName),
 		"RunAsRoot":    client.RunAsRoot(ctx, machineName, []byte("true\n")),
 		"RunAsAgent":   client.RunAsAgent(ctx, machineName, []byte("true\n")),
+		"Shell":        shellErr,
 	}
 	for operation, err := range operations {
 		if err != nil {
@@ -1179,8 +1258,8 @@ func TestEveryCommandGetsOnlyAllowedVariables(t *testing.T) {
 	}
 
 	records, err := filepath.Glob(filepath.Join(dir, "env.*"))
-	if err != nil || len(records) != 2*len(operations) {
-		t.Fatalf("recorded environments = %d, %v, want %d", len(records), err, 2*len(operations))
+	if err != nil || len(records) != 2*len(operations)+guardedInvocations {
+		t.Fatalf("recorded environments = %d, %v, want %d", len(records), err, 2*len(operations)+guardedInvocations)
 	}
 	for _, record := range records {
 		content, err := os.ReadFile(record)
@@ -1280,5 +1359,461 @@ func TestStateRefusesAForeignMachine(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if _, err := New(testPrefix).State(context.Background(), "ubuntu"); !errors.Is(err, ErrForeignMachine) {
 		t.Errorf("State of a foreign machine = %v, want %v", err, ErrForeignMachine)
+	}
+}
+
+func TestParseList(t *testing.T) {
+	list := `[
+		{"name":"ubuntu","state":"running","config":{}},
+		{"name":"xorbit-a","state":"running"},
+		{"name":"Orbit-b","state":"running"},
+		{"name":"orbit","state":"running"},
+		{"name":"orbit-","state":"running"},
+		{"name":"ubuntu","state":"stopped"},
+		{"name":"orbit-web-00db83c9","state":"stopped","config":{"mounts":[{"source":"/Users/dev/web","destination":"/Users/dev/web"}]}},
+		{"name":"orbit-nostate","config":{}},
+		{"name":"orbit-two\u001b[2J","state":"running","config":{"mounts":[{"source":"/a\n","destination":"/b"},{"source":"/c","destination":"/c"}]}}
+	]`
+	want := []Machine{
+		{Name: "orbit-web-00db83c9", State: "stopped", Mounts: []Mount{{Source: "/Users/dev/web", Destination: "/Users/dev/web"}}},
+		{Name: "orbit-nostate"},
+		{Name: "orbit-two\x1b[2J", State: "running", Mounts: []Mount{{Source: "/a\n", Destination: "/b"}, {Source: "/c", Destination: "/c"}}},
+	}
+	got, err := parseList([]byte(list), testPrefix)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("parseList() = %+v, %v, want %+v", got, err, want)
+	}
+}
+
+func TestParseListReadsNoMachines(t *testing.T) {
+	for _, list := range []string{"[]", "null", " [ ] \n"} {
+		got, err := parseList([]byte(list), testPrefix)
+		if err != nil || len(got) != 0 {
+			t.Errorf("parseList(%q) = %+v, %v, want no machines", list, got, err)
+		}
+	}
+}
+
+func TestParseListWithAnEmptyPrefixListsNothing(t *testing.T) {
+	got, err := parseList([]byte(`[{"name":"orbit-a"},{"name":"ubuntu"}]`), "")
+	if err != nil || len(got) != 0 {
+		t.Errorf("parseList() = %+v, %v, want no machines", got, err)
+	}
+}
+
+func TestParseListRefusesWhatItCannotRead(t *testing.T) {
+	tests := []struct {
+		name string
+		list string
+	}{
+		{name: "empty", list: ""},
+		{name: "white space", list: " \n"},
+		{name: "not JSON", list: "orbit-api-1d9b22c9 running"},
+		{name: "not a list", list: `{"name":"orbit-api-1d9b22c9"}`},
+		{name: "truncated", list: `[{"name":"orbit-api-1d9b22c9"`},
+		{name: "state not a string", list: `[{"name":"orbit-api-1d9b22c9","state":1}]`},
+		{name: "prefixed name twice", list: `[{"name":"orbit-api-1d9b22c9"},{"name":"orbit-api-1d9b22c9"}]`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseList([]byte(test.list), testPrefix)
+			if !errors.Is(err, ErrMachineList) || got != nil {
+				t.Errorf("parseList(%q) = %+v, %v, want %v", test.list, got, err, ErrMachineList)
+			}
+		})
+	}
+}
+
+func TestListReadsTheListOnceAndStartsNothing(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	useBareFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\n"+reportsRunning+
+		`echo '[{"name":"ubuntu","state":"running"},{"name":"orbit-api-1d9b22c9","state":"stopped"}]'`+"\n")
+	got, err := New(testPrefix).List(context.Background())
+	if want := []Machine{{Name: "orbit-api-1d9b22c9", State: "stopped"}}; err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("List = %+v, %v, want %+v", got, err, want)
+	}
+	received, err := os.ReadFile(calls)
+	if want := "status\nlist --format json\n"; err != nil || string(received) != want {
+		t.Errorf("orb ran %q, %v, want only %q", received, err, want)
+	}
+}
+
+func TestListFailsClosedOnEmptyOutputAndDoesNotRetry(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	useBareFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\n"+reportsRunning)
+	got, err := New(testPrefix).List(context.Background())
+	if !errors.Is(err, ErrMachineList) || got != nil {
+		t.Errorf("List = %+v, %v, want %v", got, err, ErrMachineList)
+	}
+	received, _ := os.ReadFile(calls)
+	if want := "status\nlist --format json\n"; string(received) != want {
+		t.Errorf("orb ran %q, want %q", received, want)
+	}
+}
+
+func TestListRunsNothingWhenOrbStackIsNotRunning(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	useBareFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\nif [ \"$1\" = status ]; then echo Stopped; exit 1; fi\n")
+	got, err := New(testPrefix).List(context.Background())
+	if !errors.Is(err, ErrNotRunning) || got != nil {
+		t.Errorf("List = %+v, %v, want %v", got, err, ErrNotRunning)
+	}
+	received, _ := os.ReadFile(calls)
+	if want := "status\n"; string(received) != want {
+		t.Errorf("orb ran %q, want only %q", received, want)
+	}
+}
+
+func TestShellArgs(t *testing.T) {
+	want := []string{"-m", "orbit-api-1d9b22c9", "-u", "agent", "-w", "/Users/dev/Project/api"}
+	if got := shellArgs("orbit-api-1d9b22c9", "/Users/dev/Project/api"); !slices.Equal(got, want) {
+		t.Errorf("shellArgs() = %q, want %q", got, want)
+	}
+}
+
+// TestShellRefusesHostileInputBeforeAnyCommand checks that Shell never
+// reaches orb with a machine that is not one of the client or a directory
+// that could change the user, add a flag, or name another mount.
+func TestShellRefusesHostileInputBeforeAnyCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		prefix  string
+		machine string
+		dir     string
+		want    error
+	}{
+		{name: "foreign name", prefix: testPrefix, machine: "ubuntu", dir: "/Users/dev/api", want: ErrForeignMachine},
+		{name: "empty name", prefix: testPrefix, machine: "", dir: "/Users/dev/api", want: ErrForeignMachine},
+		{name: "only the prefix", prefix: testPrefix, machine: "orbit-", dir: "/Users/dev/api", want: ErrForeignMachine},
+		{name: "flag as the name", prefix: testPrefix, machine: "-u", dir: "/Users/dev/api", want: ErrForeignMachine},
+		{name: "empty client prefix", prefix: "", machine: "orbit-api-1d9b22c9", dir: "/Users/dev/api", want: ErrForeignMachine},
+		{name: "empty directory", prefix: testPrefix, machine: "orbit-api-1d9b22c9", dir: "", want: ErrMountPath},
+		{name: "relative directory", prefix: testPrefix, machine: "orbit-api-1d9b22c9", dir: "api", want: ErrMountPath},
+		{name: "user flag as the directory", prefix: testPrefix, machine: "orbit-api-1d9b22c9", dir: "-uroot", want: ErrMountPath},
+		{name: "long flag as the directory", prefix: testPrefix, machine: "orbit-api-1d9b22c9", dir: "--user=root", want: ErrMountPath},
+		{name: "colon in the directory", prefix: testPrefix, machine: "orbit-api-1d9b22c9", dir: "/Users/dev/.ssh:x", want: ErrMountPath},
+		{name: "comma in the directory", prefix: testPrefix, machine: "orbit-api-1d9b22c9", dir: "/Users/dev/a,b", want: ErrMountPath},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := filepath.Join(t.TempDir(), "calls")
+			useFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\n")
+
+			status, err := New(test.prefix).Shell(context.Background(), test.machine, test.dir, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+
+			if !errors.Is(err, test.want) || status != 0 {
+				t.Errorf("Shell(%q, %q) = %d, %v, want 0, %v", test.machine, test.dir, status, err, test.want)
+			}
+			if received, err := os.ReadFile(calls); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("orb ran %q, %v, want no command", received, err)
+			}
+		})
+	}
+}
+
+// TestShellAttachesTheStreamsAndReturnsTheStatus checks that orb gets the
+// fixed arguments, reads the input of the caller, writes to the output and
+// the error stream of the caller, and that Shell returns its exit status
+// without an error.
+func TestShellAttachesTheStreamsAndReturnsTheStatus(t *testing.T) {
+	args := filepath.Join(t.TempDir(), "args")
+	useFakeCLI(t, listsRunning+"for arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > '"+args+"'\n/bin/cat\necho diagnostics >&2\nexit 3\n")
+	var out, errOut bytes.Buffer
+
+	status, err := New(testPrefix).Shell(context.Background(), "orbit-api-1d9b22c9", "/Users/dev/Project/api", strings.NewReader("id -un\nexit 3\n"), &out, &errOut)
+
+	if err != nil || status != 3 {
+		t.Errorf("Shell = %d, %v, want 3, nil", status, err)
+	}
+	if out.String() != "id -un\nexit 3\n" || errOut.String() != "diagnostics\n" {
+		t.Errorf("output = %q, error stream = %q, want the input and %q", out.String(), errOut.String(), "diagnostics\n")
+	}
+	received, err := os.ReadFile(args)
+	if want := "-m\norbit-api-1d9b22c9\n-u\nagent\n-w\n/Users/dev/Project/api\n"; err != nil || string(received) != want {
+		t.Errorf("arguments of orb = %q, %v, want %q", received, err, want)
+	}
+}
+
+// TestShellGivesOrbTheDefaultActionOfSIGINT checks that orb can be ended by
+// SIGINT while Shell holds the signal, and that the status reports the
+// signal as a shell does.
+func TestShellGivesOrbTheDefaultActionOfSIGINT(t *testing.T) {
+	useFakeCLI(t, listsRunning+"kill -INT $$\nexit 0\n")
+
+	status, err := New(testPrefix).Shell(context.Background(), "orbit-api-1d9b22c9", "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+
+	if err != nil || status != 128+int(syscall.SIGINT) {
+		t.Errorf("Shell with orb ended by SIGINT = %d, %v, want %d, nil", status, err, 128+int(syscall.SIGINT))
+	}
+}
+
+// TestHoldingSignalsKeepsTheProcessAlive sends SIGINT and SIGQUIT to the
+// test process while holdingSignals runs, and waits until a second channel
+// notified of both signals receives them, so that both arrive before the
+// hold ends. Without the hold, either signal ends the test binary.
+func TestHoldingSignalsKeepsTheProcessAlive(t *testing.T) {
+	sent := []syscall.Signal{syscall.SIGINT, syscall.SIGQUIT}
+	err := holdingSignals(func() error {
+		received := make(chan os.Signal, len(sent))
+		signal.Notify(received, syscall.SIGINT, syscall.SIGQUIT)
+		defer signal.Stop(received)
+		for _, sig := range sent {
+			if err := syscall.Kill(os.Getpid(), sig); err != nil {
+				return err
+			}
+		}
+		return awaitSignals(received, len(sent))
+	})
+	if err != nil {
+		t.Fatalf("holdingSignals = %v", err)
+	}
+}
+
+// awaitSignals waits until received delivers count signals, or fails after
+// a deadline that only a lost signal reaches.
+func awaitSignals(received <-chan os.Signal, count int) error {
+	deadline := time.After(10 * time.Second)
+	for range count {
+		select {
+		case <-received:
+		case <-deadline:
+			return errors.New("signals not delivered within 10s")
+		}
+	}
+	return nil
+}
+
+func TestExitStatus(t *testing.T) {
+	exited := exec.Command("sh", "-c", "exit 5").Run()
+	signaled := exec.Command("sh", "-c", "kill -TERM $$").Run()
+	notRun := errors.New("exec: not started")
+	tests := []struct {
+		name    string
+		err     error
+		want    int
+		wantErr error
+	}{
+		{name: "success", err: nil, want: 0},
+		{name: "exit code", err: exited, want: 5},
+		{name: "signal", err: signaled, want: 128 + int(syscall.SIGTERM)},
+		{name: "not run", err: notRun, want: 0, wantErr: notRun},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := exitStatus(test.err)
+			if got != test.want || !errors.Is(err, test.wantErr) || (test.wantErr == nil && err != nil) {
+				t.Errorf("exitStatus(%v) = %d, %v, want %d, %v", test.err, got, err, test.want, test.wantErr)
+			}
+		})
+	}
+}
+
+// TestShellFailsWhenOrbCannotRun removes orb after orb status, so that the
+// shell command cannot start, and expects an error instead of a status.
+func TestShellFailsWhenOrbCannotRun(t *testing.T) {
+	useBareFakeCLI(t, "if [ \"$1\" = status ]; then echo Running; exit 0; fi\n"+
+		"if [ \"$1\" = list ]; then echo '[{\"name\":\"orbit-api-1d9b22c9\",\"state\":\"running\"}]'; /bin/rm \"$0\"; exit 0; fi\nexit 9\n")
+
+	status, err := New(testPrefix).Shell(context.Background(), "orbit-api-1d9b22c9", "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+
+	if !errors.Is(err, exec.ErrNotFound) || status != 0 || !strings.Contains(err.Error(), "run a shell as agent in machine orbit-api-1d9b22c9") {
+		t.Errorf("Shell without orb = %d, %v, want 0 and %v", status, err, exec.ErrNotFound)
+	}
+}
+
+// TestEveryCommandRunsOrbWithTheSameEnvironment runs every operation of the
+// client, Shell included, against a fake orb that records its environment,
+// with ORBENV naming a secret of the test process. It checks that every
+// command of orb, orb status included, gets the same environment, so that a
+// filter of the environment covers Shell only when it sits where every
+// command is built: in executeStreams.
+func TestEveryCommandRunsOrbWithTheSameEnvironment(t *testing.T) {
+	const machineName = "orbit-api-1d9b22c9"
+	const projectDir = "/Users/dev/Project/api"
+	dir := t.TempDir()
+	useBareFakeCLI(t, "/usr/bin/env > \"$(/usr/bin/mktemp '"+dir+"/env.XXXXXX')\"\n"+
+		reportsRunning+
+		listsRunning+
+		"if [ \"$5\" = cat ]; then echo '195 125 0:35 /p /p rw - virtiofs mac rw'; fi\n")
+	t.Setenv("ORBIT_TEST_SECRET", "forwarding-marker")
+	t.Setenv("ORBENV", "ORBIT_TEST_SECRET")
+	client := New(testPrefix)
+	ctx := context.Background()
+
+	_, existsErr := client.Exists(ctx, machineName)
+	_, mountsErr := client.Mounts(ctx)
+	_, listErr := client.List(ctx)
+	_, activeMountsErr := client.ActiveMounts(ctx, machineName)
+	_, stateErr := client.State(ctx, machineName)
+	_, shellErr := client.Shell(ctx, machineName, projectDir, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	operations := map[string]error{
+		"Create":       client.Create(ctx, machineName, projectDir, true),
+		"Exists":       existsErr,
+		"Mounts":       mountsErr,
+		"List":         listErr,
+		"ActiveMounts": activeMountsErr,
+		"State":        stateErr,
+		"Start":        client.Start(ctx, machineName),
+		"Stop":         client.Stop(ctx, machineName),
+		"Delete":       client.Delete(ctx, machineName),
+		"RunAsRoot":    client.RunAsRoot(ctx, machineName, []byte("true\n")),
+		"RunAsAgent":   client.RunAsAgent(ctx, machineName, []byte("true\n")),
+		"Shell":        shellErr,
+	}
+	for operation, err := range operations {
+		if err != nil {
+			t.Errorf("%s = %v", operation, err)
+		}
+	}
+
+	records, err := filepath.Glob(filepath.Join(dir, "env.*"))
+	if err != nil || len(records) != 2*len(operations)+guardedInvocations {
+		t.Fatalf("recorded environments = %d, %v, want %d", len(records), err, 2*len(operations)+guardedInvocations)
+	}
+	first, err := os.ReadFile(records[0])
+	if err != nil || len(first) == 0 {
+		t.Fatalf("first recorded environment = %q, %v", first, err)
+	}
+	for _, record := range records[1:] {
+		content, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(content, first) {
+			t.Errorf("environment of orb differs between commands:\n%s\n---\n%s", first, content)
+		}
+	}
+}
+
+func TestParseSSHAgentForwarded(t *testing.T) {
+	list := `[
+		{"name":"ubuntu","state":"running","config":{}},
+		{"name":"orbit-on-1d9b22c9","state":"running","config":{"forward_ssh_agent":true}},
+		{"name":"orbit-off-00db83c9","state":"stopped","config":{"forward_ssh_agent":false}}
+	]`
+	tests := []struct {
+		machine string
+		want    bool
+	}{
+		{machine: "orbit-on-1d9b22c9", want: true},
+		{machine: "orbit-off-00db83c9", want: false},
+	}
+	for _, test := range tests {
+		got, err := parseSSHAgentForwarded([]byte(list), test.machine)
+		if err != nil || got != test.want {
+			t.Errorf("parseSSHAgentForwarded(%q) = %t, %v, want %t", test.machine, got, err, test.want)
+		}
+	}
+}
+
+func TestParseSSHAgentForwardedRefusesWhatItCannotRead(t *testing.T) {
+	tests := []struct {
+		name string
+		list string
+	}{
+		{name: "not JSON", list: "orbit-api-1d9b22c9 running"},
+		{name: "not a list", list: `{"name":"orbit-api-1d9b22c9"}`},
+		{name: "machine missing", list: `[{"name":"orbit-other-00000000","config":{"forward_ssh_agent":true}}]`},
+		{name: "empty list", list: `[]`},
+		{name: "field missing", list: `[{"name":"orbit-api-1d9b22c9","config":{}}]`},
+		{name: "config missing", list: `[{"name":"orbit-api-1d9b22c9"}]`},
+		{name: "field null", list: `[{"name":"orbit-api-1d9b22c9","config":{"forward_ssh_agent":null}}]`},
+		{name: "field a string", list: `[{"name":"orbit-api-1d9b22c9","config":{"forward_ssh_agent":"true"}}]`},
+		{name: "field a number", list: `[{"name":"orbit-api-1d9b22c9","config":{"forward_ssh_agent":1}}]`},
+		{name: "name twice", list: `[{"name":"orbit-api-1d9b22c9","config":{"forward_ssh_agent":true}},{"name":"orbit-api-1d9b22c9","config":{"forward_ssh_agent":true}}]`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseSSHAgentForwarded([]byte(test.list), "orbit-api-1d9b22c9")
+			if !errors.Is(err, ErrMachineList) || got {
+				t.Errorf("parseSSHAgentForwarded(%s) = %t, %v, want false and %v", test.list, got, err, ErrMachineList)
+			}
+		})
+	}
+}
+
+func TestSSHAgentForwardedReadsTheListAndStartsNothing(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	useFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\n"+`echo '[{"name":"orbit-api-1d9b22c9","state":"stopped","config":{"forward_ssh_agent":true}}]'`+"\n")
+	got, err := New(testPrefix).SSHAgentForwarded(context.Background(), "orbit-api-1d9b22c9")
+	if err != nil || !got {
+		t.Errorf("SSHAgentForwarded = %t, %v, want true", got, err)
+	}
+	received, err := os.ReadFile(calls)
+	if want := "list --format json\n"; err != nil || string(received) != want {
+		t.Errorf("orb ran %q, %v, want only %q", received, err, want)
+	}
+}
+
+func TestSSHAgentForwardedRefusesAForeignMachine(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if _, err := New(testPrefix).SSHAgentForwarded(context.Background(), "ubuntu"); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("SSHAgentForwarded of a foreign machine = %v, want %v", err, ErrForeignMachine)
+	}
+}
+
+// TestMachineCommandsRunOnlyInARunningMachine checks that ActiveMounts,
+// RunAsRoot, RunAsAgent, and Shell fail with ErrMachineNotRunning for every
+// state but running, and for a machine that is not listed, and that orb
+// runs nothing but orb status and orb list: any other command, orb -m
+// first, would start the machine (OrbStack 2.2.5, #75).
+func TestMachineCommandsRunOnlyInARunningMachine(t *testing.T) {
+	const machineName = "orbit-api-1d9b22c9"
+	tests := []struct {
+		name string
+		list string
+	}{
+		{name: "stopped", list: `[{"name":"orbit-api-1d9b22c9","state":"stopped"}]`},
+		{name: "starting", list: `[{"name":"orbit-api-1d9b22c9","state":"starting"}]`},
+		{name: "not listed", list: `[{"name":"orbit-web-00db83c9","state":"running"}]`},
+		{name: "no machine", list: `[]`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := filepath.Join(t.TempDir(), "calls")
+			useFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\n"+
+				"if [ \"$1\" = list ]; then echo '"+test.list+"'; exit 0; fi\n")
+			client := New(testPrefix)
+			ctx := context.Background()
+			_, activeMountsErr := client.ActiveMounts(ctx, machineName)
+			_, shellErr := client.Shell(ctx, machineName, "/Users/dev/Project/api", strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+			results := map[string]error{
+				"ActiveMounts": activeMountsErr,
+				"RunAsRoot":    client.RunAsRoot(ctx, machineName, []byte("true\n")),
+				"RunAsAgent":   client.RunAsAgent(ctx, machineName, []byte("true\n")),
+				"Shell":        shellErr,
+			}
+
+			for operation, err := range results {
+				if !errors.Is(err, ErrMachineNotRunning) {
+					t.Errorf("%s = %v, want %v", operation, err, ErrMachineNotRunning)
+				}
+			}
+			received, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, call := range strings.Split(strings.TrimSpace(string(received)), "\n") {
+				if call != "list --format json" {
+					t.Errorf("orb ran %q, want only orb list --format json after orb status", call)
+				}
+			}
+		})
+	}
+}
+
+func TestMachineCommandsFailOnAStateTheyCannotRead(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	useFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\n"+
+		"if [ \"$1\" = list ]; then echo 'not json'; exit 0; fi\n")
+
+	err := New(testPrefix).RunAsRoot(context.Background(), "orbit-api-1d9b22c9", []byte("true\n"))
+
+	if !errors.Is(err, ErrMachineList) {
+		t.Errorf("RunAsRoot = %v, want %v", err, ErrMachineList)
+	}
+	received, readErr := os.ReadFile(calls)
+	if readErr != nil || strings.Contains(string(received), "-m") {
+		t.Errorf("orb ran %q, %v, want no orb -m", received, readErr)
 	}
 }

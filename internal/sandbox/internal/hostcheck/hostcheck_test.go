@@ -2,8 +2,12 @@ package hostcheck
 
 import (
 	"errors"
+	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/cultofthecode/orbit/internal/sandbox"
@@ -146,6 +150,43 @@ func TestUnnestedRefusesNestingWithAnotherMachine(t *testing.T) {
 			for _, includeOwn := range []bool{false, true} {
 				if err := Unnested(machines, own, l.proj, includeOwn); !errors.Is(err, test.want) {
 					t.Errorf("Unnested(includeOwn %v) = %v, want %v", includeOwn, err, test.want)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadUserQuotesAMissingHome(t *testing.T) {
+	tests := []struct {
+		name          string
+		missing       string
+		inEnvironment bool
+	}{
+		{name: "environment home newline and escape", missing: "/missing\n\x1b[2J", inEnvironment: true},
+		{name: "environment home title sequence", missing: "/missing\x1b]0;title\x07", inEnvironment: true},
+		{name: "environment home carriage return and tab", missing: "/missing\r\t", inEnvironment: true},
+		{name: "account home newline and escape", missing: "/missing\n\x1b[2J"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			environmentHome, accountHome := t.TempDir(), test.missing
+			if test.inEnvironment {
+				environmentHome, accountHome = test.missing, t.TempDir()
+			}
+			t.Setenv("HOME", environmentHome)
+			account := func() (*user.User, error) {
+				return &user.User{Uid: "501", HomeDir: accountHome}, nil
+			}
+			_, _, err := loadUser(account)
+			if !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("loadUser = %v, want %v", err, fs.ErrNotExist)
+			}
+			if !strings.Contains(err.Error(), strconv.Quote(test.missing)) {
+				t.Errorf("loadUser = %q, want the quoted home", err)
+			}
+			for _, raw := range []string{"\n", "\x1b", "\x07", "\r", "\t"} {
+				if strings.Contains(err.Error(), raw) {
+					t.Errorf("loadUser = %q, contains the raw character %q", err, raw)
 				}
 			}
 		})

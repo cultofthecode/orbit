@@ -85,7 +85,7 @@ func TestCommandRefusesArguments(t *testing.T) {
 	}{
 		{name: "directory", args: []string{"elsewhere"}, want: `unknown command "elsewhere" for "init"`},
 		{name: "empty argument", args: []string{""}, want: `unknown command "" for "init"`},
-		{name: "flag of a later task", args: []string{"--no-ssh-forwarding"}, want: "unknown flag: --no-ssh-forwarding"},
+		{name: "flag of another task", args: []string{"--no-ssh"}, want: "unknown flag: --no-ssh"},
 		{name: "agent without a name", args: []string{"--agent"}, want: "flag needs an argument: --agent"},
 	}
 	for _, test := range tests {
@@ -188,5 +188,36 @@ func TestCommandReturnsTheErrorOfTheHandler(t *testing.T) {
 				t.Errorf("stdout = %q, want no result", stdout)
 			}
 		})
+	}
+}
+
+func TestCommandFlagLeavesTheSSHAgentOut(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	t.Chdir(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+
+	_, _, err := execute(fake, home, "--no-ssh-forwarding")
+
+	if err != nil {
+		t.Fatalf("command = %v", err)
+	}
+	if forwarded, _ := fake.SSHAgentForwarded(context.Background(), name); forwarded {
+		t.Error("the machine forwards the SSH agent although --no-ssh-forwarding was passed")
+	}
+}
+
+func TestCommandHelpNamesTheSSHFlag(t *testing.T) {
+	var out bytes.Buffer
+	command := NewCommand(Handler{}, nil)
+	command.SetArgs([]string{"--help"})
+	command.SetOut(&out)
+
+	if err := command.Execute(); err != nil {
+		t.Fatalf("help = %v", err)
+	}
+	if !strings.Contains(out.String(), "--no-ssh-forwarding") || !strings.Contains(out.String(), "do not forward the host SSH agent into the sandbox") {
+		t.Errorf("help = %q, want the flag --no-ssh-forwarding and its text", out.String())
 	}
 }

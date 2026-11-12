@@ -1,10 +1,15 @@
 // Package initialize is the slice of "orbit init": it creates the sandbox of
 // a project directory, provisions it as root with the agent user, the
-// firewall, the proxy, and the fixed toolchain, and installs the agent named
+// firewall, the proxy, the fixed toolchain, and the rootless Docker engine,
+// sets up the Docker client of the agent user, and installs the agent named
 // by --agent as the agent user.
 package initialize
 
-import "github.com/cultofthecode/orbit/internal/sandbox"
+import (
+	"errors"
+
+	"github.com/cultofthecode/orbit/internal/sandbox"
+)
 
 // Input is the request to create the sandbox of a project directory.
 type Input struct {
@@ -13,6 +18,11 @@ type Input struct {
 	// Agent is the name of the agent to install, or empty for none. The
 	// allowlist of the proxy holds the egress domains of this agent only.
 	Agent string
+	// NoSSHForwarding leaves the SSH agent of the host out of the sandbox.
+	// The zero value forwards it (R08, D25). OrbStack fixes the setting when
+	// it creates the machine, so a machine whose setting differs fails with
+	// sandbox.ErrSSHForwardingMismatch.
+	NoSSHForwarding bool
 }
 
 // Output is the sandbox of the project directory.
@@ -35,7 +45,9 @@ type Output struct {
 // fs.ErrNotExist, a variable that moves a protected location to a path that
 // Orbit cannot protect with sandbox.ErrRelocatedPath, and a machine that
 // mounts something else than the project directory with
-// sandbox.ErrMountMismatch.
+// sandbox.ErrMountMismatch, and a machine whose SSH agent forwarding differs
+// from the request with sandbox.ErrSSHForwardingMismatch, and an existing
+// machine in any state but running with ErrNotRunning.
 var ErrNotDirectory = sandbox.ErrNotDirectory
 
 // ErrLinkedSandboxDir reports another machine whose stored mount path passes
@@ -43,3 +55,19 @@ var ErrNotDirectory = sandbox.ErrNotDirectory
 // every project directory until the user fixes the path or deletes that
 // machine.
 var ErrLinkedSandboxDir = sandbox.ErrLinkedSandboxDir
+
+// ErrSSHForwardingMismatch reports an existing machine whose SSH agent
+// forwarding differs from the request, which init refuses before it runs a
+// command in the machine. It is sandbox.ErrSSHForwardingMismatch.
+var ErrSSHForwardingMismatch = sandbox.ErrSSHForwardingMismatch
+
+// ErrNotRunning reports an existing sandbox in any state but running. Init
+// refuses it before it runs a command in the machine, because every command
+// in a machine starts it, and only "orbit start" starts a sandbox, after its
+// own checks of the mounts.
+var ErrNotRunning = errors.New(`run "orbit start" first`)
+
+// ErrSandboxGone reports a sandbox that existed when init looked and is gone
+// when init reads its state, for example deleted while init ran. Init stops
+// before it runs a command in the machine.
+var ErrSandboxGone = errors.New(`machine not found; run "orbit init" again`)

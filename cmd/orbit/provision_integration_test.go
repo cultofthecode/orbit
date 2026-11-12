@@ -27,9 +27,14 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
 )
 
-// provisionTimeout bounds the provisioning test: two runs of the root
-// script, each with a package install, and the probes.
+// provisionTimeout bounds the provisioning of one test when the test
+// binary has no deadline: two runs of the root script, each with a package
+// install, and the probes.
 const provisionTimeout = 10 * time.Minute
+
+// cleanupGrace is the time that provisionContext leaves before the
+// deadline of the test binary, so that t.Cleanup can delete the machine.
+const cleanupGrace = 3 * time.Minute
 
 // initLockPath is the file that serializes the integration runs on one
 // host: TestActiveMountsShowASwappedPath in internal/orbstack holds an
@@ -91,11 +96,12 @@ MAC_PORT=%d
 HOST_CONTAINER=%s
 PROJECT_DIR='%s'
 ROOT_ONLY_FILES="%s"
+PROVISION_VERSION=%d
 DEFAULT_USER=$(getent passwd "$DEFAULT_UID" | cut -d: -f1)
 
-[ "$(cat /etc/orbit/provisioned)" = 1 ] || fail "marker"
+[ "$(cat /etc/orbit/provisioned)" = "$PROVISION_VERSION" ] || fail "marker"
 [ "$(id -u agent)" -ge 1000 ] || fail "agent uid below 1000"
-[ "$(id -nG agent)" = agent ] || fail "agent has groups: $(id -nG agent)"
+[ "$(id -nG agent)" = "agent orbstack" ] || fail "agent has groups: $(id -nG agent), want agent orbstack: the default init forwards the SSH agent"
 blocked "agent sudo" as_agent sudo -n true
 blocked "agent su to root" as_agent su -c true root </dev/null
 blocked "agent su to the default user" as_agent su -c true "$DEFAULT_USER" </dev/null
@@ -110,6 +116,7 @@ allowed "agent write in the project directory" as_agent sh -c 'echo "$2" > "$1"'
 
 for socket in /var/run/docker.sock /run/docker.sock; do blocked "agent sees $socket" as_agent test -e "$socket"; done
 for socket in $(find / \( -path /proc -o -path /sys \) -prune -o -type s -print 2>/dev/null); do
+  [ "$socket" != "/run/user/$(id -u agent)/docker.sock" ] || continue
   [ "$(as_agent curl -s -m 2 --unix-socket "$socket" http://engine/_ping 2>/dev/null)" != OK ] || fail "agent reached an engine on $socket"
 done
 
@@ -143,8 +150,10 @@ refused_by_proxy "agent proxy to github.com:22" as_agent curl -sSf -m 15 -x http
 blocked "proxy user to 169.254.169.254" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 http://169.254.169.254
 blocked "proxy user to 198.19.249.1" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 http://198.19.249.1
 blocked "proxy user to 127.0.0.1:22" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 telnet://127.0.0.1:22
-blocked "proxy user to port 80" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 http://1.1.1.1
+allowed "proxy user to port 80" as_uid tinyproxy curl -sS --noproxy '*' -m 5 -o /dev/null http://deb.debian.org
 allowed "proxy user to port 443" as_uid tinyproxy curl -sSf --noproxy '*' -m 5 -k -o /dev/null https://1.1.1.1
+blocked "proxy user to port 22" as_uid tinyproxy curl -sS --noproxy '*' -m 5 telnet://1.1.1.1:22
+blocked "proxy user to port 8080" as_uid tinyproxy curl -sS --noproxy '*' -m 5 http://deb.debian.org:8080
 
 if [ "$MAC_PORT" -gt 0 ]; then
   MAC="http://` + macBridgeAddr + `:$MAC_PORT"
@@ -196,8 +205,7 @@ blocked "agent direct to 1.1.1.1 after the attempts of the agent" as_agent curl 
 
 func TestInitProvisionsTheSandbox(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
@@ -214,7 +222,7 @@ func TestInitProvisionsTheSandbox(t *testing.T) {
 	port := macPortReachableByRoot(ctx, t, client, name)
 	container := hostContainerReachableByRoot(ctx, t, client, name)
 	writeHostFile(t, dir)
-	script := fmt.Sprintf(probeScript, os.Getuid(), port, container, dir, strings.Join(rootOnlyPaths(), " "))
+	script := fmt.Sprintf(probeScript, os.Getuid(), port, container, dir, strings.Join(rootOnlyPaths(), " "), provision.Version)
 	if err := client.RunAsRoot(ctx, name, []byte(script)); err != nil {
 		t.Errorf("probes in %s:\n%v", name, err)
 	}
@@ -240,6 +248,26 @@ func waitToRunInit(t *testing.T) {
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH); err != nil {
 		t.Fatalf("lock %s: %v", initLockPath, err)
 	}
+}
+
+// provisionContext returns a context that ends cleanupGrace before the
+// deadline of the test binary, so that the -timeout the caller chose
+// absorbs the load of other runs on one OrbStack and t.Cleanup still
+// deletes the machine. Without a deadline it ends after provisionTimeout.
+func provisionContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(context.Background(), provisionDeadline(t))
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// provisionDeadline returns the end of the context of provisionContext.
+func provisionDeadline(t *testing.T) time.Time {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		return deadline.Add(-cleanupGrace)
+	}
+	return time.Now().Add(provisionTimeout)
 }
 
 // otherMachines returns the names of the machines on the host besides
@@ -278,8 +306,7 @@ systemctl is-active --quiet systemd-user-sessions.service
 // of systemd allows (#66).
 func TestInitRunsAgainAfterRepeatedRuns(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))

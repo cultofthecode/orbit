@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -21,9 +22,14 @@ import (
 // tests, so that the client under test can touch no other machine.
 const integrationPrefix = "orbit-it-"
 
-// createTimeout bounds the creation of one machine. On a cold OrbStack,
-// orb create alone can take most of three minutes.
+// createTimeout bounds the creation of one machine when the test binary
+// has no deadline. On a cold OrbStack, orb create alone can take most of
+// three minutes.
 const createTimeout = 5 * time.Minute
+
+// cleanupGrace is the time that createContext leaves before the deadline
+// of the test binary, so that t.Cleanup can delete the machine.
+const cleanupGrace = 3 * time.Minute
 
 // integrationTimeout bounds the steps of one integration test after its
 // machine exists.
@@ -55,6 +61,18 @@ func blockInit(t *testing.T) {
 	}
 }
 
+// createContext returns a context that ends cleanupGrace before the
+// deadline of the test binary, so that the -timeout the caller chose
+// absorbs the load of other runs on one OrbStack and t.Cleanup still
+// deletes the machine. Without a deadline it ends after createTimeout.
+func createContext(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		return context.WithDeadline(context.Background(), deadline.Add(-cleanupGrace))
+	}
+	return context.WithTimeout(context.Background(), createTimeout)
+}
+
 // testContext returns a context that ends after integrationTimeout.
 func testContext(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
@@ -70,12 +88,19 @@ func inMachine(ctx context.Context, name string, command ...string) (string, err
 	return strings.TrimSpace(string(output)), err
 }
 
-// newMachine creates a machine of the integration tests with the mount dir
-// under its own deadline, createTimeout, registers its deletion, and returns
-// its client and its name.
+// newMachine creates a machine of the integration tests without SSH agent
+// forwarding, with the mount dir, under the deadline of createContext,
+// registers its deletion, and returns its client and its name.
 func newMachine(t *testing.T, dir string) (*Client, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
+	return newForwardingMachine(t, dir, false)
+}
+
+// newForwardingMachine is newMachine with the SSH agent forwarding that
+// forward names.
+func newForwardingMachine(t *testing.T, dir string, forward bool) (*Client, string) {
+	t.Helper()
+	ctx, cancel := createContext(t)
 	defer cancel()
 	client := New(integrationPrefix)
 	name := integrationPrefix + strings.ToLower(rand.Text()[:8])
@@ -90,7 +115,7 @@ func newMachine(t *testing.T, dir string) (*Client, string) {
 			t.Errorf("Exists(%q) after Delete = %v, %v, want false", name, exists, err)
 		}
 	})
-	if err := client.Create(ctx, name, dir); err != nil {
+	if err := client.Create(ctx, name, dir, forward); err != nil {
 		t.Fatalf("Create(%q, %q) = %v", name, dir, err)
 	}
 	t.Logf("created the machine %s with the mount %s", name, dir)
@@ -308,5 +333,63 @@ func TestOnlyAllowedVariablesReachTheMachine(t *testing.T) {
 				t.Errorf("orb with %s=%s printed %q, %v, want %q: the test no longer proves the removal", forwarded, variable, output, err, marker)
 			}
 		})
+	}
+}
+
+func TestCreateFixesTheSSHAgentForwardingAndTheAdapterReadsItBack(t *testing.T) {
+	for _, forward := range []bool{true, false} {
+		t.Run(strconv.FormatBool(forward), func(t *testing.T) {
+			client, name := newForwardingMachine(t, hostDir(t), forward)
+			got, err := client.SSHAgentForwarded(testContext(t), name)
+			if err != nil || got != forward {
+				t.Errorf("SSHAgentForwarded(%q) = %t, %v, want %t", name, got, err, forward)
+			}
+		})
+	}
+}
+
+// TestNoMachineCommandStartsAStoppedMachine stops the machine of the test and
+// calls every method of the client that runs orb -m: each fails with
+// ErrMachineNotRunning and the machine stays stopped (#75). After Start, the
+// same calls work.
+func TestNoMachineCommandStartsAStoppedMachine(t *testing.T) {
+	client, name := newMachine(t, hostDir(t))
+	ctx := testContext(t)
+	if err := client.RunAsRoot(ctx, name, []byte("set -eu\nuseradd --create-home --shell /bin/bash --user-group "+AgentUser+"\n")); err != nil {
+		t.Fatalf("create the agent user: %v", err)
+	}
+	if err := client.Stop(ctx, name); err != nil {
+		t.Fatalf("Stop(%q) = %v", name, err)
+	}
+	expectState(ctx, t, client, name, "stopped", "after Stop")
+
+	_, activeMountsErr := client.ActiveMounts(ctx, name)
+	_, shellErr := client.Shell(ctx, name, hostDir(t), strings.NewReader("exit\n"), &strings.Builder{}, &strings.Builder{})
+	results := map[string]error{
+		"ActiveMounts": activeMountsErr,
+		"RunAsRoot":    client.RunAsRoot(ctx, name, []byte("true\n")),
+		"RunAsAgent":   client.RunAsAgent(ctx, name, []byte("true\n")),
+		"Shell":        shellErr,
+	}
+
+	for operation, err := range results {
+		if !errors.Is(err, ErrMachineNotRunning) {
+			t.Errorf("%s in a stopped machine = %v, want %v", operation, err, ErrMachineNotRunning)
+		}
+	}
+	expectState(ctx, t, client, name, "stopped", "after the refused calls")
+	if err := client.Start(ctx, name); err != nil {
+		t.Fatalf("Start(%q) = %v", name, err)
+	}
+	if err := client.RunAsAgent(ctx, name, []byte("true\n")); err != nil {
+		t.Errorf("RunAsAgent after Start = %v", err)
+	}
+}
+
+// expectState fails t unless the machine name is in state want.
+func expectState(ctx context.Context, t *testing.T, client *Client, name, want, when string) {
+	t.Helper()
+	if got, err := client.State(ctx, name); err != nil || got != want {
+		t.Errorf("state of %s %s = %q, %v, want %q", name, when, got, err, want)
 	}
 }

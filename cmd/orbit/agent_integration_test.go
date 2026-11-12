@@ -88,8 +88,7 @@ func newSandboxDir(ctx context.Context, t *testing.T, client *orbstack.Client) (
 
 func TestInitInstallsClaudeCodeAndDropsItsHostsWithoutAgent(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
@@ -117,8 +116,7 @@ func TestInitInstallsClaudeCodeAndDropsItsHostsWithoutAgent(t *testing.T) {
 // passes: a refusal of init fails the test.
 func TestInitDeletesTheNewMachineWhenTheDownloadIsRefused(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-	t.Cleanup(cancel)
+	ctx := provisionContext(t)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	refused := agent.Definition{Name: "refused-download", Install: "curl -fsSL https://example.org/install.sh | bash"}

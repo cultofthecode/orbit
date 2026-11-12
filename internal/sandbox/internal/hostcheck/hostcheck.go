@@ -347,11 +347,21 @@ func homeSpellings(accountHome string) ([]string, error) {
 	for _, home := range []string{environmentHome, accountHome} {
 		spellings, err := dirSpellings(home)
 		if err != nil {
-			return nil, err
+			return nil, quotedPathError(home, err)
 		}
 		homes = append(homes, spellings...)
 	}
 	return distinct(homes), nil
+}
+
+// quotedPathError reports err for path with path quoted, so that a path with
+// control characters never reaches the terminal raw. A *fs.PathError carries
+// the raw path in its message, so only its cause is kept. err must be, or
+// wrap, a *fs.PathError, which is all that dirSpellings returns.
+func quotedPathError(path string, err error) error {
+	var pathErr *fs.PathError
+	errors.As(err, &pathErr)
+	return fmt.Errorf("%q: %s: %w", path, pathErr.Op, pathErr.Err)
 }
 
 // protectedSpellings returns every spelling of the directories that the
@@ -431,7 +441,9 @@ type fileID struct {
 
 // foundFile is a protected file with more than one hard link.
 type foundFile struct {
-	// first is the first path of the file that the handler found.
+	// first is the path that the refusal names: the path of a file that
+	// must have one hard link, otherwise the first path that the handler
+	// found.
 	first string
 	// paths are the distinct paths of the file that the handler found in
 	// the protected locations.
@@ -476,6 +488,9 @@ func (f foundFiles) add(id fileID, count uint64, path string, single bool) {
 	}
 	file.paths[path] = true
 	file.count = max(file.count, count)
+	if single && !file.single {
+		file.first = path
+	}
 	file.single = file.single || single
 }
 

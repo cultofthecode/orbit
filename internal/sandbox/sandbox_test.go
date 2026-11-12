@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -605,5 +606,91 @@ func TestValidateMounts(t *testing.T) {
 				t.Errorf("ValidateMounts(%q, %v) = %v, want %v", test.dir, test.mounts, err, test.want)
 			}
 		})
+	}
+}
+
+func TestExitStatusError(t *testing.T) {
+	var target ExitStatus
+	err := fmt.Errorf("shell: %w", ExitStatus{Code: 3})
+	if !errors.As(err, &target) || target.Code != 3 || err.Error() != "shell: exited with status 3" {
+		t.Errorf("ExitStatus = %q, as %+v", err, target)
+	}
+}
+
+func TestCheckSSHForwarding(t *testing.T) {
+	tests := []struct {
+		name     string
+		want     bool
+		have     bool
+		mismatch bool
+		mentions []string
+	}{
+		{name: "forward and forwards", want: true, have: true},
+		{name: "leave out and leaves out", want: false, have: false},
+		{name: "forward but the machine does not", want: true, have: false, mismatch: true, mentions: []string{"does not forward", "init --no-ssh-forwarding", "delete the sandbox"}},
+		{name: "leave out but the machine forwards", want: false, have: true, mismatch: true, mentions: []string{"forwards the host SSH agent", "delete the sandbox"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := CheckSSHForwarding(test.want, test.have)
+			if errors.Is(err, ErrSSHForwardingMismatch) != test.mismatch || (err != nil) != test.mismatch {
+				t.Fatalf("CheckSSHForwarding(%t, %t) = %v, want a mismatch: %t", test.want, test.have, err, test.mismatch)
+			}
+			for _, part := range test.mentions {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("CheckSSHForwarding(%t, %t) = %q, want it to mention %q", test.want, test.have, err, part)
+				}
+			}
+		})
+	}
+}
+
+func TestStoredProjectDir(t *testing.T) {
+	own := func(dir string) []Mount { return []Mount{{Source: dir, Destination: dir}} }
+	tests := []struct {
+		name   string
+		dir    string
+		mounts []Mount
+		want   string
+		reason string
+	}{
+		{name: "one mount at its own path", dir: "/Users/dev/api", mounts: own("/Users/dev/api"), want: "/Users/dev/api"},
+		{name: "a path with spaces", dir: "/Users/dev/my web", mounts: own("/Users/dev/my web"), want: "/Users/dev/my web"},
+		{name: "a path with a newline", dir: "/work/a\nb", mounts: own("/work/a\nb"), want: "/work/a\nb"},
+		{name: "no mount", dir: "/work/api", mounts: nil, reason: "no mount"},
+		{name: "two mounts", dir: "/work/api", mounts: append(own("/work/api"), own("/work/api")...), reason: "2 mounts"},
+		{name: "a mount at another path", dir: "/work/api", mounts: []Mount{{Source: "/work/api", Destination: "/mnt/mac/api"}}, reason: `mounted at "/mnt/mac/api"`},
+		{name: "a relative path", dir: "work/api", mounts: own("work/api"), reason: `path is not absolute and clean: "work/api"`},
+		{name: "a dot dot segment", dir: "/work/../etc", mounts: own("/work/../etc"), reason: "path is not absolute and clean"},
+		{name: "a trailing slash", dir: "/work/api", mounts: own("/work/api/"), reason: "path is not absolute and clean"},
+		{name: "a changed hash", dir: "/work/api", mounts: own("/work/api2"), reason: `the name does not match "/work/api2"`},
+		{name: "an escape sequence is quoted", dir: "/work/api", mounts: own("/work/\x1b[2Jx"), reason: `the name does not match "/work/\x1b[2Jx"`},
+		{name: "an empty path", dir: "/work/api", mounts: own(""), reason: "path is not absolute and clean"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := StoredProjectDir(MachineName(test.dir), test.mounts)
+			if test.reason == "" {
+				if err != nil || got != test.want {
+					t.Errorf("StoredProjectDir() = %q, %v, want %q", got, err, test.want)
+				}
+				return
+			}
+			if !errors.Is(err, ErrUnknownProjectDir) || got != "" || !strings.Contains(err.Error(), test.reason) {
+				t.Errorf("StoredProjectDir() = %q, %v, want %v: %s", got, err, ErrUnknownProjectDir, test.reason)
+			}
+			if strings.ContainsRune(err.Error(), 0x1b) || strings.Contains(err.Error(), "\n") {
+				t.Errorf("reason %q carries a control character", err)
+			}
+		})
+	}
+}
+
+func TestStoredProjectDirRefusesAForeignName(t *testing.T) {
+	mounts := []Mount{{Source: "/work/api", Destination: "/work/api"}}
+	for _, name := range []string{"", "ubuntu", "orbit-manual", "orbit-api-0000000000000000", "orbit-"} {
+		if got, err := StoredProjectDir(name, mounts); !errors.Is(err, ErrUnknownProjectDir) || got != "" {
+			t.Errorf("StoredProjectDir(%q) = %q, %v, want %v", name, got, err, ErrUnknownProjectDir)
+		}
 	}
 }

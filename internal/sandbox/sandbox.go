@@ -62,6 +62,10 @@ var (
 	// ErrMountMismatch reports a machine that does not mount exactly the
 	// project directory, once, at its own path.
 	ErrMountMismatch = errors.New("machine does not mount exactly the project directory at its own path")
+	// ErrSSHForwardingMismatch reports a machine whose SSH agent forwarding
+	// differs from the request. OrbStack fixes the setting when it creates
+	// the machine, so init neither changes nor provisions such a machine.
+	ErrSSHForwardingMismatch = errors.New("the SSH agent forwarding of the sandbox differs from the request")
 	// ErrRelocatedPath reports an environment variable that moves a
 	// protected location to a value that is empty, relative, or has a ".."
 	// segment. Orbit cannot know where the tool puts the location then.
@@ -82,6 +86,10 @@ var (
 	// stopped, such as starting or stopping. Orbit acts on no other state.
 	ErrUnexpectedState = errors.New("wait and try again")
 )
+
+// ErrUnknownProjectDir reports a machine whose stored mounts do not name its
+// project directory. The error that wraps it carries the reason.
+var ErrUnknownProjectDir = errors.New("project directory unknown")
 
 // Errors of the host-side checks that run before Orbit creates or starts a
 // machine.
@@ -141,6 +149,19 @@ var singleLinkRelocations = slices.Concat(fileRelocations, []relocation{{variabl
 
 // outsideSlug matches every run of characters that a slug cannot hold.
 var outsideSlug = regexp.MustCompile(`[^a-z0-9]+`)
+
+// ExitStatus is the non-zero exit status of a command that Orbit ran in a
+// sandbox for the user, such as the shell of orbit shell. A slice returns it
+// as its error, and cmd/orbit exits with Code and prints nothing.
+type ExitStatus struct {
+	// Code is the exit status, never 0.
+	Code int
+}
+
+// Error returns a description of the status.
+func (e ExitStatus) Error() string {
+	return fmt.Sprintf("exited with status %d", e.Code)
+}
 
 // Agent is what a slice needs to know about the agent of a sandbox. cmd/orbit
 // builds it from the definition of the agent; a slice never compares the
@@ -217,6 +238,50 @@ type Relocated struct {
 // the directory.
 func MachineName(resolvedDir string) string {
 	return NamePrefix + slug(filepath.Base(resolvedDir)) + "-" + shortHash(resolvedDir)
+}
+
+// Mount is one stored mount of a machine: the host directory and the path in
+// the machine.
+type Mount struct {
+	Source      string
+	Destination string
+}
+
+// StoredProjectDir returns the project directory of the machine name from its
+// stored mounts: the source of the only mount, when that mount is at its own
+// path, the path is absolute and clean, and MachineName of it is name. It
+// fails with ErrUnknownProjectDir and one reason otherwise. It trusts nothing
+// else: the directory is the stored configuration, not a check of the host.
+// Every path in a reason is quoted, so a stored path cannot carry an escape
+// sequence into a message.
+func StoredProjectDir(name string, mounts []Mount) (string, error) {
+	if len(mounts) != 1 {
+		return "", unknownProjectDir(mountCount(len(mounts)))
+	}
+	mount := mounts[0]
+	if mount.Destination != mount.Source {
+		return "", unknownProjectDir(fmt.Sprintf("mounted at %q", mount.Destination))
+	}
+	if err := checkPaths([]string{mount.Source}); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrUnknownProjectDir, err)
+	}
+	if MachineName(mount.Source) != name {
+		return "", unknownProjectDir(fmt.Sprintf("the name does not match %q", mount.Source))
+	}
+	return mount.Source, nil
+}
+
+// mountCount describes a number of mounts that is not one.
+func mountCount(n int) string {
+	if n == 0 {
+		return "no mount"
+	}
+	return fmt.Sprintf("%d mounts", n)
+}
+
+// unknownProjectDir returns ErrUnknownProjectDir with a reason.
+func unknownProjectDir(reason string) error {
+	return fmt.Errorf("%w: %s", ErrUnknownProjectDir, reason)
 }
 
 // ProtectedDirs returns the paths in the home directory home that never
@@ -319,6 +384,20 @@ func ValidateMounts(dir string, mounts map[string]string) error {
 		return fmt.Errorf("%w: want %s, got %v", ErrMountMismatch, dir, mounts)
 	}
 	return nil
+}
+
+// CheckSSHForwarding reports whether a machine whose forwarding of the host
+// SSH agent is have matches the request want. It refuses a difference with
+// ErrSSHForwardingMismatch and a message that names the current setting and
+// the two ways out (Q1, D25). It decides only; the caller reads have.
+func CheckSSHForwarding(want, have bool) error {
+	if want == have {
+		return nil
+	}
+	if have {
+		return fmt.Errorf("%w: the sandbox forwards the host SSH agent, and --no-ssh-forwarding was passed; run init without --no-ssh-forwarding to keep it, or delete the sandbox and run init --no-ssh-forwarding again to get one without forwarding", ErrSSHForwardingMismatch)
+	}
+	return fmt.Errorf("%w: the sandbox does not forward the host SSH agent; run init --no-ssh-forwarding to keep it without forwarding, or delete the sandbox and run init again to get forwarding", ErrSSHForwardingMismatch)
 }
 
 // checkFacts refuses facts that the rules cannot decide on: no home

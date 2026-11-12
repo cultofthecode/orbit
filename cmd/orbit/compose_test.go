@@ -55,6 +55,32 @@ func TestOrbitRegistersStop(t *testing.T) {
 	}
 }
 
+func TestOrbitRegistersLs(t *testing.T) {
+	root, err := newOrbit()
+	if err != nil {
+		t.Fatalf("newOrbit = %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), root, []string{"ls", "--help"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("orbit ls --help = %d, %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "List every sandbox with its state and project directory") {
+		t.Errorf("orbit ls --help = %q, want the command", stdout.String())
+	}
+}
+
+func TestLsFailsWithNothingOnStdoutWhenTheListCannotBeRead(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	lister := stubLister{err: orbstack.ErrMachineList}
+
+	code := run(context.Background(), newRoot(listCommand(listMachines{lister})), []string{"ls"}, &stdout, &stderr)
+
+	want := "orbit: list sandboxes: " + orbstack.ErrMachineList.Error() + "\n"
+	if code != exitFailure || stdout.String() != "" || stderr.String() != want {
+		t.Errorf("orbit ls = %d, %q, %q, want %d, no stdout, %q", code, stdout.String(), stderr.String(), exitFailure, want)
+	}
+}
+
 func TestOrbitRegistersStart(t *testing.T) {
 	root, err := newOrbit()
 	if err != nil {
@@ -93,6 +119,90 @@ func TestStartRunsTheCheckScriptsOfProvisioning(t *testing.T) {
 	}
 }
 
+func TestOrbitRegistersShell(t *testing.T) {
+	root, err := newOrbit()
+	if err != nil {
+		t.Fatalf("newOrbit = %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), root, []string{"shell", "--help"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("orbit shell --help = %d, %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Open a shell as the agent user in the sandbox of the current directory") {
+		t.Errorf("orbit shell --help = %q, want the command", stdout.String())
+	}
+}
+
+// runningSandbox returns a fake with the running sandbox of a new project
+// directory, which is the working directory of the test.
+func runningSandbox(t *testing.T) (*orbstacktest.Fake, string, string) {
+	t.Helper()
+	project := projectInWorkingDir(t)
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+	return fake, project, name
+}
+
+func TestShellRunsTheReadinessScriptOfProvisioning(t *testing.T) {
+	fake, project, name := runningSandbox(t)
+	var stdout, stderr bytes.Buffer
+
+	code := run(context.Background(), newRoot(shellCommand(fake)), []string{"shell"}, &stdout, &stderr)
+
+	if code != exitOK || stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("orbit shell = %d, %q, %q, want 0 and no output", code, stdout.String(), stderr.String())
+	}
+	want := []orbstacktest.Call{
+		{Op: orbstacktest.OpState, Name: name},
+		{Op: orbstacktest.OpMounts},
+		{Op: orbstacktest.OpActiveMounts, Name: name},
+		{Op: orbstacktest.OpRunAsRoot, Name: name, Script: string(provision.ReadinessScript())},
+		{Op: orbstacktest.OpShell, Name: name, Dir: project},
+	}
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want %v", fake.Calls, want)
+	}
+}
+
+func TestShellExitsWithTheStatusOfTheShellAndPrintsNothing(t *testing.T) {
+	fake, _, _ := runningSandbox(t)
+	fake.ShellStatus = 3
+	var stdout, stderr bytes.Buffer
+
+	code := run(context.Background(), newRoot(shellCommand(fake)), []string{"shell"}, &stdout, &stderr)
+
+	if code != 3 || stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("orbit shell = %d, %q, %q, want 3 and no output", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestShellInAStoppedSandboxNamesStart(t *testing.T) {
+	fake, project, name := runningSandbox(t)
+	fake.States[name] = orbstacktest.StateStopped
+	var stdout, stderr bytes.Buffer
+
+	code := run(context.Background(), newRoot(shellCommand(fake)), []string{"shell"}, &stdout, &stderr)
+
+	want := "orbit: sandbox " + name + ` is stopped: run "orbit start" in ` + project + "\n"
+	if code != exitFailure || stderr.String() != want {
+		t.Errorf("orbit shell = %d, %q, want %d, %q", code, stderr.String(), exitFailure, want)
+	}
+}
+
+func TestShellWithoutASandboxNamesInit(t *testing.T) {
+	project := projectInWorkingDir(t)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	var stdout, stderr bytes.Buffer
+
+	code := run(context.Background(), newRoot(shellCommand(fake)), []string{"shell"}, &stdout, &stderr)
+
+	want := "orbit: no sandbox for " + project + `: run "orbit init" here, or run "orbit shell" in the directory where you ran "orbit init"` + "\n"
+	if code != exitFailure || stderr.String() != want {
+		t.Errorf("orbit shell = %d, %q, want %d, %q", code, stderr.String(), exitFailure, want)
+	}
+}
+
 func TestStopWithoutASandboxNamesInit(t *testing.T) {
 	project := projectInWorkingDir(t)
 	fake := orbstacktest.New(sandbox.NamePrefix)
@@ -103,6 +213,38 @@ func TestStopWithoutASandboxNamesInit(t *testing.T) {
 	want := "orbit: no sandbox for " + project + `: run "orbit init" here, or run this command in the directory where you ran "orbit init"` + "\n"
 	if code != exitFailure || stderr.String() != want {
 		t.Errorf("orbit stop = %d, %q, want %d, %q", code, stderr.String(), exitFailure, want)
+	}
+}
+
+func TestDestroyWithoutASandboxNamesInit(t *testing.T) {
+	project := projectInWorkingDir(t)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	var stdout, stderr bytes.Buffer
+
+	code := run(context.Background(), newRoot(destroyCommand(fake)), []string{"destroy", "--yes"}, &stdout, &stderr)
+
+	want := "orbit: no sandbox for " + project + `: run "orbit init" here, or run this command in the directory where you ran "orbit init"` + "\n"
+	if code != exitFailure || stderr.String() != want {
+		t.Errorf("orbit destroy = %d, %q, want %d, %q", code, stderr.String(), exitFailure, want)
+	}
+}
+
+func TestDestroyWithoutATerminalAndWithoutYesDeletesNothing(t *testing.T) {
+	project := projectInWorkingDir(t)
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+	root := newRoot(destroyCommand(fake))
+	root.SetIn(strings.NewReader("y\n"))
+	var stdout, stderr bytes.Buffer
+
+	code := run(context.Background(), root, []string{"destroy"}, &stdout, &stderr)
+
+	if code != exitFailure || !strings.Contains(stderr.String(), `run "orbit destroy --yes"`) || stdout.Len() != 0 {
+		t.Errorf("orbit destroy = %d, %q, %q, want a refusal that names --yes", code, stdout.String(), stderr.String())
+	}
+	if _, exists := fake.Machines[name]; !exists {
+		t.Error("the machine was deleted")
 	}
 }
 
