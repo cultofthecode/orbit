@@ -26,6 +26,13 @@ const throwawayComment = "orbit-escape-throwaway"
 // machine has an agent of its own at /run/user/1000/openssh_agent, which
 // answers with no identities; a socket that answers is allowed, a socket
 // that lists the throwaway key is the escape (owner, 2026-11-12).
+//
+// On OrbStack 2.2.5 the key check cannot fail: OrbStack forwards the agent
+// that OrbStack itself is connected to, not the SSH_AUTH_SOCK of the process
+// that calls orb, so the throwaway key never reaches a machine, even with
+// forwarding on. The evidence of E15 is the other checks: no forwarded
+// socket, no SSH_AUTH_SOCK, and the agent not in orbstack. The owner accepted
+// this limit on 2026-11-12 (spec A4). #160 tracks a stronger check.
 const noSSHAgentTry = `need ssh-add find timeout
 KEY='@KEY@'
 [ ! -e /opt/orbstack-guest/run/host-ssh-agent.sock ] || fail "the socket of a forwarded agent exists"
