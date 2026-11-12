@@ -21,6 +21,7 @@ import (
 	"github.com/cultofthecode/orbit/internal/provision"
 	"github.com/cultofthecode/orbit/internal/sandbox"
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
+	"github.com/cultofthecode/orbit/internal/sandbox/list"
 	"github.com/cultofthecode/orbit/internal/sandbox/shell"
 	"github.com/cultofthecode/orbit/internal/sandbox/start"
 	"github.com/cultofthecode/orbit/internal/sandbox/stop"
@@ -50,7 +51,7 @@ func newOrbit() (*cobra.Command, error) {
 		return nil, err
 	}
 	machines := orbstack.New(sandbox.NamePrefix)
-	return newRoot(initCommand(machines, agents), shellCommand(machines), startCommand(machines), stopCommand(machines)), nil
+	return newRoot(initCommand(machines, agents), listCommand(listMachines{machines}), shellCommand(machines), startCommand(machines), stopCommand(machines)), nil
 }
 
 // initCommand returns the command "orbit init" on machines, with the agents
@@ -75,6 +76,40 @@ func initHandler(machines initialize.Machines, agents *agent.Registry) initializ
 // the handler of "orbit init".
 func provisionScript(defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error) {
 	return provision.Script(provision.ScriptInput{DefaultUID: defaultUID, AgentDomains: agentDomains, ForwardSSHAgent: forwardSSHAgent})
+}
+
+// machineLister is the part of the adapter that listMachines converts.
+type machineLister interface {
+	List(ctx context.Context) ([]orbstack.Machine, error)
+}
+
+// listMachines gives the slice of "orbit ls" the machines of the adapter as
+// its own type, because no slice imports the adapter.
+type listMachines struct {
+	lister machineLister
+}
+
+// List returns the machines of the adapter as list.Machine, with the source
+// and the destination of every mount in their own fields.
+func (l listMachines) List(ctx context.Context) ([]list.Machine, error) {
+	machines, err := l.lister.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	converted := make([]list.Machine, 0, len(machines))
+	for _, machine := range machines {
+		item := list.Machine{Name: machine.Name, State: machine.State}
+		for _, mount := range machine.Mounts {
+			item.Mounts = append(item.Mounts, sandbox.Mount{Source: mount.Source, Destination: mount.Destination})
+		}
+		converted = append(converted, item)
+	}
+	return converted, nil
+}
+
+// listCommand returns the command "orbit ls" on machines.
+func listCommand(machines list.Machines) *cobra.Command {
+	return list.NewCommand(list.Handler{Machines: machines})
 }
 
 // shellCommand returns the command "orbit shell" on machines, with the
