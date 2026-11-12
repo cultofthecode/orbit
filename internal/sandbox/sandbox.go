@@ -87,6 +87,10 @@ var (
 	ErrUnexpectedState = errors.New("wait and try again")
 )
 
+// ErrUnknownProjectDir reports a machine whose stored mounts do not name its
+// project directory. The error that wraps it carries the reason.
+var ErrUnknownProjectDir = errors.New("project directory unknown")
+
 // Errors of the host-side checks that run before Orbit creates or starts a
 // machine.
 var (
@@ -234,6 +238,50 @@ type Relocated struct {
 // the directory.
 func MachineName(resolvedDir string) string {
 	return NamePrefix + slug(filepath.Base(resolvedDir)) + "-" + shortHash(resolvedDir)
+}
+
+// Mount is one stored mount of a machine: the host directory and the path in
+// the machine.
+type Mount struct {
+	Source      string
+	Destination string
+}
+
+// StoredProjectDir returns the project directory of the machine name from its
+// stored mounts: the source of the only mount, when that mount is at its own
+// path, the path is absolute and clean, and MachineName of it is name. It
+// fails with ErrUnknownProjectDir and one reason otherwise. It trusts nothing
+// else: the directory is the stored configuration, not a check of the host.
+// Every path in a reason is quoted, so a stored path cannot carry an escape
+// sequence into a message.
+func StoredProjectDir(name string, mounts []Mount) (string, error) {
+	if len(mounts) != 1 {
+		return "", unknownProjectDir(mountCount(len(mounts)))
+	}
+	mount := mounts[0]
+	if mount.Destination != mount.Source {
+		return "", unknownProjectDir(fmt.Sprintf("mounted at %q", mount.Destination))
+	}
+	if err := checkPaths([]string{mount.Source}); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrUnknownProjectDir, err)
+	}
+	if MachineName(mount.Source) != name {
+		return "", unknownProjectDir(fmt.Sprintf("the name does not match %q", mount.Source))
+	}
+	return mount.Source, nil
+}
+
+// mountCount describes a number of mounts that is not one.
+func mountCount(n int) string {
+	if n == 0 {
+		return "no mount"
+	}
+	return fmt.Sprintf("%d mounts", n)
+}
+
+// unknownProjectDir returns ErrUnknownProjectDir with a reason.
+func unknownProjectDir(reason string) error {
+	return fmt.Errorf("%w: %s", ErrUnknownProjectDir, reason)
 }
 
 // ProtectedDirs returns the paths in the home directory home that never

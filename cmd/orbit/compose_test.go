@@ -55,6 +55,32 @@ func TestOrbitRegistersStop(t *testing.T) {
 	}
 }
 
+func TestOrbitRegistersLs(t *testing.T) {
+	root, err := newOrbit()
+	if err != nil {
+		t.Fatalf("newOrbit = %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), root, []string{"ls", "--help"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("orbit ls --help = %d, %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "List every sandbox with its state and project directory") {
+		t.Errorf("orbit ls --help = %q, want the command", stdout.String())
+	}
+}
+
+func TestLsFailsWithNothingOnStdoutWhenTheListCannotBeRead(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	lister := stubLister{err: orbstack.ErrMachineList}
+
+	code := run(context.Background(), newRoot(listCommand(listMachines{lister})), []string{"ls"}, &stdout, &stderr)
+
+	want := "orbit: list sandboxes: " + orbstack.ErrMachineList.Error() + "\n"
+	if code != exitFailure || stdout.String() != "" || stderr.String() != want {
+		t.Errorf("orbit ls = %d, %q, %q, want %d, no stdout, %q", code, stdout.String(), stderr.String(), exitFailure, want)
+	}
+}
+
 func TestOrbitRegistersStart(t *testing.T) {
 	root, err := newOrbit()
 	if err != nil {

@@ -4,11 +4,13 @@ The adapter to OrbStack, through the `orb` CLI. It is the only package with OrbS
 
 ## Layout
 
-- `orbstack.go` — `Client`: `Create`, `Exists`, `Mounts`, `State`, `Start`, `Stop`, `ActiveMounts`, `Delete`, `RunAsRoot`, `RunAsAgent`, `Shell`; the constant `AgentUser`. Each argument list of `orb`, and each parser of its output, is a small pure function with a unit test.
+- `orbstack.go` — `Client`: `Create`, `Exists`, `Mounts`, `List`, `State`, `Start`, `Stop`, `ActiveMounts`, `Delete`, `RunAsRoot`, `RunAsAgent`, `Shell`; the constant `AgentUser`. Each argument list of `orb`, and each parser of its output, is a small pure function with a unit test.
 - `orbstacktest/` — the in-memory fake for handler tests. It imports nothing from the adapter.
 - `integration_test.go` — tests against a real OrbStack, behind the `integration` build tag.
 
 ## Invariants
+
+- `List` is read-only: it runs only `orb status` and one `orb list --format json`, never a `-m` command, and returns only machines whose names start with the prefix of the client (never the bare prefix). Output that is not a JSON array (empty output included) and a prefixed name that is listed twice fail with `ErrMachineList`; `[]` (what OrbStack prints with no machine) and `null` are no machines. It is never retried. `orbstacktest.Fake.List` returns its own `orbstacktest.Machine`, because the fake imports nothing from the adapter.
 
 - `createArgs` always passes `--isolated`, `--isolate-network`, and one mount in the form `DIR:DIR`. A caller cannot change them. A mount without a destination lands under `/mnt/mac`.
 - `Create` refuses a directory that is not absolute or that holds a colon or a comma (`ErrMountPath`). `orb` splits a mount at the first colon, so such a path mounts another directory than the one that was validated; OrbStack stores the mounts of a machine as a list with commas.
