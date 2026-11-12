@@ -135,3 +135,5 @@ func TestInitDeletesTheNewMachineWhenTheDownloadIsRefused(t *testing.T) {
 		t.Errorf("Exists(%q) after the failed install = %v, %v, want false", name, exists, err)
 	}
 }
+
+func zzBroken( {

@@ -91,5 +91,3 @@ func ownerOf(file *os.File) (uint32, error) {
 	}
 	return stat.Uid, nil
 }
-
-func zzUnused() {}
