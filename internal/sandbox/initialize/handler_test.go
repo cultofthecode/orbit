@@ -622,6 +622,29 @@ func TestHandleAcceptsDirectoriesOutsideOtherSandboxes(t *testing.T) {
 	}
 }
 
+// TestHandleQuotesAHostileDirectoryOnAMountMismatch pins that the
+// mount-mismatch error of a created machine cannot write an escape sequence
+// or a line break to the terminal (#111).
+func TestHandleQuotesAHostileDirectoryOnAMountMismatch(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "a\x1b[2K\nb")
+	makeDirs(t, home, filepath.Join("work", "a\x1b[2K\nb"))
+	other := filepath.Join(home, "work", "c\x1b]0;x\x07d")
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Active[sandbox.MachineName(project)] = map[string]string{project: other}
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
+
+	for _, want := range []string{"want " + strconv.Quote(project), strconv.Quote(other)} {
+		if !errors.Is(err, sandbox.ErrMountMismatch) || !strings.Contains(err.Error(), want) {
+			t.Errorf("Handle = %v, want %v with %s", err, sandbox.ErrMountMismatch, want)
+		}
+	}
+	if err != nil && strings.ContainsAny(err.Error(), "\x1b\n\x07") {
+		t.Errorf("Handle = %q, want no control character", err)
+	}
+}
+
 // TestHandleDeletesACreatedMachineThatMountsAnotherDirectory covers a
 // project path that is swapped between the check and the mount: the new
 // machine mounts another directory, and the handler deletes it.
@@ -1786,6 +1809,10 @@ func TestHandleStopsOnSymlinksThatCannotBeFollowed(t *testing.T) {
 		{name: "dangling .claude.json with .. after a name", want: errUnresolvableLink.Error(), layout: func(t *testing.T, home string) {
 			symlinkAt(t, "dotfiles/gone/../claude.json", filepath.Join(home, ".claude.json"))
 		}},
+		{name: "dangling symlink in .ssh with .. after a name", want: errUnresolvableLink.Error(), layout: func(t *testing.T, home string) {
+			makeDirs(t, home, ".ssh")
+			symlinkAt(t, "../dotfiles/gone/../ssh/config", filepath.Join(home, ".ssh", "config"))
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1803,6 +1830,78 @@ func TestHandleStopsOnSymlinksThatCannotBeFollowed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHandleResolvesParentAfterANameInAProtectedDirectoryLink covers a
+// symlink in a protected directory that resolves, with ".." after a name in
+// its target (#43). init resolves ".." as the kernel does, as it does for a
+// hop of a protected path: it refuses the directories that hold the file, a
+// hop, or a name that a ".." cancels, and accepts every other project,
+// instead of stopping for a symlink that it calls dangling. The agent could
+// replace a cancelled name in a mounted directory with a symlink, and the
+// kernel would apply the ".." to its target.
+func TestHandleResolvesParentAfterANameInAProtectedDirectoryLink(t *testing.T) {
+	tests := []struct {
+		name string
+		// build makes the link and returns the directories to refuse and
+		// the ones to accept.
+		build func(t *testing.T, home string) (refused []refusal, accepted []string)
+	}{
+		{name: "plain name before ..", build: func(t *testing.T, home string) ([]refusal, []string) {
+			makeDirs(t, home, "dotfiles/x", "dotfiles/ssh")
+			writeFile(t, filepath.Join(home, "dotfiles", "ssh", "config"))
+			symlinkAt(t, "../dotfiles/x/../ssh/config", filepath.Join(home, ".ssh", "config"))
+			return protectedFileRefusals(filepath.Join(home, "dotfiles", "ssh"), filepath.Join(home, "dotfiles")), []string{filepath.Join(home, "dotfiles", "x"), filepath.Join(home, "work", "api")}
+		}},
+		{name: "plain name in a project before ..", build: func(t *testing.T, home string) ([]refusal, []string) {
+			makeDirs(t, home, "work/api/x", "dotfiles/ssh")
+			writeFile(t, filepath.Join(home, "dotfiles", "ssh", "config"))
+			symlinkAt(t, "../work/api/x/../../../dotfiles/ssh/config", filepath.Join(home, ".ssh", "config"))
+			return protectedFileRefusals(filepath.Join(home, "work", "api"), filepath.Join(home, "work"), filepath.Join(home, "dotfiles", "ssh"), filepath.Join(home, "dotfiles")), []string{filepath.Join(home, "work", "api", "x"), filepath.Join(home, "dotfiles", "vim")}
+		}},
+		{name: "symlink before ..", build: func(t *testing.T, home string) ([]refusal, []string) {
+			makeDirs(t, home, "dotfiles/ssh", "elsewhere/sub", "elsewhere/ssh")
+			writeFile(t, filepath.Join(home, "dotfiles", "ssh", "config"))
+			writeFile(t, filepath.Join(home, "elsewhere", "ssh", "config"))
+			symlinkAt(t, filepath.Join(home, "elsewhere", "sub"), filepath.Join(home, "dotfiles", "x"))
+			symlinkAt(t, "../dotfiles/x/../ssh/config", filepath.Join(home, ".ssh", "config"))
+			return protectedFileRefusals(filepath.Join(home, "elsewhere", "ssh"), filepath.Join(home, "elsewhere"), filepath.Join(home, "dotfiles")), []string{filepath.Join(home, "dotfiles", "ssh"), filepath.Join(home, "work", "api")}
+		}},
+		{name: "directory link", build: func(t *testing.T, home string) ([]refusal, []string) {
+			makeDirs(t, home, "dotfiles/x", "dotfiles/ssh/keys")
+			writeFile(t, filepath.Join(home, "dotfiles", "ssh", "keys", "id"))
+			symlinkAt(t, "../dotfiles/x/../ssh/keys", filepath.Join(home, ".ssh", "keys"))
+			return []refusal{
+				{name: "the linked directory", dir: filepath.Join(home, "dotfiles", "ssh", "keys"), want: sandbox.ErrProtectedDir},
+				{name: "its parent", dir: filepath.Join(home, "dotfiles", "ssh"), want: sandbox.ErrProtectedAncestor},
+				{name: "the directory that holds it", dir: filepath.Join(home, "dotfiles"), want: sandbox.ErrProtectedAncestor},
+			}, []string{filepath.Join(home, "dotfiles", "x"), filepath.Join(home, "work", "api")}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := newBareHome(t)
+			makeDirs(t, home, ".ssh")
+			refused, accepted := test.build(t, home)
+
+			checkRefusals(t, account(home), refused)
+			for _, dir := range accepted {
+				t.Run("accepts "+dir, func(t *testing.T) {
+					checkCreates(t, account(home), dir, dir)
+				})
+			}
+		})
+	}
+}
+
+// protectedFileRefusals returns a refusal with ErrProtectedFile for each of
+// dirs.
+func protectedFileRefusals(dirs ...string) []refusal {
+	var refusals []refusal
+	for _, dir := range dirs {
+		refusals = append(refusals, refusal{name: "refuses " + dir, dir: dir, want: sandbox.ErrProtectedFile})
+	}
+	return refusals
 }
 
 // TestHandleFollowsALongDanglingChainOnce covers a dangling .ssh that
@@ -3142,8 +3241,7 @@ func TestHandleRefusesAProjectThatHoldsAHopOfARelativeHome(t *testing.T) {
 // TestHandleFollowsAHopOfAProtectedPathWithParentAfterAName covers a hop of
 // a protected path whose target exists and has ".." after a name: the walk
 // resolves ".." as the kernel does, so init refuses the directories that hold
-// a hop and accepts every other project, as main did before #36 (#43 tracks
-// the same target inside a protected directory).
+// a hop or a name that a ".." cancels, and accepts every other project.
 func TestHandleFollowsAHopOfAProtectedPathWithParentAfterAName(t *testing.T) {
 	tests := []struct {
 		name string
@@ -3152,7 +3250,7 @@ func TestHandleFollowsAHopOfAProtectedPathWithParentAfterAName(t *testing.T) {
 	}{
 		{name: "plain name before ..", build: func(t *testing.T, home, outside string) []string {
 			makeDirs(t, outside, "x", "vault/aws")
-			symlinkAt(t, filepath.Join(outside, "x", "..", "vault", "aws"), filepath.Join(home, "proj", "link"))
+			symlinkAt(t, outside+"/x/../vault/aws", filepath.Join(home, "proj", "link"))
 			symlinkAt(t, filepath.Join(home, "proj", "link"), filepath.Join(home, ".aws"))
 			return []string{filepath.Join(home, "proj")}
 		}},
@@ -3162,6 +3260,11 @@ func TestHandleFollowsAHopOfAProtectedPathWithParentAfterAName(t *testing.T) {
 			symlinkAt(t, outside+"/links/x/../vault/aws", filepath.Join(home, "proj", "link"))
 			symlinkAt(t, filepath.Join(home, "proj", "link"), filepath.Join(home, ".aws"))
 			return []string{filepath.Join(home, "proj"), filepath.Join(outside, "links")}
+		}},
+		{name: "plain name in a project before ..", build: func(t *testing.T, home, outside string) []string {
+			makeDirs(t, home, "proj/x", "vault/aws")
+			symlinkAt(t, "proj/x/../../vault/aws", filepath.Join(home, ".aws"))
+			return []string{filepath.Join(home, "proj")}
 		}},
 		{name: "relative target with .. after a name", build: func(t *testing.T, home, outside string) []string {
 			makeDirs(t, home, "x", "vault/aws")

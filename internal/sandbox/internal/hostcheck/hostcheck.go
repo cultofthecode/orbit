@@ -32,6 +32,11 @@ import (
 // paths of name (sandbox.ErrLinkedProjectDir): the paths that OrbStack
 // resolves when it starts that machine.
 func Unnested(machines map[string]map[string]string, name, dir string, includeOwn bool) error {
+	return printable(unnested(machines, name, dir, includeOwn))
+}
+
+// unnested is Unnested with the raw message of its error.
+func unnested(machines map[string]map[string]string, name, dir string, includeOwn bool) error {
 	if err := validateNotNested(dir, mountedDirs(machines, name)); err != nil {
 		return err
 	}
@@ -44,8 +49,10 @@ func Unnested(machines map[string]map[string]string, name, dir string, includeOw
 const maxLinkHops = 32
 
 // ErrUnresolvableLink reports a dangling symlink whose target has ".." after
-// another name. When that name is a symlink, the kernel applies ".." to its
-// target, so a lexical join would protect the wrong directory.
+// a name that does not exist. When that name is later made a symlink, the
+// kernel applies ".." to its target, so a lexical join would protect the wrong
+// directory. A target that exists is resolved with its "..", as the kernel
+// does (#43).
 var ErrUnresolvableLink = errors.New("target of a dangling symlink has .. after a name")
 
 // validateUnlinked refuses the stored mount paths of the machines other than
@@ -174,8 +181,15 @@ func mountedDirs(machines map[string]map[string]string, name string) []string {
 // canonical path, when the mount rules of sandbox.ValidateProjectDir accept
 // it. currentUser returns the user who runs Orbit, from the account database
 // of the system; its uid and its home directory count more than the
-// environment.
+// environment. A path in the message of its error never holds a character
+// that is not printable (#111).
 func ProjectDir(path string, currentUser func() (*user.User, error)) (sandbox.ProjectDir, error) {
+	facts, err := projectDir(path, currentUser)
+	return facts, printable(err)
+}
+
+// projectDir is ProjectDir with the raw message of its error.
+func projectDir(path string, currentUser func() (*user.User, error)) (sandbox.ProjectDir, error) {
 	facts, err := loadFacts(path, currentUser)
 	if err != nil {
 		return sandbox.ProjectDir{}, err
@@ -270,7 +284,7 @@ func allFileDirSpellings(homes, rawHomes []string) ([]string, error) {
 
 // homeHopSpellings returns every spelling of each directory that holds a
 // symlink on the chain of a protected path of homes or of rawHomes, as
-// kernelChainHolders walks it: the path itself, a parent component such as
+// chainHolders walks it: the path itself, a parent component such as
 // .config, and the home itself as the environment or the account database
 // names it. A hop that lies in a project directory lets the agent repoint
 // the path on the host.
@@ -281,7 +295,7 @@ func homeHopSpellings(homes, rawHomes []string) ([]string, error) {
 	}
 	var holders []string
 	for _, path := range slices.Concat(protectedPaths(homes), protectedFilePaths(homes), raw) {
-		found, err := kernelChainHolders(path)
+		found, err := chainHolders(path)
 		if err != nil {
 			return nil, err
 		}
@@ -301,7 +315,7 @@ func rawProtectedPaths(rawHomes []string) ([]string, error) {
 	names := slices.Concat(sandbox.ProtectedDirs(root), sandbox.ProtectedFiles(root))
 	var paths []string
 	for _, home := range rawHomes {
-		absolute, err := absoluteRaw(home)
+		absolute, err := realpath.UncleanAbs(home)
 		if err != nil {
 			return nil, err
 		}
@@ -310,19 +324,6 @@ func rawProtectedPaths(rawHomes []string) ([]string, error) {
 		}
 	}
 	return paths, nil
-}
-
-// absoluteRaw returns path, or for a relative path the working directory
-// followed by path, without cleaning either.
-func absoluteRaw(path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return path, nil
-	}
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return dir + string(filepath.Separator) + path, nil
 }
 
 // relocatedHopSpellings returns every spelling of each directory that holds
@@ -343,20 +344,10 @@ func relocatedHopSpellings() ([]string, error) {
 }
 
 // chainHolders returns the second result of linkSpellings for path: every
-// spelling of each directory that holds a symlink on its chain.
+// spelling of each directory that holds a symlink on its chain or a name that
+// a later ".." cancels.
 func chainHolders(path string) ([]string, error) {
 	_, holders, err := linkSpellings(path)
-	return holders, err
-}
-
-// kernelChainHolders returns every spelling of each directory that holds a
-// symlink on the chain of path, as chainHolders does, but reads each target
-// as the kernel reads it: a relative target from the directory that holds
-// the link, and a ".." name as the parent of the directory that the walk has
-// reached, which holds no symlink. So a target that has ".." after a name is
-// followed, not refused (#43 tracks the walk of the protected directories).
-func kernelChainHolders(path string) ([]string, error) {
-	_, holders, err := chainSpellings(path, os.Readlink)
 	return holders, err
 }
 
@@ -779,7 +770,9 @@ func danglingTarget(path string) (string, error) {
 // linkTarget returns the absolute, clean path that the symlink link points
 // to, with a relative target joined to the canonical path of the directory
 // that holds the link, so that every spelling of link gives one target. It
-// refuses a target that has ".." after another name (errUnresolvableLink).
+// refuses a target that has ".." after another name (ErrUnresolvableLink). It
+// serves the paths that dangle; the walk of a chain reads each target with
+// os.Readlink and resolves ".." itself.
 func linkTarget(link string) (string, error) {
 	target, err := os.Readlink(link)
 	if err != nil {
@@ -883,7 +876,7 @@ func visitEntry(path string, mode fs.FileMode, files foundFiles) ([]string, []st
 // followLink returns what linkSpellings returns for the symlink link, and
 // adds the regular file where its chain ends to files.
 func followLink(link string, files foundFiles) ([]string, []string, error) {
-	walk, missing, err := walkChain(link, linkTarget)
+	walk, missing, err := walkChain(link)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -901,17 +894,12 @@ func followLink(link string, files foundFiles) ([]string, []string, error) {
 // the directory that the chain ends at, or of where its target would be
 // created, as a directory, when it leads nowhere. The second has every
 // spelling of each directory that holds a symlink on the chain, every hop
-// included, and of the directory that holds the file that the chain ends at.
-// The agent could replace a hop in a mounted directory, so each of them is
-// protected as the holder of a protected file.
+// included, or a name that a later ".." cancels, and of the directory that
+// holds the file that the chain ends at. The agent could replace a hop or a
+// cancelled name in a mounted directory, so each of them is protected as the
+// holder of a protected file.
 func linkSpellings(link string) ([]string, []string, error) {
-	return chainSpellings(link, linkTarget)
-}
-
-// chainSpellings returns what linkSpellings returns for the chain of path,
-// with readLink as the reader of the target of each symlink on it.
-func chainSpellings(path string, readLink func(string) (string, error)) ([]string, []string, error) {
-	walk, missing, err := walkChain(path, readLink)
+	walk, missing, err := walkChain(link)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -922,10 +910,10 @@ func chainSpellings(path string, readLink func(string) (string, error)) ([]strin
 }
 
 // walkChain resolves the chain of the symlink link one name at a time, as
-// the kernel does, with readLink as the reader of the target of each symlink,
-// and reports whether it leads nowhere.
-func walkChain(link string, readLink func(string) (string, error)) (*chainWalk, bool, error) {
-	walk := &chainWalk{resolved: string(filepath.Separator), rest: pathNames(link), readLink: readLink}
+// the kernel does, and reports whether it leads nowhere. It reads only the
+// target of each symlink (D08).
+func walkChain(link string) (*chainWalk, bool, error) {
+	walk := &chainWalk{start: link, resolved: string(filepath.Separator), rest: pathNames(link)}
 	for len(walk.rest) > 0 {
 		missing, err := walk.step()
 		if err != nil || missing {
@@ -936,21 +924,25 @@ func walkChain(link string, readLink func(string) (string, error)) (*chainWalk, 
 }
 
 // chainWalk resolves a path one name at a time, as the kernel does, and keeps
-// every spelling of each directory that holds a symlink on the way.
+// every spelling of each directory that holds a symlink on the way, or a name
+// that a later ".." cancels.
 type chainWalk struct {
+	// start is the path that the walk resolves.
+	start string
+	// resolved holds no symlink, so a ".." name is its parent directory, as
+	// the kernel applies it.
 	resolved string
 	rest     []string
 	hops     int
 	holders  []string
-	// readLink returns the target of a symlink: linkTarget, which makes it
-	// absolute and refuses ".." after a name, or os.Readlink, whose relative
-	// target the walk continues from the directory that holds the link.
-	readLink func(string) (string, error)
 }
 
 // step resolves the next name of the path. It reports whether that name does
 // not exist.
 func (w *chainWalk) step() (bool, error) {
+	if w.rest[0] == ".." {
+		return false, w.cancel()
+	}
 	next := filepath.Join(w.resolved, w.rest[0])
 	info, err := os.Lstat(next)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -966,6 +958,21 @@ func (w *chainWalk) step() (bool, error) {
 	return false, nil
 }
 
+// cancel applies a ".." name: it moves up to the directory that holds the
+// last name of the path resolved so far, and keeps that directory. The agent
+// could replace the cancelled name in a mounted directory with a symlink, and
+// the kernel would then apply the ".." to its target.
+func (w *chainWalk) cancel() error {
+	parent := filepath.Dir(w.resolved)
+	holders, err := dirSpellings(parent)
+	if err != nil {
+		return err
+	}
+	w.holders = append(w.holders, holders...)
+	w.resolved, w.rest = parent, w.rest[1:]
+	return nil
+}
+
 // follow replaces the symlink link, which is the next name of the path, with
 // its target, and keeps the directory that holds link. An absolute target
 // starts again from the root; a relative one continues from the directory
@@ -974,7 +981,7 @@ func (w *chainWalk) follow(link string) error {
 	if w.hops == maxLinkHops {
 		return fmt.Errorf("%w: %s", syscall.ELOOP, link)
 	}
-	target, err := w.readLink(link)
+	target, err := os.Readlink(link)
 	if err != nil {
 		return err
 	}
@@ -991,8 +998,14 @@ func (w *chainWalk) follow(link string) error {
 }
 
 // missingSpellings returns every spelling of where the target of a path that
-// leads nowhere would be created, as a directory, and the holders.
+// leads nowhere would be created, as a directory, and the holders. It refuses
+// a path with ".." after the name that does not exist
+// (ErrUnresolvableLink): the agent could create that name as a symlink, and a
+// lexical join would then protect the wrong directory.
 func (w *chainWalk) missingSpellings() ([]string, []string, error) {
+	if slices.Contains(w.rest, "..") {
+		return nil, nil, fmt.Errorf("%w: %s", ErrUnresolvableLink, w.start)
+	}
 	spellings, err := dirSpellings(w.resolved)
 	if err != nil {
 		return nil, nil, err
