@@ -221,7 +221,7 @@ No user-visible contract changes: `orbit init` stays unregistered. Internal cont
 |---|---|
 | `apt-get` fails (no network for root, mirror down) | The script exits non-zero before any agent user exists. A new machine is deleted; an existing one stays and the next `init` retries. |
 | OrbStack DNS is not at `0.250.250.200`, or OrbStack rewrites `/etc/resolv.conf` on start | tinyproxy cannot resolve names; every proxied request fails. Fail-closed. The integration test and the restart QA catch it. |
-| `nftables` or `orbit-harden` fails at boot | `systemd-user-sessions.service` does not start, so PAM logins stay disabled. `orb -m <machine> -u agent` ignores `/run/nologin`, so the gate does not stop it (#74); `orbit shell` refuses through its readiness check (#6), and a raw `orb` session outside Orbit is ungated (known limitation). Root access through `orb -u root` still works, and `init` repairs the machine. |
+| `nftables` or `orbit-harden` fails at boot | `systemd-user-sessions.service` does not start, so PAM logins stay disabled. `orb -m <machine> -u agent` ignores `/run/nologin`, so the gate does not stop it (#74); `orbit shell` refuses through its readiness check (#6), and a raw `orb` session outside Orbit is ungated (known limitation, pinned by O01 of the escape suite). Root access through `orb -u root` still works, and `init` repairs the machine. |
 | `orbit0` exists from an earlier run | The unit and the script use `ip link show orbit0 || ip link add …` and `ip addr replace`. |
 | The agent created files or symlinks in its home | Re-provisioning does not touch the home. |
 | The agent changed `HTTPS_PROXY` in its shell | It can only reach the proxy or nothing; the firewall does not depend on it. |

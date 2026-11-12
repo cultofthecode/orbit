@@ -14,7 +14,7 @@ Before you work on a task of a given kind, read the files in **Read first**. Loc
 | Delivery process, labels, QA gate, claims | `SDLC.md` | Follow the ticket lifecycle and the label state machine. Never apply `qa-approved` from an authoring task. |
 | Code review | `CODE_REVIEW.md` | `om-code-review` and `om-auto-review-pr` apply it automatically. |
 | System structure, module boundaries | `ARCHITECTURE.md` | Follow the dependency rules. A new module or a new cross-module dependency needs a row in Key decisions. |
-| Sandbox boundary: mounts, machine isolation settings, provisioning (agent user, firewall, proxy), network policy, credentials | `ARCHITECTURE.md` (System context, Provisioning requirements), `.ai/analysis/2026-11-10-orbstack-isolated-machine-spike.md`, brief rules R10, R03, R07, R08, R09, and D14 | Always `risk-high`. Keep the decision in a pure function with hostile-input tests. Run the escape suite. |
+| Sandbox boundary: mounts, machine isolation settings, provisioning (agent user, firewall, proxy), network policy, credentials | `ARCHITECTURE.md` (System context, Provisioning requirements), `.ai/analysis/2026-11-10-orbstack-isolated-machine-spike.md`, brief rules R10, R03, R07, R08, R09, and D14 | Always `risk-high`. Keep the decision in a pure function with hostile-input tests. Run the escape suite (`-run '^TestEscape'`). |
 | A new agent, or the agent registry | `internal/agent/AGENTS.md`, `ARCHITECTURE.md` (Agent definitions), brief rules R04 and D26 | Always `risk-high`. One package under `internal/agent/` with one `Definition` and its R04 test, registered in `cmd/orbit`. No slice compares an agent name. A new egress domain needs the owner's yes. Check the terms of the provider before you add a credential path. |
 | A new CLI operation | `ARCHITECTURE.md` (Slice anatomy) | One slice is one package: `contract.go`, `handler.go`, `command.go`, `handler_test.go`. Write the contract first. Copy the closest existing slice. |
 | The sandbox module: machine name, mount rules, the `init` slice | `internal/sandbox/AGENTS.md` | Always `risk-high`. Pass only canonical paths to the mount rules. The slice package is `initialize`. |
@@ -46,7 +46,7 @@ go test ./...
 go build ./...
 ```
 
-Integration tests and the escape suite need a running OrbStack: `go test -tags integration -p 1 -timeout 60m ./...`. They are not part of the default gate. Run the packages one at a time (`-p 1`): `init` refuses every directory while another machine's stored mount passes through a symlink, and `internal/orbstack` creates such a machine on purpose.
+Integration tests and the escape suite need a running OrbStack: `go test -tags integration -p 1 -timeout 60m ./...`. They are not part of the default gate. Run the packages one at a time (`-p 1`): `init` refuses every directory while another machine's stored mount passes through a symlink, and `internal/orbstack` creates such a machine on purpose. A `risk-high` change to the sandbox boundary runs the escape suite and pastes its output in the PR: `go test -tags integration -p 1 -timeout 60m -run '^TestEscape' -v ./cmd/orbit/`.
 
 ## Always / Ask first / Never
 

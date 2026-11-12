@@ -15,16 +15,21 @@ import (
 )
 
 // noSSHAgentTry is E15: no socket of an SSH agent is reachable. A socket
-// answers when ssh-add -l exits 0 (an agent with identities) or 1 (an agent
-// with none); exit 2 means no agent.
+// answers when ssh-add -l exits 0 (an agent with identities) or exits 1 and
+// prints "The agent has no identities." (an agent with none). Any other
+// socket also makes ssh-add exit 1, with a communication error, so the exit
+// status alone does not tell an agent from another socket.
 const noSSHAgentTry = `need ssh-add find timeout
 [ ! -e /opt/orbstack-guest/run/host-ssh-agent.sock ] || fail "the socket of a forwarded agent exists"
 [ -z "$(env | grep '^SSH_AUTH_SOCK=' || true)" ] || fail "SSH_AUTH_SOCK is set for the agent"
 if id -nG | tr ' ' '\n' | grep -qx orbstack; then fail "the agent is in the group orbstack"; fi
 for socket in $(find / \( -path /proc -o -path /sys \) -prune -o -type s -print 2>/dev/null); do
   status=0
-  SSH_AUTH_SOCK="$socket" timeout 5 ssh-add -l >/dev/null 2>&1 || status=$?
-  case "$status" in 0|1) fail "$socket answers ssh-add -l with exit $status";; esac
+  out=$(SSH_AUTH_SOCK="$socket" timeout 5 ssh-add -l 2>&1) || status=$?
+  case "$status" in
+    0) fail "$socket answers ssh-add -l with exit 0";;
+    1) case "$out" in *"no identities"*) fail "$socket answers ssh-add -l: $out";; esac;;
+  esac
 done
 `
 
