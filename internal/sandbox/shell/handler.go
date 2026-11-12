@@ -84,7 +84,7 @@ func (h Handler) checkRunning(ctx context.Context, name, dir string) error {
 	case stateRunning:
 		return nil
 	}
-	return fmt.Errorf("sandbox %s is %s: %w in %s", name, state, ErrNotRunning, dir)
+	return fmt.Errorf("sandbox %s is %s: %w in %s", name, state, ErrNotRunning, sandbox.Printable(dir))
 }
 
 // checkMounts fails unless the configuration and the kernel of the machine
@@ -114,7 +114,7 @@ func (h Handler) checkMounts(ctx context.Context, name, dir string) error {
 // fails.
 func (h Handler) checkReady(ctx context.Context, name, dir string) error {
 	if err := h.Machines.RunAsRoot(ctx, name, h.ReadinessScript()); err != nil {
-		return fmt.Errorf(`sandbox %s %w: %w; run "orbit init" in %s to provision it again`, name, ErrNotProvisioned, err, dir)
+		return fmt.Errorf(`sandbox %s %w: %w; run "orbit init" in %s to provision it again`, name, ErrNotProvisioned, err, sandbox.Printable(dir))
 	}
 	return nil
 }
