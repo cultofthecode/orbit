@@ -3,13 +3,11 @@ package list
 import (
 	"fmt"
 	"io"
-	"strconv"
-	"strings"
 	"text/tabwriter"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/spf13/cobra"
+
+	"github.com/cultofthecode/orbit/internal/sandbox"
 )
 
 // unknown is shown for a state or a directory that is not known.
@@ -60,7 +58,7 @@ func printTable(w io.Writer, sandboxes []Sandbox) error {
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(table, "NAME\tSTATE\tDIRECTORY")
 	for _, s := range sandboxes {
-		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\n", printable(s.Name), orUnknown(s.State), orUnknown(s.Dir))
+		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\n", sandbox.Printable(s.Name), orUnknown(s.State), orUnknown(s.Dir))
 	}
 	return table.Flush()
 }
@@ -70,14 +68,14 @@ func orUnknown(value string) string {
 	if value == "" {
 		return unknown
 	}
-	return printable(value)
+	return sandbox.Printable(value)
 }
 
 // printReasons prints one line for each reason why a value is unknown.
 func printReasons(w io.Writer, sandboxes []Sandbox) error {
 	for _, s := range sandboxes {
 		for _, reason := range reasons(s) {
-			if _, err := fmt.Fprintf(w, "orbit: %s: %s\n", printable(s.Name), printable(reason)); err != nil {
+			if _, err := fmt.Fprintf(w, "orbit: %s: %s\n", sandbox.Printable(s.Name), sandbox.Printable(reason)); err != nil {
 				return fmt.Errorf("print a reason: %w", err)
 			}
 		}
@@ -95,14 +93,4 @@ func reasons(s Sandbox) []string {
 		found = append(found, s.Problem)
 	}
 	return found
-}
-
-// printable returns s, or its Go-quoted form when it holds a character that
-// is not printable or invalid UTF-8, so that a stored value cannot write an escape sequence or
-// a line break to the terminal.
-func printable(s string) string {
-	if !utf8.ValidString(s) || strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
-		return strconv.Quote(s)
-	}
-	return s
 }

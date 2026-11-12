@@ -1817,3 +1817,15 @@ func TestMachineCommandsFailOnAStateTheyCannotRead(t *testing.T) {
 		t.Errorf("orb ran %q, %v, want no orb -m", received, readErr)
 	}
 }
+
+func TestListFailureDoesNotRepeatListInItsMessage(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := New(testPrefix).List(context.Background())
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("List without orb = %v, want %v", err, exec.ErrNotFound)
+	}
+	if want := `orb status: exec: "orb": executable file not found in $PATH`; err.Error() != want {
+		t.Errorf("List without orb = %q, want %q", err.Error(), want)
+	}
+}

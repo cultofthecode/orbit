@@ -254,7 +254,7 @@ type Mount struct {
 func (c *Client) List(ctx context.Context) ([]Machine, error) {
 	list, err := run(ctx, mountsArgs(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("list machines: %w", err)
+		return nil, err
 	}
 	return parseList([]byte(list), c.prefix)
 }

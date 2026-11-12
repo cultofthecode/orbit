@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/cultofthecode/orbit/internal/orbstack/orbstacktest"
@@ -133,7 +132,7 @@ func TestHandleFailsWithoutAPartialListWhenTheListCannotBeRead(t *testing.T) {
 
 	got, err := Handler{Machines: fakeMachines{fake}}.Handle(context.Background(), Input{})
 
-	if !errors.Is(err, fake.ListErr) || !strings.Contains(err.Error(), "list sandboxes") || len(got.Sandboxes) != 0 {
+	if !errors.Is(err, fake.ListErr) || err.Error() != "list sandboxes: machine list cannot be read" || len(got.Sandboxes) != 0 {
 		t.Errorf("Handle = %+v, %v, want the wrapped error and no sandbox", got, err)
 	}
 }

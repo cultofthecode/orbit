@@ -80,7 +80,7 @@ func (h Handler) checkRunning(ctx context.Context, name, dir string) error {
 	}
 	switch state {
 	case "":
-		return fmt.Errorf(`%w for %s: run "orbit init" here, or run "orbit shell" in the directory where you ran "orbit init"`, sandbox.ErrNoSandbox, dir)
+		return fmt.Errorf(`%w for %s: run "orbit init" here, or run "orbit shell" in the directory where you ran "orbit init"`, sandbox.ErrNoSandbox, sandbox.Printable(dir))
 	case stateRunning:
 		return nil
 	}

@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 
@@ -52,7 +53,8 @@ func newOrbit() (*cobra.Command, error) {
 		return nil, err
 	}
 	machines := orbstack.New(sandbox.NamePrefix)
-	return newRoot(initCommand(machines, agents), listCommand(listMachines{machines}), shellCommand(machines), startCommand(machines), stopCommand(machines), destroyCommand(machines)), nil
+	root := newRoot(initCommand(machines, agents), listCommand(listMachines{machines}), shellCommand(machines), startCommand(machines), stopCommand(machines), destroyCommand(machines))
+	return withVersion(root, versionText(version, commit, debug.ReadBuildInfo)), nil
 }
 
 // initCommand returns the command "orbit init" on machines, with the agents
