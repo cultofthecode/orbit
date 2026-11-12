@@ -68,7 +68,7 @@ The job `gate` runs on GitHub-hosted `ubuntu-24.04` with these steps:
 
 ### Workflow `darwin.yml`
 
-One job, `darwin`, on GitHub-hosted `macos-26` (arm64, pinned; `macos-latest` points to it today `[DOCUMENT]`). It runs checkout, setup-go, `go test ./...`, and `go build ./...`. Triggers while the repository is private: `workflow_dispatch` and a weekly `schedule` on `main`. Once the repository is public, `pull_request` and `push` to `main` are added, with the same concurrency rule as `ci.yml` (Q3).
+One job, `darwin`, on GitHub-hosted `macos-26` (arm64, pinned; `macos-latest` points to it today `[DOCUMENT]`). It runs checkout, setup-go, `go test ./...`, and `go build ./...`. Triggers while the repository is private: `workflow_dispatch` and a weekly `schedule` on `main`. Once the repository is public, `pull_request` and `push` to `main` are added, with the same concurrency rule as `ci.yml` (Q3): `group: darwin-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}`, so a manual run on the SHA of the weekly run does not cancel it.
 
 ### Integration tests and the escape suite: a manual step, not CI
 
