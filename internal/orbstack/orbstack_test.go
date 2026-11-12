@@ -1473,6 +1473,7 @@ func TestListFailsClosedOnEmptyOutputAndDoesNotRetry(t *testing.T) {
 func TestListRunsNothingWhenOrbStackIsNotRunning(t *testing.T) {
 	calls := filepath.Join(t.TempDir(), "calls")
 	useBareFakeCLI(t, "printf '%s\\n' \"$*\" >> '"+calls+"'\nif [ \"$1\" = status ]; then echo Stopped; exit 1; fi\n")
+	useAccountHome(t)
 	got, err := New(testPrefix).List(context.Background())
 	if !errors.Is(err, ErrNotRunning) || got != nil {
 		t.Errorf("List = %+v, %v, want %v", got, err, ErrNotRunning)
