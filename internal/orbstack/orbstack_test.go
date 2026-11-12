@@ -543,8 +543,6 @@ func TestExistsReadsTheList(t *testing.T) {
 // reportsRunning makes a fake orb report a running OrbStack to orb status.
 const reportsRunning = "if [ \"$1\" = status ]; then echo Running; exit 0; fi\n"
 
-// listsRunning makes a fake orb report orbit-api-1d9b22c9 as running to
-// orb list --format json, which every command in a machine reads first.
 // guardedInvocations is the number of orb commands that the state check adds
 // to the two that every operation runs (orb status and its own command):
 // ActiveMounts, RunAsRoot, and RunAsAgent add orb status and orb list, and

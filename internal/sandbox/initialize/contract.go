@@ -66,3 +66,8 @@ var ErrSSHForwardingMismatch = sandbox.ErrSSHForwardingMismatch
 // in a machine starts it, and only "orbit start" starts a sandbox, after its
 // own checks of the mounts.
 var ErrNotRunning = errors.New(`run "orbit start" first`)
+
+// ErrSandboxGone reports a sandbox that existed when init looked and is gone
+// when init reads its state, for example deleted while init ran. Init stops
+// before it runs a command in the machine.
+var ErrSandboxGone = errors.New(`machine not found; run "orbit init" again`)

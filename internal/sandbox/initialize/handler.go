@@ -259,13 +259,17 @@ func (h Handler) ensureMachine(ctx context.Context, p plan, machines map[string]
 	return true, nil
 }
 
-// checkRunning fails with ErrNotRunning unless the existing machine name is
+// checkRunning fails with ErrSandboxGone when the machine name no longer
+// exists, and with ErrNotRunning unless the existing machine name is
 // running. It reads the state with State, which never starts a machine, and
 // runs before any command in the machine.
 func (h Handler) checkRunning(ctx context.Context, name string) error {
 	state, err := h.Machines.State(ctx, name)
 	if err != nil {
 		return fmt.Errorf("state of sandbox %s: %w", name, err)
+	}
+	if state == "" {
+		return fmt.Errorf("sandbox %s: %w", name, ErrSandboxGone)
 	}
 	if state != stateRunning {
 		return fmt.Errorf("sandbox %s is %q: %w, then run \"orbit init\" again; init never starts a sandbox", name, state, ErrNotRunning)

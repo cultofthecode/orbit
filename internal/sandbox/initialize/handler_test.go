@@ -2910,3 +2910,34 @@ func TestHandleStopsWhenTheStateCannotBeRead(t *testing.T) {
 		t.Errorf("calls = %v, want only %v", fake.Calls, want)
 	}
 }
+
+// vanishingMachine is a fake that deletes a machine when init lists the
+// mounts, so that the machine is gone when init reads its state.
+type vanishingMachine struct {
+	*orbstacktest.Fake
+	name string
+}
+
+func (v vanishingMachine) Mounts(ctx context.Context) (map[string]map[string]string, error) {
+	mounts, err := v.Fake.Mounts(ctx)
+	delete(v.Machines, v.name)
+	return mounts, err
+}
+
+func TestHandleNamesAMachineThatVanishesBeforeItsStateIsRead(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+	fake.Forwarded[name] = true
+
+	got, err := newHandlerOn(vanishingMachine{Fake: fake, name: name}, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+	if !errors.Is(err, ErrSandboxGone) || errors.Is(err, ErrNotRunning) || got != (Output{}) {
+		t.Fatalf("Handle = %+v, %v, want %v and not %v", got, err, ErrSandboxGone, ErrNotRunning)
+	}
+	if strings.Contains(err.Error(), `""`) || strings.Contains(err.Error(), "orbit start") || !strings.Contains(err.Error(), "orbit init") {
+		t.Errorf("error %q must not say is \"\" or point to orbit start, and must point to orbit init", err)
+	}
+}
