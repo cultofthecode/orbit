@@ -291,6 +291,15 @@ func TestParseMountTableRefusesWhatItCannotRead(t *testing.T) {
 	}
 }
 
+func TestParseMountTableNamesAnEmptyTable(t *testing.T) {
+	for _, table := range []string{"", "\n", " \n\n"} {
+		_, err := parseMountTable(table)
+		if !errors.Is(err, ErrMountTable) || !strings.Contains(err.Error(), "the mount table is empty") || strings.Contains(err.Error(), "entry") {
+			t.Errorf("parseMountTable(%q) error = %v, want %v naming the empty table", table, err, ErrMountTable)
+		}
+	}
+}
+
 func TestMountsAndActiveMountsReadOrb(t *testing.T) {
 	const project = "/Users/dev/Project/api"
 	useFakeCLI(t, "if [ \"$1\" = list ]; then printf '%s\\n' '"+machineList+"'\n"+
@@ -306,6 +315,14 @@ func TestMountsAndActiveMountsReadOrb(t *testing.T) {
 	active, err := client.ActiveMounts(ctx, "orbit-api-1d9b22c9")
 	if err != nil || !reflect.DeepEqual(active, want) {
 		t.Errorf("ActiveMounts = %v, %v, want %v", active, err, want)
+	}
+}
+
+func TestActiveMountsNamesAnEmptyRead(t *testing.T) {
+	useFakeCLI(t, "if [ \"$1\" = -m ]; then :; fi\n")
+	active, err := New(testPrefix).ActiveMounts(context.Background(), "orbit-api-1d9b22c9")
+	if !errors.Is(err, ErrMountTable) || !strings.Contains(err.Error(), "the mount table is empty") || active != nil {
+		t.Errorf("ActiveMounts = %v, %v, want nil and %v naming the empty table", active, err, ErrMountTable)
 	}
 }
 
