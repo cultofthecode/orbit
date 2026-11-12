@@ -52,7 +52,7 @@ Jacob (owner, @jakubtobiasz) decided all twelve questions on 2026-11-12, in chat
 
 - **Triggers:** `pull_request` with the default activity types (every target branch), `push` to `main`, and `workflow_dispatch`. No `labeled` type, so the labels that agents change do not start runs.
 - **Permissions:** `contents: read` only.
-- **Concurrency:** `group: ci-${{ github.event.pull_request.number || github.sha }}`, `cancel-in-progress: true`. A newer push to a PR cancels the older run. Each push to `main` has its own group, so no run on `main` is cancelled or replaced.
+- **Concurrency:** `group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}`, `cancel-in-progress: true`. A newer push to a PR cancels the older run. Each push to `main` has its own group, and the event name keeps a manual run on the same SHA out of it, so no run on `main` is cancelled or replaced.
 - **Path filters:** none (Q5).
 
 The job `gate` runs on GitHub-hosted `ubuntu-24.04` with these steps:
