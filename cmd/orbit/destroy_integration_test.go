@@ -86,7 +86,7 @@ func treeOf(t *testing.T, dir string) []string {
 func orbit(ctx context.Context, t *testing.T, client *orbstack.Client, dir string, stdin *os.File, args ...string) (int, string, string) {
 	t.Helper()
 	t.Chdir(dir)
-	root := newRoot(destroyCommand(client))
+	root := newRoot(destroyCommand(client), stopCommand(client))
 	root.SetIn(stdin)
 	var stdout, stderr bytes.Buffer
 	code := run(ctx, root, args, &stdout, &stderr)
@@ -138,7 +138,9 @@ func (p *poller) stop() []string {
 // sandboxes: it deletes the running sandbox of the current directory with
 // the agent state on its disk, keeps the project files and the second
 // sandbox, refuses without a terminal and without a sandbox, and deletes a
-// stopped sandbox without ever starting it.
+// stopped sandbox without ever starting it. After the first destroy,
+// orbit ls no longer lists the destroyed sandbox and still lists the second
+// one as running.
 func TestDestroyDeletesTheSandboxAndNothingElse(t *testing.T) {
 	lockInit(t, syscall.LOCK_SH)
 	ctx, cancel := context.WithTimeout(context.Background(), destroyTimeout)
@@ -165,6 +167,7 @@ func TestDestroyDeletesTheSandboxAndNothingElse(t *testing.T) {
 
 	checkDestroyRefusals(ctx, t, client, devNull, dirA, nameA, nameB)
 	checkDestroyOfARunningSandbox(ctx, t, client, devNull, dirA, nameA, nameB, before)
+	checkLsAfterDestroy(ctx, t, client, dirB, nameA, nameB)
 	checkReinitHasNoAgentState(ctx, t, client, setUp, dirA, nameA)
 	checkDestroyOfAStoppedSandbox(ctx, t, client, devNull, dirA, nameA, nameB)
 	expectOrbStackRunning(t)
@@ -203,6 +206,23 @@ func checkDestroyOfARunningSandbox(ctx context.Context, t *testing.T, client *or
 	}
 }
 
+// checkLsAfterDestroy runs orbit ls after the destroy of sandbox a and checks
+// that it exits 0, no longer lists a, and still lists b as running with its
+// directory (owner decision Q3 on #12).
+func checkLsAfterDestroy(ctx context.Context, t *testing.T, client *orbstack.Client, dirB, nameA, nameB string) {
+	t.Helper()
+	stdout, stderr := runLs(ctx, t, client)
+	t.Logf("orbit ls after the destroy of %s:\n%s", nameA, stdout)
+	if stderr != "" {
+		t.Errorf("orbit ls after the destroy wrote %q to standard error", stderr)
+	}
+	if strings.Contains(stdout, nameA) {
+		t.Errorf("orbit ls after the destroy still lists %s:\n%s", nameA, stdout)
+	}
+	checkRow(t, stdout, nameB, "running", dirB)
+	checkEveryNameHasThePrefix(t, stdout)
+}
+
 // checkReinitHasNoAgentState runs init again in the directory of the
 // destroyed sandbox and checks that the new sandbox has none of its state.
 func checkReinitHasNoAgentState(ctx context.Context, t *testing.T, client *orbstack.Client, setUp initialize.Handler, dirA, nameA string) {
@@ -214,13 +234,13 @@ func checkReinitHasNoAgentState(ctx context.Context, t *testing.T, client *orbst
 	expectAgent(ctx, t, client, nameA, dirA, "agent state after the destroy and init", expectNoAgentState)
 }
 
-// checkDestroyOfAStoppedSandbox stops sandbox a, destroys it while a poller
+// checkDestroyOfAStoppedSandbox stops sandbox a with orbit stop, destroys it while a poller
 // reads its state, and checks that it was never seen running. Sampling
 // cannot prove a negative; the guarantee is the two-method interface of the
 // slice.
 func checkDestroyOfAStoppedSandbox(ctx context.Context, t *testing.T, client *orbstack.Client, devNull *os.File, dirA, nameA, nameB string) {
 	t.Helper()
-	restoreStopped(ctx, t, client, dirA, nameA)
+	stopThroughTheCommand(ctx, t, client, devNull, dirA, nameA)
 	polling := startPolling(ctx, client, nameA)
 	code, stdout, stderr := orbit(ctx, t, client, dirA, devNull, "destroy", "--yes")
 	seen := polling.stop()
@@ -235,11 +255,12 @@ func checkDestroyOfAStoppedSandbox(ctx context.Context, t *testing.T, client *or
 	expectState(ctx, t, client, nameB, "running", "after the destroy of "+nameA)
 }
 
-// restoreStopped stops the sandbox name through the adapter.
-func restoreStopped(ctx context.Context, t *testing.T, client *orbstack.Client, dir, name string) {
+// stopThroughTheCommand runs orbit stop in dir and checks that the sandbox
+// name is stopped.
+func stopThroughTheCommand(ctx context.Context, t *testing.T, client *orbstack.Client, devNull *os.File, dir, name string) {
 	t.Helper()
-	if err := client.Stop(ctx, name); err != nil {
-		t.Fatalf("stop %s: %v", name, err)
+	if code, stdout, stderr := orbit(ctx, t, client, dir, devNull, "stop"); code != exitOK {
+		t.Fatalf("orbit stop = %d, %q, %q", code, stdout, stderr)
 	}
 	expectState(ctx, t, client, name, "stopped", "after the stop")
 }

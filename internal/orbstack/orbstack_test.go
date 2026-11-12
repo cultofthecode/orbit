@@ -103,9 +103,6 @@ func TestListArgs(t *testing.T) {
 
 func TestDeleteArgs(t *testing.T) {
 	want := []string{"delete", "--force", "orbit-api-1d9b22c9"}
-	if len(want) != 3 {
-		t.Fatal("deleteArgs must stay exactly three elements")
-	}
 	if got := deleteArgs("orbit-api-1d9b22c9"); !slices.Equal(got, want) {
 		t.Errorf("deleteArgs() = %q, want %q", got, want)
 	}

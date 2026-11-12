@@ -20,8 +20,8 @@ import (
 // their canonical directory, lists only names with the Orbit prefix, and
 // leaves the stopped sandbox stopped. It never asserts that no other machine
 // exists: the host may have real sandboxes. The check that orbit ls no longer
-// lists a sandbox after orbit destroy belongs to the PR of #12 that merges
-// after this one.
+// lists a sandbox after orbit destroy is in
+// TestDestroyDeletesTheSandboxAndNothingElse (#12).
 func TestListSandboxes(t *testing.T) {
 	lockInit(t, syscall.LOCK_SH)
 	ctx := provisionContext(t)

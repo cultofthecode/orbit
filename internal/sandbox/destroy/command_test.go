@@ -6,17 +6,15 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/cultofthecode/orbit/internal/orbstack/orbstacktest"
 	"github.com/cultofthecode/orbit/internal/sandbox"
+	"github.com/cultofthecode/orbit/internal/sandbox/internal/realpath"
 )
-
-// osSymlink makes link a symlink to target.
-func osSymlink(target, link string) error {
-	return os.Symlink(target, link)
-}
 
 // panicReader fails the test when something reads it.
 type panicReader struct{ t *testing.T }
@@ -140,5 +138,31 @@ func TestConfirmerReturnsTheErrorOfReading(t *testing.T) {
 	err := confirmer(false, failingReader{}, io.Discard, yesTerminal)(context.Background(), Target{})
 	if err == nil || errors.Is(err, ErrNotConfirmed) || !strings.Contains(err.Error(), "read broke") {
 		t.Errorf("confirmer = %v, want the read error", err)
+	}
+}
+
+func TestPromptAndResultQuoteAHostileDirectory(t *testing.T) {
+	hostile := filepath.Join(t.TempDir(), "a\x1b[2K\rb")
+	if err := os.Mkdir(hostile, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := realpath.Resolve(hostile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := sandbox.MachineName(dir)
+	t.Chdir(dir)
+	fake := withMachine(name, dir, orbstacktest.StateRunning)
+	quoted := strconv.Quote(dir)
+
+	stdout, stderr, err := execute(fake, strings.NewReader("y\n"), "--yes")
+	if want := "Destroyed sandbox " + name + " for " + quoted + "\n"; err != nil || stdout != want || stderr != "" {
+		t.Errorf("destroy --yes = %q, %q, %v, want %q", stdout, stderr, err, want)
+	}
+
+	var errOut bytes.Buffer
+	_ = confirmer(false, strings.NewReader("n\n"), &errOut, yesTerminal)(context.Background(), Target{Name: name, Dir: dir})
+	if got := errOut.String(); strings.ContainsAny(got, "\x1b\r") || !strings.Contains(got, quoted) {
+		t.Errorf("prompt = %q, want the directory quoted as %s and no control character", got, quoted)
 	}
 }

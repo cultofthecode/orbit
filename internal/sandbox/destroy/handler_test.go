@@ -3,6 +3,7 @@ package destroy
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -110,7 +111,7 @@ func TestHandleResolvesTheDirectory(t *testing.T) {
 	dir, name := project(t)
 	fake := withMachine(name, dir, orbstacktest.StateStopped)
 	link := t.TempDir() + "/link"
-	if err := osSymlink(dir, link); err != nil {
+	if err := os.Symlink(dir, link); err != nil {
 		t.Fatal(err)
 	}
 
@@ -294,6 +295,9 @@ func TestHandleReportsAFailedReadAfterASuccessfulDelete(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "list failed") || !strings.Contains(err.Error(), "partly deleted") {
 		t.Errorf("Handle = %v, want the read error and the advice", err)
 	}
+	if want := calls(name, opState, opState, opDelete, opState); !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want exactly one read after the delete", fake.Calls)
+	}
 }
 
 // keepMachine is a fake whose Delete succeeds and leaves the machine in
@@ -319,6 +323,9 @@ func TestHandleFailsWhenTheSandboxIsNotGoneAfterTheDelete(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "is deleting after orb delete, not gone") || !strings.Contains(err.Error(), `run "orbit destroy" again`) {
 		t.Errorf("Handle = %v, want an error that names the state", err)
 	}
+	if want := calls(name, opState, opState, opDelete, opState); !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want exactly one read after the delete and no retry", fake.Calls)
+	}
 }
 
 func TestHandleReportsStateFailures(t *testing.T) {
@@ -331,5 +338,8 @@ func TestHandleReportsStateFailures(t *testing.T) {
 
 	if !errors.Is(err, fake.StateErr) || !strings.Contains(err.Error(), name) || len(ask.targets) != 0 {
 		t.Errorf("Handle = %v, want the error naming %s and no question", err, name)
+	}
+	if want := calls(name, opState); !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want one State read and no Delete", fake.Calls)
 	}
 }
