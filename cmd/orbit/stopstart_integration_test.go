@@ -323,17 +323,31 @@ func TestStopAndStartRefuseAMachineInAnotherState(t *testing.T) {
 	_, stopErr := stop.Handler{Machines: client}.Handle(ctx, stop.Input{Dir: dir})
 	_, startErr := startHandler(client).Handle(ctx, start.Input{Dir: dir})
 
-	if err := <-created; err != nil {
-		t.Fatalf("Create(%q) = %v", name, err)
-	}
-	t.Logf("state during the create: %s; stop: %v; start: %v", state, stopErr, startErr)
-	for command, err := range map[string]error{"stop": stopErr, "start": startErr} {
-		if !errors.Is(err, sandbox.ErrUnexpectedState) {
-			t.Errorf("%s while %s = %v, want %v", command, name, err, sandbox.ErrUnexpectedState)
+	createErr := <-created
+	t.Logf("state during the create: %s; stop: %v; start: %v; create: %v; state after the create: %s", state, stopErr, startErr, createErr, stateAfter(ctx, client, name))
+	refusals := map[string]error{"stop": stopErr, "start": startErr}
+	raced := false
+	for _, command := range []string{"stop", "start"} {
+		if !errors.Is(refusals[command], sandbox.ErrUnexpectedState) {
+			raced = true
+			t.Errorf("RACE: %s did not refuse %s in state %s, got %v, want %v; it acted on a machine that orb create was still finishing", command, name, state, refusals[command], sandbox.ErrUnexpectedState)
 		}
+	}
+	if createErr != nil {
+		t.Fatalf("Create(%q) = %v (stop or start did not refuse: %t; machines that this test did not create: %s)", name, createErr, raced, otherMachines(ctx, client, name))
 	}
 	expectState(ctx, t, client, name, "running", "after the create")
 	expectOrbStackRunning(t)
+}
+
+// stateAfter returns the state of the machine name for a log line, or the
+// error that State returned.
+func stateAfter(ctx context.Context, client *orbstack.Client, name string) string {
+	state, err := client.State(context.WithoutCancel(ctx), name)
+	if err != nil {
+		return "unknown: " + err.Error()
+	}
+	return state
 }
 
 // waitForTransientState waits until OrbStack lists the machine name in a
