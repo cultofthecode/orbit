@@ -73,11 +73,48 @@ func createContext(t *testing.T) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), createTimeout)
 }
 
-// testContext returns a context that ends after integrationTimeout.
+// testContext returns a context that ends after integrationTimeout or
+// cleanupGrace before the deadline of the test binary, whichever is earlier,
+// so that a slow step fails with a context error and t.Cleanup still deletes
+// the machine.
 func testContext(t *testing.T) context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
+	t.Helper()
+	deadline, ok := t.Deadline()
+	ctx, cancel := context.WithDeadline(context.Background(), stepEnd(time.Now(), deadline, ok))
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// stepEnd returns when a step that starts at start must end: after
+// integrationTimeout, or cleanupGrace before the test deadline when that is
+// earlier. Without a deadline (hasDeadline false) only integrationTimeout
+// applies.
+func stepEnd(start, deadline time.Time, hasDeadline bool) time.Time {
+	end := start.Add(integrationTimeout)
+	if hasDeadline && deadline.Add(-cleanupGrace).Before(end) {
+		return deadline.Add(-cleanupGrace)
+	}
+	return end
+}
+
+func TestStepEndIsBoundedByTheTestDeadline(t *testing.T) {
+	start := time.Now()
+	for name, tc := range map[string]struct {
+		deadline    time.Time
+		hasDeadline bool
+		want        time.Time
+	}{
+		"no deadline":       {want: start.Add(integrationTimeout)},
+		"far deadline":      {start.Add(time.Hour), true, start.Add(integrationTimeout)},
+		"near deadline":     {start.Add(integrationTimeout), true, start.Add(integrationTimeout - cleanupGrace)},
+		"deadline in grace": {start.Add(cleanupGrace / 2), true, start.Add(-cleanupGrace / 2)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := stepEnd(start, tc.deadline, tc.hasDeadline); !got.Equal(tc.want) {
+				t.Errorf("stepEnd = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 // inMachine runs a command as root in the machine name and returns its
