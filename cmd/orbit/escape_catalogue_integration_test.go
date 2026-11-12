@@ -50,6 +50,9 @@ type attempt struct {
 	// informational means that a failed control does not fail the attempt
 	// but makes it inconclusive (E11).
 	informational bool
+	// unreachableInconclusive means that a control that finds the network
+	// of its target unreachable makes the attempt inconclusive (E04).
+	unreachableInconclusive bool
 	// try is the shell that must fail. It exits non-zero and prints the
 	// evidence on standard error when the attempt succeeded.
 	try string
@@ -103,7 +106,7 @@ func (r escapeRig) run(ctx context.Context, t *testing.T, a attempt) {
 	t.Helper()
 	t.Run(a.id, func(t *testing.T) {
 		t.Logf("%s proves %s", a.id, a.rule)
-		result := attemptResult{id: a.id, hasControl: a.control != "" || a.controlFn != nil, informationalControl: a.informational}
+		result := attemptResult{id: a.id, hasControl: a.control != "" || a.controlFn != nil, informationalControl: a.informational, unreachableControlInconclusive: a.unreachableInconclusive}
 		if err := r.runControl(ctx, a); err != nil {
 			result.controlFailed, result.controlOutput = true, err.Error()
 		}
@@ -375,8 +378,8 @@ blocked "agent to the host-engine container" timeout 5 bash -c 'exec 3<>/dev/tcp
 blocked "container with the network of the machine to the host-engine container" docker run --rm --network host $IMG curl -sS --noproxy '*' -m 5 -o /dev/null http://@HOSTCTR@:@CTRPORT@
 `)
 	return []attempt{
-		{id: "E04-host-container-agent", rule: "N07 D15", as: agentSession, controlFn: e.hostContainerReached, try: agentTry},
-		{id: "E04-host-container-container", rule: "N07 D15", as: agentContainer, controlFn: e.hostContainerReached, try: containerTry},
+		{id: "E04-host-container-agent", rule: "N07 D15", as: agentSession, controlFn: e.hostContainerReached, unreachableInconclusive: true, try: agentTry},
+		{id: "E04-host-container-container", rule: "N07 D15", as: agentContainer, controlFn: e.hostContainerReached, unreachableInconclusive: true, try: containerTry},
 	}
 }
 
