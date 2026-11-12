@@ -27,60 +27,9 @@ import (
 // the probes.
 const stopStartTimeout = 20 * time.Minute
 
-// The file that the agent writes in its home directory before the stop, and
-// its content, which must survive the stop and the start.
-const (
-	stateFile        = "/home/agent/orbit-it-state"
-	stateFileContent = "written before the stop"
-)
-
 // writeStateFile writes stateFile as the agent.
 const writeStateFile = `set -eu
 printf '%s\n' '` + stateFileContent + `' > ` + stateFile + `
-`
-
-// bootProcessesFile is the file in the machine that afterStartProbes fills
-// with the processes that have a uid from 1000 up, so that a passing run
-// keeps them: RunAsRoot returns the standard error of a script only when it
-// fails. It is under /run, which the boot empties.
-const bootProcessesFile = "/run/orbit-it-boot-processes"
-
-// afterStartProbes checks a started sandbox as root: the file of the agent
-// survived, the agent reaches no public address directly and no host
-// without an allow rule through the proxy, but reaches an allowed host, and
-// every unit of the boundary entered active, in this boot, before the unit
-// of every process with a uid from 1000 up started. It compares the
-// timestamps of systemd in microseconds: the start time of a process in
-// /proc counts clock ticks of 10 ms, too coarse to order it.
-const afterStartProbes = agentProbes + `
-content=$(as_agent cat ` + stateFile + `) || fail "` + stateFile + ` is gone"
-[ "$content" = '` + stateFileContent + `' ] || fail "` + stateFile + ` holds $content"
-if as_agent curl -sS --noproxy '*' -m 5 -o /dev/null -k https://1.1.1.1 2>/dev/null; then fail "agent reached 1.1.1.1 directly"; fi
-refused example.org
-tunnel github.com
-tunnel api.anthropic.com
-latest=0
-for unit in nftables.service orbit-proxy-address.service tinyproxy.service orbit-harden.service systemd-user-sessions.service; do
-  at=$(systemctl show -p ActiveEnterTimestampMonotonic --value "$unit")
-  [ "${at:-0}" -gt 0 ] || fail "$unit did not enter active in this boot"
-  [ "${at:-0}" -gt "$latest" ] && latest=$at
-done
-agents=0
-: > ` + bootProcessesFile + `
-chmod 0644 ` + bootProcessesFile + `
-for dir in /proc/[0-9]*; do
-  uid=$(awk '/^Uid:/ {print $2}' "$dir/status" 2>/dev/null) || continue
-  [ -n "$uid" ] && [ "$uid" -ge 1000 ] || continue
-  unit=$(awk -F: '$1 == "0" {print $3}' "$dir/cgroup" 2>/dev/null | tr / '\n' | grep -m1 -E '[.](service|scope)$') || unit=""
-  [ -n "$unit" ] || { fail "process ${dir#/proc/} with uid $uid is in no unit"; continue; }
-  started=$(systemctl show -p InactiveExitTimestampMonotonic --value "$unit")
-  agents=$((agents + 1))
-  echo "process ${dir#/proc/} uid $uid ppid $(awk '/^PPid:/ {print $2}' "$dir/status") ($(tr '\0' ' ' < "$dir/cmdline" | cut -c1-80)) in $unit, which started at $started us" >> ` + bootProcessesFile + `
-  [ "${started:-0}" -gt "$latest" ] || fail "process ${dir#/proc/} with uid $uid runs in $unit, which started at $started us, before the boundary was active at $latest us"
-done
-echo "boundary active at $latest us; $agents processes with a uid from 1000 up, all started later" >> ` + bootProcessesFile + `
-{ loginctl list-users --no-legend; systemctl list-units --type=service,scope --state=active --no-legend 'user@*' 'session-*' 2>/dev/null; } >> ` + bootProcessesFile + ` 2>&1 || true
-[ "$failures" -eq 0 ]
 `
 
 // maskProxy masks tinyproxy.service, so that it does not start at the next

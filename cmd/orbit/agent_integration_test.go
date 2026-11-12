@@ -14,20 +14,6 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
 )
 
-// agentProbes holds the shell functions of the probes of the agent, run as
-// root in a provisioned machine. Each failed check prints one line to
-// standard error.
-const agentProbes = `
-set -u
-failures=0
-fail() { echo "PROBE FAILED: $*" >&2; failures=$((failures + 1)); }
-as_agent() { runuser -u agent -- "$@"; }
-connect_code() { as_agent curl -s -m 15 -x http://127.0.0.1:3128 -o /dev/null -w '%{http_connect}' "https://$1/" || true; }
-tunnel() { local code; code=$(connect_code "$1"); [ "$code" = 200 ] || fail "CONNECT $1:443 got $code, want a tunnel"; }
-refused() { local code; code=$(connect_code "$1"); [ "$code" = 403 ] || fail "CONNECT $1:443 got $code, want 403"; }
-claude=/home/agent/.local/bin/claude
-`
-
 // withClaudeProbes checks a sandbox after init --agent claude-code.
 const withClaudeProbes = agentProbes + `
 version=$(as_agent "$claude" --version) || fail "claude --version as agent: $version"

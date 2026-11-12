@@ -25,50 +25,6 @@ const dockerTimeout = 60 * time.Minute
 // bootFailureDropIn is the test drop-in that makes nftables.service fail.
 const bootFailureDropIn = "/etc/systemd/system/nftables.service.d/zz-orbit-it-fail.conf"
 
-// agentHelpers starts every script that runs as the agent: the counting
-// helpers of the probes, a wait for the daemon, and the probe of a direct
-// connection from a container of the image orbit-it-curl.
-const agentHelpers = `
-set -u
-failures=0
-fail() { echo "PROBE FAILED: $*" >&2; failures=$((failures + 1)); }
-blocked() { local what=$1; shift; if "$@" >/dev/null 2>&1; then fail "$what succeeded"; fi; }
-allowed() { local what=$1; shift; "$@" >/dev/null 2>&1 || fail "$what failed"; }
-finish() { [ "$failures" -eq 0 ]; }
-wait_docker() { for _ in $(seq 90); do docker info >/dev/null 2>&1 && return 0; sleep 1; done; fail "the daemon did not answer within 90 s"; return 1; }
-IMG=orbit-it-curl
-direct() { docker run --rm "$@" $IMG curl -sS --noproxy '*' -m 5 -k -o /dev/null https://1.1.1.1; }
-proxied() { docker run --rm "$@" $IMG curl -sS -m 20 -o /dev/null -w '%{http_code}' https://github.com; }
-no_direct() { local what=$1; shift; if direct "$@" >/dev/null 2>&1; then fail "direct connection from $what succeeded"; fi; }
-`
-
-// leakProbe is the probe of a sub-uid process in the network namespace of
-// the machine, the leak path of the spike (A05). It starts the process with
-// rootlesskit --net=host and setpriv, as any agent can, without the network
-// of Docker. It fails unless the process runs as a sub-uid of the agent in
-// the namespace of the machine, and then expects that the direct connection
-// fails and that the request through the proxy succeeds. The attempt with
-// docker run --network host is informational.
-const leakProbe = `
-sub_uid() { rootlesskit --net=host --disable-host-loopback=false setpriv --reuid=1000 --regid=1000 --clear-groups "$@"; }
-leak_probe() {
-  local mine out uid ns host before=$failures
-  mine=$(readlink /proc/self/ns/net)
-  if ! out=$(sub_uid sh -c 'id -u; readlink /proc/self/ns/net; awk "\$1<=1000 && 1000<\$1+\$3 {print \$2+1000-\$1}" /proc/self/uid_map' 2>&1); then
-    fail "the sub-uid process did not start: $(printf '%s\n' "$out" | tail -1)"
-    return
-  fi
-  uid=$(printf '%s\n' "$out" | sed -n 1p); ns=$(printf '%s\n' "$out" | sed -n 2p); host=$(printf '%s\n' "$out" | sed -n 3p)
-  [ "$uid" = 1000 ] || fail "the process runs as uid $uid, want 1000 in its user namespace"
-  [ "${host:-0}" -ge 100000 ] || fail "the process runs as host uid '$host', want a sub-uid of the agent"
-  [ "$ns" = "$mine" ] || fail "the process is in $ns, not in the namespace $mine of the machine"
-  if sub_uid curl -sS --noproxy '*' -m 5 -k -o /dev/null https://1.1.1.1 >/dev/null 2>&1; then fail "direct connection from the sub-uid process in the namespace of the machine succeeded"; fi
-  [ "$(sub_uid curl -sS -m 20 -x http://172.31.255.1:3128 -o /dev/null -w '%{http_code}' https://github.com 2>/dev/null)" = 200 ] || fail "the sub-uid process in the namespace of the machine did not reach an allowed host through the proxy"
-  [ "$failures" -eq "$before" ] && echo "leak path exercised: the process runs as host uid $host in $ns, the namespace of the machine, and only the proxy is reachable"
-  echo "informational: docker run --network host: $(docker run --rm --network host $IMG true 2>&1 | head -1)"
-}
-`
-
 // pullBuildRun is the scenario "Pull, build, and run" without the proxy log.
 const pullBuildRun = agentHelpers + `
 docker info --format '{{json .SecurityOptions}}' | grep -q rootless || fail "docker info does not report rootless"
@@ -131,43 +87,6 @@ docker network ls --format '{{.Name}}' | grep -qx orbitit_default || fail "up di
 docker compose -p orbitit down >/dev/null 2>&1 || fail "docker compose down failed"
 [ -z "$(docker compose -p orbitit ps -a -q)" ] || fail "down left the container"
 if docker network ls --format '{{.Name}}' | grep -qx orbitit_default; then fail "down left the network"; fi
-finish
-`
-
-// containerTraffic is the scenarios "Direct connections from containers",
-// "Refused host through the proxy", "Host engine out of reach",
-// "Machine namespaces are allowed", and "Host mounts and the machine pid
-// namespace". HOST_CONTAINER is the address of a container of the host
-// engine, or empty.
-const containerTraffic = agentHelpers + `
-HOST_CONTAINER='%s'
-docker network create orbit-it-net >/dev/null || fail "create a custom network"
-for variant in "default network:" "--network host:--network host" "custom network:--network orbit-it-net" "--user 65534:--user 65534" "--dns 1.1.1.1:--dns 1.1.1.1" "capabilities:--cap-add NET_ADMIN --cap-add NET_RAW"; do
-  what=${variant%%:*}; flags=${variant#*:}
-  no_direct "$what" $flags
-  [ "$(proxied $flags 2>/dev/null)" = 200 ] || fail "control: a container with $what did not reach github.com through the proxy"
-done
-dir=$(mktemp -d); cd "$dir"
-printf 'services:\n  app:\n    image: orbit-it-curl\n' > compose.yaml
-if docker compose -p orbitcurl run --rm app curl -sS --noproxy '*' -m 5 -k -o /dev/null https://1.1.1.1 >/dev/null 2>&1; then fail "direct connection from a compose service succeeded"; fi
-[ "$(docker compose -p orbitcurl run --rm app curl -sS -m 20 -o /dev/null -w '%{http_code}' https://github.com 2>/dev/null)" = 200 ] || fail "control: a compose service did not reach github.com through the proxy"
-docker compose -p orbitcurl down >/dev/null 2>&1
-if docker run --rm $IMG curl -sS -m 15 -o /dev/null https://example.org 2>&1 | grep -q 403; then :; else fail "a container did not get 403 for https://example.org"; fi
-[ "$(docker context show)" = orbit-rootless ] || fail "the current docker context is not orbit-rootless"
-[ "$(docker context ls --format '{{.Name}}' | grep -v -x -e default -e orbit-rootless | wc -l)" = 0 ] || fail "a context besides orbit-rootless exists"
-[ -z "$(docker ps -a -q)" ] || fail "containers are left over"
-if [ -n "$HOST_CONTAINER" ]; then
-  if docker run --rm $IMG curl -sS --noproxy '*' -m 5 "http://$HOST_CONTAINER:` + hostContainerPort + `" >/dev/null 2>&1; then fail "a container reached the container of the host engine"; fi
-fi
-allowed "pid host" docker run --rm --pid host alpine true
-allowed "network host" docker run --rm --network host alpine true
-before=$(pidof tinyproxy 2>/dev/null || true)
-blocked "write /etc/nftables.conf through a mount of /etc" docker run --rm -v /etc:/h alpine sh -c 'echo x >> /h/nftables.conf'
-blocked "write the allowlist through a mount of /" docker run --rm -v /:/h alpine sh -c 'echo x >> /h/etc/tinyproxy/allowlist'
-blocked "kill tinyproxy from the pid namespace of the machine" docker run --rm --pid host alpine sh -c 'kill -9 $(pidof tinyproxy)'
-[ "$(pidof tinyproxy 2>/dev/null || true)" = "$before" ] || fail "tinyproxy changed its pid"
-blocked "privileged container" docker run --rm --privileged alpine true
-docker network rm orbit-it-net >/dev/null 2>&1
 finish
 `
 
