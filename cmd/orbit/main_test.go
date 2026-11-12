@@ -131,3 +131,14 @@ func TestRunSurvivesStderrThatCannotBeWritten(t *testing.T) {
 		t.Errorf("exit code = %d, want %d", code, exitFailure)
 	}
 }
+
+func TestRunRejectsVersionFlagBeforeItExists(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), testRoot(), []string{"--version"}, &stdout, &stderr)
+	if code != exitFailure {
+		t.Errorf("exit code = %d, want %d", code, exitFailure)
+	}
+	if want := "orbit: unknown flag: --version\n"; stderr.String() != want {
+		t.Errorf("stderr = %q, want %q", stderr.String(), want)
+	}
+}
