@@ -618,8 +618,18 @@ func TestStatusError(t *testing.T) {
 			if errors.Is(err, ErrNotRunning) != test.wantStopped {
 				t.Errorf("statusError(%q, %v) = %v, want %v: %v", test.status, test.err, err, ErrNotRunning, test.wantStopped)
 			}
+			if want := stoppedMessage(test.status); test.wantStopped && err.Error() != want {
+				t.Errorf("statusError(%q, %v) = %q, want %q", test.status, test.err, err, want)
+			}
 		})
 	}
+}
+
+// stoppedMessage is the exact advice for a stopped or starting OrbStack. It is
+// spelled out here on purpose: rewording any word of statusError fails
+// TestStatusError.
+func stoppedMessage(status string) string {
+	return "OrbStack is not running (orb status: " + status + "); start OrbStack, wait until orb status prints Running, and try again"
 }
 
 func TestStatusErrorForAMissingOrb(t *testing.T) {
