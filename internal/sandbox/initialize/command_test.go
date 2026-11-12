@@ -217,7 +217,7 @@ func TestCommandHelpNamesTheSSHFlag(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("help = %v", err)
 	}
-	if !strings.Contains(out.String(), "--no-ssh-forwarding") || !strings.Contains(out.String(), "do not forward the host SSH agent into the sandbox") {
+	if !strings.Contains(out.String(), "--no-ssh-forwarding") || !strings.Contains(out.String(), "do not forward the host SSH agent into the sandbox") || !strings.Contains(out.String(), "by default the sandbox can use every key in it") {
 		t.Errorf("help = %q, want the flag --no-ssh-forwarding and its text", out.String())
 	}
 }
