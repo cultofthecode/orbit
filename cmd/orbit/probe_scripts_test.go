@@ -12,7 +12,7 @@ import (
 // root in a provisioned machine. Each failed check prints one line to
 // standard error.
 const agentProbes = `
-` + failCounter + `` + asAgent + `connect_code() { as_agent curl -s -m 15 -x http://127.0.0.1:3128 -o /dev/null -w '%{http_connect}' "https://$1/" || true; }
+` + failCounter + asAgent + `connect_code() { as_agent curl -s -m 15 -x http://127.0.0.1:3128 -o /dev/null -w '%{http_connect}' "https://$1/" || true; }
 tunnel() { local code; code=$(connect_code "$1"); [ "$code" = 200 ] || fail "CONNECT $1:443 got $code, want a tunnel"; }
 refused() { local code; code=$(connect_code "$1"); [ "$code" = 403 ] || fail "CONNECT $1:443 got $code, want 403"; }
 claude=/home/agent/.local/bin/claude
@@ -144,7 +144,7 @@ const (
 // unforwardedProbes checks, in a sandbox without the SSH agent, the scenario
 // "Init with the flag" and that the push path to GitHub still works.
 const unforwardedProbes = `
-` + failCounter + `` + asAgent + `
+` + failCounter + asAgent + `
 [ "$(id -nG agent)" = agent ] || fail "agent has groups: $(id -nG agent), want only agent"
 [ ! -e /opt/orbstack-guest/run/host-ssh-agent.sock ] || fail "the socket of a forwarded agent exists"
 [ -z "$(as_agent env | grep '^SSH_AUTH_SOCK=' || true)" ] || fail "SSH_AUTH_SOCK is set for agent"
@@ -172,8 +172,7 @@ esac
 // boundary is checked again after them. Each failed check prints one line
 // to standard error, and the script exits non-zero when any check failed.
 const probeScript = `
-` + failCounter + blockedAllowed + `` + asAgent + `as_uid() { local uid=$1; shift; setpriv --reuid "$uid" --regid "$uid" --clear-groups "$@"; }
-direct() { curl -sSf --noproxy '*' -m 5 "$@"; }
+` + failCounter + blockedAllowed + asAgent + asUID + `direct() { curl -sSf --noproxy '*' -m 5 "$@"; }
 ` + refusedByProxy + `DEFAULT_UID=%d
 MAC_PORT=%d
 HOST_CONTAINER=%s

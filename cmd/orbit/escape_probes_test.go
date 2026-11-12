@@ -52,3 +52,7 @@ for socket in $(find / \( -path /proc -o -path /sys \) -prune -o -type s -print 
   [ "$(as_agent curl -s -m 2 --unix-socket "$socket" http://engine/_ping 2>/dev/null)" != OK ] || fail "agent reached an engine on $socket"
 done
 `
+
+// asUID runs a command as a uid without a session from a root script.
+const asUID = `as_uid() { local uid=$1; shift; setpriv --reuid "$uid" --regid "$uid" --clear-groups "$@"; }
+`
