@@ -1,6 +1,6 @@
 # Spike: OrbStack Alpine and Debian images against Ubuntu 26.04 (E04-T01, issue #47)
 
-Date: 2026-11-12. Time-boxed spike, run by an agent on the owner's Mac. Each result below was observed. Untested items say so. The note reports facts. Open product questions are recorded as recommendations at the end (the spec of E04-T02 and the owner decide).
+Date: 2026-11-12. Time-boxed spike, run by an agent on the owner's Mac. Each result below was observed. Untested items say so. The note reports facts. The epic #46 already records decisions 1 to 9 (Q1–Q9, 2026-11-11, made by the coordinator under the owner's delegation). The last section sets the facts against each of them as input for the spec of E04-T02 (#48); it changes no decision.
 
 ## Environment
 
@@ -37,7 +37,7 @@ Scripts and raw outputs: `/private/tmp/claude-501/-Users-jarvis-Projects-orbit-w
 | Init | BusyBox init + OpenRC. No login gate of any kind. `orb` logins arrive during boot | systemd 257, same units as Ubuntu | systemd 252, same units as Ubuntu |
 | Boundary before login | **Not possible.** 8 of 8 first contacts found every boundary service stopped. Network was down and the firewall loaded first, so no egress window was seen | Same as Ubuntu: `orb` ignores the gate. 6 of 6 first contacts found the boundary up | Same. 6 of 6 |
 | Shell | no bash by default. `/bin/sh` is BusyBox ash | bash. `/bin/sh` is dash | bash. `sh` is dash 0.5.12-2 **without `pipefail`** |
-| Root script | needs a different script (apk, OpenRC, `/etc/nftables.nft`). 242 lines written, passes the probes | 2 package changes, then passes | 4 changes, then passes. Docker design not satisfiable from the archive |
+| Root script | needs a different script (apk, OpenRC, `/etc/nftables.nft`). 242 lines written, passes the probes | 2 package changes, then passes | 4 changes (topic 7), then passes. Docker design not satisfiable from the archive |
 | Default user | uid 501, groups include `wheel`, NOPASSWD file, `sudo` and `doas` installed | uid 501, group `sudo`, NOPASSWD file | same as trixie |
 | DNS | symlink to OrbStack file. **`dhcpcd` rewrites a static file** unless told not to | symlink. `systemd-resolved` already masked | same |
 | `/etc/environment` | applied to every `orb -u` command (OrbStack reads it), no PAM | applied | applied |
@@ -46,7 +46,7 @@ Scripts and raw outputs: `/private/tmp/claude-501/-Users-jarvis-Projects-orbit-w
 
 Boundary findings, marked as the issue asks:
 
-- **BLOCKER (conditional) for Alpine: logins are not held until the boundary is up.** Nothing in Alpine can gate an `orb` login (topic 1). The window was 5 to 7 s after `orb start`. In every run the machine had no network address during it, and the firewall table appeared 0.2 s after first contact, before the address, so no direct egress was observed. The blocker lifts when the spec makes the root-side readiness check mandatory on every Orbit entry path (it already exists for systemd, see below), and the supervised services of the agent need the gate. Anyone who calls `orb -m <m> -u agent` directly bypasses Orbit's check on any distribution.
+- **BLOCKER (conditional) for Alpine: logins are not held until the boundary is up.** Nothing in Alpine can gate an `orb` login (topic 1). The window was 5 to 7 s after `orb start`. In every run the machine had no IPv4 address during it, and the firewall table appeared 0.2 s after first contact, before the address, so no direct IPv4 egress was observed. IPv6 was not checked in this window (topic 1). The blocker lifts when the spec makes the root-side readiness check mandatory on every Orbit entry path (it already exists for systemd, see below), and the supervised services of the agent need the gate. Anyone who calls `orb -m <m> -u agent` directly bypasses Orbit's check on any distribution.
 - **Finding for every distribution, Ubuntu included: `orb -m <m> -u <user>` passes `/run/nologin` and `systemd-user-sessions.service`.** It ran 0.02 s after a boundary stand-in started and while `systemd-user-sessions.service` was `inactive`. `internal/provision/check.go` already says "orb sessions do not pass the login gate", and `orbit start` and `orbit shell` check the boundary as root. This spike confirms the cause. Not new, and not distribution-specific.
 - No sudo or doas rule survived hardening on any machine (topic 3). Not a blocker.
 - Not boundary blockers, but design blockers: Debian bookworm cannot give the Docker design (compose v2, buildx) from its archive, and Alpine rootless Docker cannot enforce resource limits.
@@ -114,7 +114,9 @@ Window measurement on Alpine (poll every 0.2 s from first contact; an agent-uid 
 +5.4s addr=192.168.139.48/24 firewall=table inet orbit_egress proxy=started agent-direct=blocked     (runs: 5.4 s, 6.7 s, 6.1 s)
 ```
 
-The firewall loads before the network is configured (`nftables` is `before net`), so the unit order fails closed on Alpine. The window with no proxy lasts about 5 to 7 s. Persistent hardening (empty `/etc/sudoers.d`, locked passwords) was already on disk at first contact. On Alpine, where the harden service had not run yet at first contact, `/etc/sudoers.d` was still empty in all 8 runs: OrbStack did not restore its sudoers file at start.
+The poll covered IPv4 only: `addr` is `ip -4 -o addr show eth0`, and the direct attempt is IPv4 (`https://1.1.1.1`). The first-contact line above also reads `eth0` with `ip -4`. IPv6 addresses on `eth0` (`dhcpcd` runs DHCPv6, topic 5) and direct IPv6 egress were **not checked** in this window, so the observation "no address before the firewall" holds for IPv4 only. The firewall table is `inet`, so it covers IPv6 once loaded at +0.2 s; whether an IPv6 address exists in the first 0.2 s is unknown. No machine was created again to check it.
+
+The firewall loads before the IPv4 network is configured (`nftables` is `before net`), so the unit order fails closed on Alpine for IPv4. The window with no proxy lasts about 5 to 7 s. Persistent hardening (empty `/etc/sudoers.d`, locked passwords) was already on disk at first contact. On Alpine, where the harden service had not run yet at first contact, `/etc/sudoers.d` was still empty in all 8 runs: OrbStack did not restore its sudoers file at start.
 
 **Finding.** No gate holds an `orb` login on any distribution. Alpine's boundary start (about +0.2 s for the firewall, +5 to 7 s for the proxy) trails first contact in every run. Marked as a blocker for Alpine under the issue's negative criterion, see the summary.
 
@@ -129,8 +131,10 @@ The firewall loads before the network is configured (`nftables` is `before net`)
 
 - `orb -m <m> -u root <cmd...>` executes the arguments directly: a single string with a `;` fails with `No such file or directory` (`-sh: ... not found`). Use `sh -c '...'` or pipe a script to stdin. The shell of a bare `orb -u root` is the login shell of the user (`$0` is `-bash` or `-sh`).
 - `internal/orbstack/orbstack.go:688,694` runs every script with `bash -s` (`RunAsRoot`, `RunAsAgent`). On Alpine it fails before the first line: `-sh: bash: not found`.
-- Can the root script be POSIX `sh`? The rendered Ubuntu root script has no bashism (`grep -E '\[\[|<<<|<\(|local |declare |select '` finds nothing) and `sh -n` accepts it on all four machines. Run for real with `sh -s`: **Ubuntu rc=0, trixie rc=0, bookworm rc=2** (`sh: 3: set: Illegal option -o pipefail`, because dash 0.5.12-2 lacks `pipefail`; the unmodified script has `set -euo pipefail` on line 3). BusyBox ash 1.37 accepts `set -o pipefail`. Two helpers stay bash: the gate script (`#!/bin/bash`), the probes (`local`, `/dev/tcp`), and `DockerSetupScript` (run with `bash -s`). The hand-written Alpine script is POSIX `sh` and ran under BusyBox ash.
+- Can the root script be POSIX `sh`? The rendered Ubuntu root script has no bashism (`grep -E '\[\[|<<<|<\(|local |declare |select '` finds nothing) and `sh -n` accepts it on all four machines. Run for real with `sh -s`: **Ubuntu rc=0, trixie rc=0, bookworm rc=2** (`sh: 3: set: Illegal option -o pipefail`, because dash 0.5.12-2 lacks `pipefail`; the unmodified script has `set -euo pipefail` on line 3). BusyBox ash 1.37 accepts `set -o pipefail`. Three helpers stay bash: the gate script (`#!/bin/bash`), the probes (`local`, `/dev/tcp`), and `DockerSetupScript` (run with `bash -s`). The hand-written Alpine script is POSIX `sh` and ran under BusyBox ash.
 - `time` does not exist in dash (`sh: 1: time: not found`). A BusyBox applet list is smaller too: BusyBox `setpriv` has no `--reuid`, BusyBox `pgrep -x` finds nothing (`pgrep -o -x tinyproxy` rc=1, `pgrep -o tinyproxy` finds it), no `runuser`, no `ss`, no `python3` on Alpine or Debian images. See topic 7.
+
+**Finding.** bash is absent on Alpine, so the adapter's `bash -s` fails there before line 1. The rendered root script has no bashism, but it uses `pipefail`, which bookworm's dash lacks; three helpers stay bash.
 
 ### 3. The default user
 
@@ -219,6 +223,8 @@ So no stub answers on `127.0.0.53` on any distribution, and the DNS server of th
 
 Alpine pitfall: `dhcpcd` rewrites `/etc/resolv.conf`. After `put /etc/resolv.conf` and a stop/start the file was `# Generated by dhcpcd from eth0.dhcp ... nameserver 0.250.250.200` (and for a moment held no `nameserver` line). The content is equal today, but it then follows the DHCP server of OrbStack. Fix tested: `echo 'nohook resolv.conf' >> /etc/dhcpcd.conf`. After a stop/start the file stayed `-rw-r--r-- root root 25 bytes`, `nameserver 0.250.250.200`. Agent behaviour after that, as in the Ubuntu spike: `getent hosts github.com` as agent finds no answer, `curl --noproxy '*' https://github.com` gives `Could not resolve host`, and `curl` through the environment proxy gives 200.
 
+**Finding.** No local resolver or stub runs on any distribution, and the firewall already blocks the agent from OrbStack's DNS. Alpine needs `nohook resolv.conf` in `/etc/dhcpcd.conf` to keep a static resolver file.
+
 ### 6. Login environment
 
 Where are proxy variables and `PATH` set for every login? Test: `ENVFILE_VAR` in `/etc/environment`, `PROFILED_VAR` in `/etc/profile.d/zz-probe.sh`, then:
@@ -247,7 +253,14 @@ PATH: the environment of an `orb` command is `PATH=/opt/orbstack-guest/bin-hipri
 
 Then rc=0, `afterStartProbes` rc=0. `probeScript` rc=0 after one harness change: install `python3-minimal` (Debian images have no `python3`; the probe uses it for the IPv6 listener).
 
-**bookworm.** Unmodified: `E: Unable to locate package docker-buildx` and `docker-compose-v2`, rc=100. Archive: `docker.io` 20.10.24, `docker-compose` 1.29.2 (Python v1), no `docker-buildx` and no `docker-cli` candidate, `rootlesskit` 1.1.0, `slirp4netns` 1.2.0. Changes to get further: drop buildx and compose from the install list and their two checks; replace `/usr/bin/nc.openbsd` by `/bin/nc.openbsd` in the ownership check. Then rc=0, `probeScript` rc=0 (with `python3-minimal`), `afterStartProbes` rc=0. The rootless `docker.service` user unit was `active`. **Not shown:** that the 20.10 engine pulls or runs a container (no `docker` command was run on Debian), and compose v2 or buildx at all.
+**bookworm.** Unmodified: `E: Unable to locate package docker-buildx` and `docker-compose-v2`, rc=100. Archive: `docker.io` 20.10.24, `docker-compose` 1.29.2 (Python v1), no `docker-buildx` and no `docker-cli` candidate, `rootlesskit` 1.1.0, `slirp4netns` 1.2.0. Changes to get further:
+
+1. Docker package list: drop `docker-buildx` and `docker-compose-v2`.
+2. Drop the two self-checks `docker buildx version` and `docker compose version`.
+3. `ProxyCommand` in `00-orbit.conf`: `/usr/bin/nc.openbsd` becomes `/bin/nc.openbsd`.
+4. The ownership check: `dpkg -S /bin/nc.openbsd` instead of `/usr/bin/nc.openbsd` (topic 4).
+
+Then rc=0, `probeScript` rc=0 (with `python3-minimal`), `afterStartProbes` rc=0. The rootless `docker.service` user unit was `active`. **Not shown:** that the 20.10 engine pulls or runs a container (no `docker` command was run on Debian), and compose v2 or buildx at all.
 
 **Alpine.** A 242-line POSIX `sh` script (`/private/tmp/.../scratchpad/art/alpine-root-script.sh`). It writes the same bytes as the Ubuntu render for the firewall (to `/etc/nftables.nft`), `/etc/tinyproxy/tinyproxy.conf` (without the `PidFile` line), `/etc/tinyproxy/allowlist`, `ssh_known_hosts` and `00-orbit.conf` (ProxyCommand path `/usr/bin/nc`), and `/etc/environment` (without `/usr/games:/usr/local/games:/snap/bin`). What is different, verbatim:
 
@@ -302,7 +315,7 @@ Result: `probeScript` **rc=0** (first run after hardening, and again after a sto
 
 Not run: the probe of the host-engine container, the project mount, the `unforwardedProbes` (SSH forwarding), the integration test through `orbit init` itself (this spike runs no Go code).
 
-**Finding.** Debian trixie needs two package changes. bookworm needs four, and cannot satisfy the Docker design. Alpine needs its own script: package manager, OpenRC units, the `nftables` file path, no `PidFile`, `bash` installed, `wheel` hardened, resolver pinned.
+**Finding.** Debian trixie needs two package changes. bookworm needs four (numbered above), and cannot satisfy the Docker design. Alpine needs its own script: package manager, OpenRC units, the `nftables` file path, no `PidFile`, `bash` installed, `wheel` hardened, resolver pinned.
 
 ### 8. Claude Code native installer on Alpine
 
@@ -387,7 +400,7 @@ echo "+memory" > /sys/fs/cgroup/cgroup.subtree_control  ->  sh: write error: Res
 
 ## Open problems and risks
 
-1. **Alpine has no login gate** (topic 1). Conditional blocker, see the summary. Any `orb -m <m> -u agent` outside Orbit sees a machine whose boundary is still starting for 5 to 7 s. Egress stayed closed in all runs because the firewall precedes the network. The root-side readiness and boot checks (`ReadinessScript`, `BootCheckScript`) use `systemctl` and `systemd-user-sessions.service` and need an OpenRC counterpart, and `waitForBoot` needs an Alpine definition of "the boot ended".
+1. **Alpine has no login gate** (topic 1). Conditional blocker, see the summary. Any `orb -m <m> -u agent` outside Orbit sees a machine whose boundary is still starting for 5 to 7 s. IPv4 egress stayed closed in all runs because the firewall precedes the IPv4 network; IPv6 was not checked in this window (topic 1). The root-side readiness and boot checks (`ReadinessScript`, `BootCheckScript`) use `systemctl` and `systemd-user-sessions.service` and need an OpenRC counterpart, and `waitForBoot` needs an Alpine definition of "the boot ended".
 2. **`orb` ignores the login gate on every distribution** (topic 1). The Ubuntu design is the same. Already documented in `check.go`.
 3. **Debian bookworm cannot provide the Docker design from its archive** (docker.io 20.10.24, no buildx, no compose v2, `docker-compose` 1.29.2). Docker's own apt repository would add a new trust root for root-side installs.
 4. **bookworm's `dash` has no `pipefail`**, so a POSIX `sh` root script that keeps `set -o pipefail` fails there (`Illegal option -o pipefail`).
@@ -399,16 +412,34 @@ echo "+memory" > /sys/fs/cgroup/cgroup.subtree_control  ->  sh: write error: Res
 10. **Debian `tinyproxy` starts after install on port 8888 with the stock config** until the script replaces it. Same as Ubuntu.
 11. **Untested:** the project mount and write access of the agent on virtiofs on each distribution, the forwarded SSH agent socket per distribution (the group `orbstack`, gid 67278, exists on all four), Docker pulls and containers on Debian, `openrc --user`, `amd64` machines, an apk upgrade of `/etc/nftables.nft` (a modified conffile), the `bookworm` slow-gate race (only the closed gate was tried there), and the host-engine container probe.
 
-## Recommendations for the open product questions of the epic
+## Facts against the epic's decisions (Q1–Q9)
 
-The owner delegated the decisions of the distribution epic to the coordinator. These are recommendations from the facts above, not decisions.
+Epic #46 records decisions 1 to 9 ("Decisions (formerly open questions)"), made on 2026-11-11 by the coordinator under the owner's delegation. E04-T02 (#48) records decision 1 as brief row D25 and carries the others into the spec. This section does not reopen them. For each decision it says whether the facts above **support**, **strain** or **contradict** it, as input for E04-T02. Where a fact contradicts a premise, the spec and the owner decide what follows. These are recommendations, not decisions.
 
-1. **Debian trixie as the first additional distribution: yes.** Two package changes and it passes every probe, including the restart. It keeps systemd, the user-unit design of the Docker spec, `systemd-user-sessions`-style checks, and cgroup delegation. Cost: 560 MB at create against 35 MB for Alpine.
-2. **Debian bookworm: no.** Four changes, no usable Docker design from its archive, and a `dash` without `pipefail`. Only worth it if the owner accepts Docker's apt repository.
-3. **Alpine: defer, or ship as a second-tier distribution with its own provisioning script.** It works (topics 7 to 9) and the base image is 35 MB, but it is a second implementation of the boundary (OpenRC units, different firewall and tinyproxy paths, a different gate), it cannot gate logins, it has no container resource limits, it needs `bash` for the adapter and the installer, and every readiness check needs an OpenRC variant. If it ships, require a distribution-specific script in `internal/provision` (not a `sed` over the Ubuntu one) and an escape suite run on Alpine.
-4. **Script language:** either keep `bash -s` and install bash first on Alpine (the adapter must then run `sh -c 'apk add bash'` before the first script), or make the root script POSIX `sh` without `pipefail` (explicit `|| fail`), which runs on dash and BusyBox ash and removes the bookworm problem. The second is smaller. Both need the adapter to stop hard-coding `bash -s`.
-5. **Where Orbit sets the proxy and `PATH`:** `/etc/environment`, on every distribution (topic 6).
-6. **Per-distribution data, not conditionals in slices:** the package list, the `netcat` path, the Docker package list, the firewall file path, the `tinyproxy` pid setting, and the group list of the harden script belong in one `distro` description next to the agent definitions, in line with D26's rule that no slice compares a name.
+1. **Q1, Alpine is the default (D25, the owner's own request). Strains.** Alpine works: the hand-written boundary passes `probeScript` and `afterStartProbes` (topic 7), Claude Code runs (topic 8), rootless Docker runs behind the boundary (topic 9), and the base image is 35 MB against 560 MB for Debian. But Alpine is a second implementation of the boundary (OpenRC units, another firewall file, no `/run/tinyproxy`, an OpenRC gate), it cannot hold an `orb` login (topic 1, the conditional blocker), its rootless containers get no resource limits (topic 9), and `--privileged` containers start (topic 9). Decision 6 already defers the switch, so these facts weigh on what decision 6 requires, not on whether Alpine is the target. For the spec: a distribution-specific root script in `internal/provision` (not a `sed` over the Ubuntu one).
+2. **Q2, `--distro alpine|debian|ubuntu` as a fixed enum. Supports**, without new evidence: the three images were created from fixed `distro:version` strings with `--isolated --isolate-network`, and nothing in the spike needed a free-form image.
+3. **Q3, pins Alpine 3.23, Debian 13 trixie, Ubuntu 26.04. Supports.** trixie needs two package changes and then passes every probe, including the restart (topic 7). It keeps systemd, the user-unit design of the Docker spec, the systemd readiness checks, and cgroup delegation. bookworm, which OrbStack 2.2.5 picks for a bare `debian`, needs four changes, cannot provide the Docker design from its archive (docker.io 20.10, no buildx, no compose v2), and its `dash` has no `pipefail`. So the pin must name `debian:trixie`, never `debian`. Alpine 3.23 resolved to 3.23.8.
+4. **Q4, Alpine toolchain adds `bash`, `libgcc`, `libstdc++` (amends D20). Partly contradicts its premise.** `bash` is needed, as decided: the adapter's `bash -s` and the installer's `| bash` have no other shell (topics 2, 8). `libgcc` was present (pulled in by `ripgrep`). **`libstdc++` was not installed and Claude Code 2.1.322 did not need it** (`ldd` shows only `ld-musl`, topic 8). Root needed more than `shadow` or `util-linux`: the adaptation installed `shadow`, `runuser`, `setpriv`, `iproute2-ss` and `netcat-openbsd` (topic 7), which decision 4 classes as infrastructure or busybox replacements.
+5. **Q5, `init --distro X` on a sandbox of another distribution fails and names `orbit destroy`. Supports.** The root scripts are not interchangeable: the Ubuntu script fails on Alpine before its first line (`bash: not found`), and the Alpine script uses `apk` and OpenRC. How `init` reads the distribution of an existing machine was not checked.
+6. **Q6, Alpine becomes the default only after #52, #56 and the escape suite on Alpine. Supports, and adds conditions.** The facts name what that gate depends on: an OpenRC counterpart of `ReadinessScript`, `BootCheckScript` and `waitForBoot` on every Orbit entry path (open problem 1), the IPv6 state of the start window (topic 1, not checked), escape tests for `--privileged` containers (the Ubuntu spike found that they cannot start, Alpine starts them), and a position on container resource limits (the brief lists resource limits under *Later*, so this is a parity gap with Ubuntu, not a broken rule).
+7. **Q7, the agent's login shell is `/bin/bash` on Alpine. Supports.** On the provisioned Alpine machine the agent got `SHELL=/bin/bash` (topic 6), and `bash` is already in the toolchain by decision 4. For the spec: with `bash` decided, the root script can keep the adapter's `bash -s`, provided that the adapter first installs `bash` on Alpine with `sh` (for example `sh -c 'apk add bash'`) before the first script. A POSIX `sh` root script without `pipefail` (explicit `|| fail`) would also run on dash and BusyBox ash, but it goes beyond decisions 4 and 7, and its distinct gain, bookworm's `dash`, does not matter once Q3 pins trixie.
+8. **Q8, this epic adds no egress host. Supports; its condition is satisfied.** The native installer on musl contacted only `claude.ai`, `downloads.claude.ai` and `api.anthropic.com`, all in the Claude Code definition, with no refused request (topic 8). Root installs `apk` and `apt` packages directly, outside the proxy, and rootless Docker pulls went through the base list (topic 9). No stop for the owner's yes is needed. Docker's own apt repository, which only bookworm would need, is a new root-side trust root, not an egress host, and Q3 does not pin bookworm.
+9. **Q9, `orbit ls` does not show the distribution in this epic. Supports**, without new evidence.
+
+### Facts that contradict premises of the epic (for E04-T02)
+
+The table "What is Debian/Ubuntu-specific today" on #46 states these premises. The spike observed otherwise:
+
+- **`libstdc++`** (decision 4, row "Agent install"): not needed by Claude Code 2.1.322 on musl. Whether to keep it as a margin for later client versions is the spec's choice.
+- **`USE_BUILTIN_RIPGREP=0`** (row "Agent install"): not set in any spike script, and `claude doctor` reported `Search: OK (bundled)`. The bundled ripgrep worked on musl. The system `ripgrep` of D20 is installed anyway.
+- **`/etc/environment` is not read without PAM** (row "Login environment"): OrbStack reads it for every `orb -u` command on Alpine too (topic 6). Only `su -` ignores it on Alpine.
+- **Whether `orb -u` logins pass a gate** (row "Login gate"): they pass every gate on every distribution, Ubuntu included (topic 1).
+- **nftables stop behavior** (row "Firewall unit"): the OpenRC service flushes the ruleset on stop, the same as the Debian unit. Only the rules file differs (`/etc/nftables.nft`).
+
+### Points the decisions do not cover
+
+- **Where Orbit sets the proxy and `PATH`:** `/etc/environment`, on every distribution (topic 6). Services started by OpenRC or systemd need their own environment.
+- **Per-distribution data, not conditionals in slices:** the package list, the `netcat` path, the Docker package list, the firewall file path, the `tinyproxy` pid setting, and the group list of the harden script could live in one `distro` description. This is an analogy with the rule for agents (`ARCHITECTURE.md:113`: no code outside `internal/agent/<name>` compares an agent name; D16, `ARCHITECTURE.md:182`). No such rule exists for distributions yet; the spec would have to add it.
 
 ## Cleanup confirmation
 
