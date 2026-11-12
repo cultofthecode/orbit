@@ -4,7 +4,7 @@
 Backlog source: .ai/specs/product-brief.md
 Last filed: 2026-11-12
 
-Parents are linked as GitHub sub-issues. The epics carry no checklist. E04 comes from the owner's request of 2026-11-11. The brief does not record it yet: decision 1 of epic #46 (taken by the coordinator under the owner's delegation of 2026-11-11) adds D25 and moves E04 into *Scope → Now*, and E04-T02 (#48) writes that row into the brief.
+Parents are linked as GitHub sub-issues. The epics carry no checklist. E04 comes from the owner's request of 2026-11-11. After the spike of E04-T01 (#47), the owner decided on 2026-11-12 that release 0.1 supports Ubuntu 26.04 (the default) and Debian 13 trixie, and that Alpine, including Alpine as the default, is deferred to release 0.2. E04-T02 (#48) proposes this as brief row D28 (the id D25 that epic #46 planned was taken), with the Ubuntu and Debian choice for *Scope → Now*; the owner lands both in the brief (`.ai/specs/2026-11-12-sandbox-distributions.md`, Proposed brief changes). E04-S02, E04-S03, and E04-S04 (#52, #56, #57) are 0.2 work and wait for a 0.2 distribution spec.
 
 | Id | Issue | Title | Epic | Depends on | Adopted |
 |---|---|---|---|---|---|
