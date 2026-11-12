@@ -231,6 +231,7 @@ func TestEscapeCredentialLocations(t *testing.T) {
 			}
 			t.Logf("E17 proves R08 D08: init on %s", form.path)
 			result := attemptResult{id: "E17 " + form.name}
+			deleteMachinesOfForm(ctx, t, client, form.path)
 			out, err := handler.Handle(ctx, initialize.Input{Dir: form.path})
 			if !refusedAsACredential(err) {
 				result.escaped, result.evidence = true, "init on "+form.path+" = "+errString(err)+" "+out.Name
@@ -244,6 +245,25 @@ func TestEscapeCredentialLocations(t *testing.T) {
 			rig.report(t, result)
 		})
 	}
+}
+
+// deleteMachinesOfForm registers the deletion, when the test ends, of every
+// machine that init may create for path or its resolved path. It runs even
+// when the test reports an escape, so that a failed E17 leaves no machine.
+func deleteMachinesOfForm(ctx context.Context, t *testing.T, client *orbstack.Client, path string) {
+	t.Helper()
+	resolved, _ := filepath.EvalSymlinks(path)
+	t.Cleanup(func() {
+		cleanupCtx := context.WithoutCancel(ctx)
+		for _, dir := range []string{path, resolved} {
+			name := sandbox.MachineName(dir)
+			if exists, err := client.Exists(cleanupCtx, name); err == nil && exists {
+				if err := client.Delete(cleanupCtx, name); err != nil {
+					t.Errorf("Delete(%q) = %v", name, err)
+				}
+			}
+		}
+	})
 }
 
 // refusedAsACredential reports whether err is one of the refusals of a
