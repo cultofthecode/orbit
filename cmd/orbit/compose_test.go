@@ -335,9 +335,11 @@ func TestInitInstallsClaudeCodeWithItsDomains(t *testing.T) {
 }
 
 // TestOrbitInitRefusesAStoppedOrbStack runs orbit init on the real adapter
-// with a fake orb that reports a stopped OrbStack, and checks that init
-// fails with the advice to start OrbStack and runs no orb command other than
-// orb status: orb starts a stopped OrbStack by itself.
+// with a fake orb that reports a stopped OrbStack, and checks the composition:
+// init fails with exit code 1 and an "orbit: " error that carries the orb
+// status, and runs no orb command other than orb status, because orb starts a
+// stopped OrbStack by itself. The advice text depends on the home of the
+// account and is pinned in internal/orbstack, so this test does not pin it.
 func TestOrbitInitRefusesAStoppedOrbStack(t *testing.T) {
 	projectInWorkingDir(t)
 	calls := filepath.Join(t.TempDir(), "calls")
@@ -359,8 +361,8 @@ func TestOrbitInitRefusesAStoppedOrbStack(t *testing.T) {
 	if code != exitFailure {
 		t.Errorf("exit code = %d, want %d", code, exitFailure)
 	}
-	if !strings.HasPrefix(stderr.String(), "orbit: ") || !strings.Contains(stderr.String(), "OrbStack is not running (orb status: Stopped); start OrbStack, wait until orb status prints Running, and try again") {
-		t.Errorf("stderr = %q, want the advice to start OrbStack", stderr.String())
+	if !strings.HasPrefix(stderr.String(), "orbit: ") || !strings.Contains(stderr.String(), "(orb status: Stopped)") {
+		t.Errorf("stderr = %q, want an orbit: error that carries (orb status: Stopped)", stderr.String())
 	}
 	if stdout.Len() != 0 {
 		t.Errorf("stdout = %q, want it empty", stdout.String())
