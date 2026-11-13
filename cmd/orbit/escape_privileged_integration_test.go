@@ -391,7 +391,7 @@ func TestPrivilegedScriptsParse(t *testing.T) {
 	scripts := map[string]string{
 		"weaken":      weakenForPrivilegedLeak,
 		"E08":         privilegedUIDs,
-		"E08-refused": refusedPrivilegedRuns + refusedPrivilegedExec,
+		"E08-refused": refusedPrivilegedRuns + refusedUnconfinedRuns + refusedPrivilegedExec,
 	}
 	for _, attempts := range [][]attempt{
 		e.privilegedKernelAttempts(), e.privilegedOtherSandboxAttempts(), e.privilegedMacAttempts(),

@@ -504,7 +504,7 @@ done
 `)
 	containerTry := refusedPrivilegedRuns
 	if e.runtimeGuard {
-		containerTry += refusedPrivilegedExec
+		containerTry += refusedUnconfinedRuns + refusedPrivilegedExec
 	}
 	if e.privileged {
 		containerTry = privilegedUIDs
@@ -618,6 +618,21 @@ const refusedPrivilegedRuns = `blocked "a privileged container" docker run --rm 
 for runtime in runc io.containerd.runc.v2; do
   allowed "an unprivileged container on the runtime $runtime" docker run --rm --runtime="$runtime" $IMG true
   blocked "a privileged container on the runtime $runtime" docker run --rm --runtime="$runtime" --privileged $IMG true
+done
+`
+
+// refusedUnconfinedRuns is the line of E08 for a distribution whose profile
+// carries the runc guard: a container with every capability and neither a
+// seccomp filter nor an AppArmor profile is refused like --privileged, on the
+// default runtime and on each registered one. Its controls show that each
+// half alone still starts, so that the refusal comes from the combination and
+// the flags are valid.
+const refusedUnconfinedRuns = `allowed "every capability with the default profiles" docker run --rm --cap-add ALL $IMG true
+allowed "the default capabilities without seccomp and AppArmor" docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined $IMG true
+for runtime in default runc io.containerd.runc.v2; do
+  flag=--runtime=$runtime
+  [ "$runtime" = default ] && flag=
+  blocked "every capability without seccomp and AppArmor on the runtime $runtime" docker run --rm $flag --cap-add ALL --security-opt seccomp=unconfined --security-opt apparmor=unconfined $IMG true
 done
 `
 

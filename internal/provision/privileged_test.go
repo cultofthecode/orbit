@@ -140,6 +140,19 @@ func (r wrapperRig) run(args ...string) error {
 	return exec.Command(r.wrapper, args...).Run()
 }
 
+const (
+	defaultCaps    = `"CAP_CHOWN","CAP_KILL"`
+	allCaps        = `"CAP_CHOWN","CAP_KILL","CAP_SYS_ADMIN","CAP_SYS_MODULE","CAP_SYS_RAWIO","CAP_SYS_BOOT","CAP_MAC_ADMIN"`
+	defaultSeccomp = `"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"},`
+)
+
+// createConfig renders the parts of a container configuration that the
+// wrapper reads: the bounding set, an optional seccomp object and an optional
+// AppArmor profile (each ending in a comma), and masked paths.
+func createConfig(caps, seccomp, apparmor string) string {
+	return `{"process":{` + apparmor + `"capabilities":{"bounding":[` + caps + `]}},"linux":{` + seccomp + `"maskedPaths":["/proc/kcore"]}}`
+}
+
 func TestRuntimeWrapperRefusesWhatIsNotMasked(t *testing.T) {
 	dir := t.TempDir()
 	wrapper := filepath.Join(dir, "wrapper")
@@ -171,6 +184,14 @@ func TestRuntimeWrapperRefusesWhatIsNotMasked(t *testing.T) {
 		{"no config", []string{"create", "--bundle", bundle(""), "id"}, false},
 		{"no bundle", []string{"create", "id"}, false},
 		{"run privileged", []string{"run", "-b", bundle(`{}`), "id"}, false},
+		{"every capability, no seccomp, no AppArmor", []string{"create", "--bundle", bundle(createConfig(allCaps, "", "")), "id"}, false},
+		{"every capability, no seccomp, AppArmor unconfined", []string{"create", "--bundle", bundle(createConfig(allCaps, "", `"apparmorProfile":"unconfined",`)), "id"}, false},
+		{"every capability, seccomp that allows by default, no AppArmor", []string{"create", "--bundle", bundle(createConfig(allCaps, `"seccomp":{"defaultAction":"SCMP_ACT_ALLOW"},`, "")), "id"}, false},
+		{"every capability, default seccomp, no AppArmor", []string{"create", "--bundle", bundle(createConfig(allCaps, defaultSeccomp, "")), "id"}, true},
+		{"every capability, no seccomp, an AppArmor profile", []string{"create", "--bundle", bundle(createConfig(allCaps, "", `"apparmorProfile":"docker-default",`)), "id"}, true},
+		{"default capabilities, no seccomp, no AppArmor", []string{"create", "--bundle", bundle(createConfig(defaultCaps, "", "")), "id"}, true},
+		{"one added capability, no seccomp, no AppArmor", []string{"create", "--bundle", bundle(createConfig(defaultCaps+`,"CAP_SYS_ADMIN"`, "", "")), "id"}, true},
+		{"every capability, default profiles", []string{"create", "--bundle", bundle(createConfig(allCaps, defaultSeccomp, `"apparmorProfile":"docker-default",`)), "id"}, true},
 		{"id that equals create", []string{"kill", "create", "9"}, false},
 		{"other command", []string{"kill", "id", "9"}, true},
 		{"version", []string{"--version"}, true},

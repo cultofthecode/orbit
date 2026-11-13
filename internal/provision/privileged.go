@@ -68,7 +68,12 @@ func (p profile) guardCheck() []string {
 
 // runtimeWrapper refuses to create a container whose OCI configuration has no
 // masked paths, which is what --privileged (and systempaths=unconfined)
-// produces, refuses an exec whose process spec holds a capability that the
+// produces, refuses a container that has every capability and neither a
+// seccomp filter nor an AppArmor profile (--cap-add ALL with
+// seccomp=unconfined and apparmor=unconfined, which the owner treats like
+// --privileged; a seccomp profile whose default action is allow counts as no
+// filter, and a profile name other than unconfined counts as a profile),
+// refuses an exec whose process spec holds a capability that the
 // bounding set of the container lacks, which is what docker exec --privileged
 // produces, and runs the real runtime for everything else. It fails closed: a
 // bundle, a process file, or a state that it cannot read is refused. It looks
@@ -103,6 +108,15 @@ func runtimeWrapper() string {
 		`  [ -n "$bundle" ] && [ -r "$config" ] || refuse "cannot read the container configuration; refused"`,
 		`  config_text=$(tr -d ' \t\n' < "$config")`,
 		`  case $config_text in *'"maskedPaths":["/'*) ;; *) refuse "privileged containers are refused in this sandbox";; esac`,
+		`  unconfined=1`,
+		`  case $config_text in *'"seccomp":{"defaultAction":"SCMP_ACT_ALLOW"'*) ;; *'"seccomp":{'*) unconfined=;; esac`,
+		`  case $config_text in *'"apparmorProfile":"unconfined"'*) ;; *'"apparmorProfile":"'*) unconfined=;; esac`,
+		`  if [ -n "$unconfined" ]; then`,
+		`    caps=$(printf '%s' "$config_text" | sed -n 's/.*"bounding":\[\([^]]*\)\].*/\1/p')`,
+		`    every=1`,
+		`    for cap in CAP_SYS_ADMIN CAP_SYS_MODULE CAP_SYS_RAWIO CAP_SYS_BOOT CAP_MAC_ADMIN; do case $caps in *'"'$cap'"'*) ;; *) every=;; esac; done`,
+		`    [ -z "$every" ] || refuse "containers with every capability and no seccomp or AppArmor profile are refused in this sandbox"`,
+		`  fi`,
 		`fi`,
 		`if [ -n "$exec_at" ]; then`,
 		`  id=${args[${#args[@]} - 1]}`,
