@@ -64,7 +64,7 @@ func run(cmd *cobra.Command, handler Handler, in Input) error {
 // message returns the line that tells the user what happened.
 func message(out Output) string {
 	if out.Created {
-		return fmt.Sprintf("Created sandbox %s for %s", out.Name, out.Dir)
+		return fmt.Sprintf("Created sandbox %s (%s) for %s", out.Name, out.Distribution, out.Dir)
 	}
-	return fmt.Sprintf("Sandbox %s already exists for %s", out.Name, out.Dir)
+	return fmt.Sprintf("Sandbox %s (%s) already exists for %s", out.Name, out.Distribution, out.Dir)
 }

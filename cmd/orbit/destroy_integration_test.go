@@ -150,7 +150,7 @@ func TestDestroyDeletesTheSandboxAndNothingElse(t *testing.T) {
 	dirA, nameA := newSandboxDir(ctx, t, client)
 	dirB, nameB := newSandboxDir(ctx, t, client)
 	for _, dir := range []string{dirA, dirB} {
-		if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir, Agent: claude.Definition.Name}); err != nil {
+		if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t), Agent: claude.Definition.Name}); err != nil {
 			t.Fatalf("init --agent claude-code in %s = %v; machines that this test did not create: %s", dir, err, otherMachines(ctx, client, nameA))
 		}
 	}
@@ -227,7 +227,7 @@ func checkLsAfterDestroy(ctx context.Context, t *testing.T, client *orbstack.Cli
 // destroyed sandbox and checks that the new sandbox has none of its state.
 func checkReinitHasNoAgentState(ctx context.Context, t *testing.T, client *orbstack.Client, setUp initialize.Handler, dirA, nameA string) {
 	t.Helper()
-	out, err := setUp.Handle(ctx, initialize.Input{Dir: dirA, Agent: claude.Definition.Name})
+	out, err := setUp.Handle(ctx, initialize.Input{Dir: dirA, Distro: integrationDistro(t), Agent: claude.Definition.Name})
 	if err != nil || !out.Created || out.Name != nameA {
 		t.Fatalf("init after the destroy = %+v, %v, want the sandbox %s created again; machines that this test did not create: %s", out, err, nameA, otherMachines(ctx, client, nameA))
 	}

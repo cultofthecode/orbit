@@ -68,6 +68,15 @@ func (m accountHomeMachines) Mounts(ctx context.Context) (map[string]map[string]
 	return mounts, err
 }
 
+func (m accountHomeMachines) Distribution(ctx context.Context, name string) (string, error) {
+	var key string
+	err := m.withAccountHome(func() (err error) {
+		key, err = m.machines.Distribution(ctx, name)
+		return err
+	})
+	return key, err
+}
+
 func (m accountHomeMachines) State(ctx context.Context, name string) (string, error) {
 	var state string
 	err := m.withAccountHome(func() (err error) {
@@ -149,7 +158,7 @@ func TestInitRefusesAHardLinkedCredentialFile(t *testing.T) {
 	link := filepath.Join(dir, "settings.json")
 	writeHardLinkedFile(t, settings, link)
 
-	refused, err := handler.Handle(ctx, initialize.Input{Dir: dir})
+	refused, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)})
 	if !errors.Is(err, sandbox.ErrHardLinkedFile) || !strings.Contains(err.Error(), settings) {
 		t.Fatalf("Handle with a hard link to %s = %+v, %v, want %v naming it", settings, refused, err, sandbox.ErrHardLinkedFile)
 	}
@@ -161,13 +170,13 @@ func TestInitRefusesAHardLinkedCredentialFile(t *testing.T) {
 	if err := os.Remove(link); err != nil {
 		t.Fatal(err)
 	}
-	created, err := handler.Handle(ctx, initialize.Input{Dir: dir})
+	created, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)})
 	if err != nil || !created.Created {
 		t.Fatalf("Handle after the link was removed = %+v, %v, want a created sandbox", created, err)
 	}
 
 	writeHardLinkedFile(t, filepath.Join(home, ".claude", "file-history", "one", "snapshot"), filepath.Join(home, ".claude", "file-history", "two", "snapshot"))
-	kept, err := handler.Handle(ctx, initialize.Input{Dir: dir})
+	kept, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)})
 	if err != nil || kept.Created {
 		t.Fatalf("Handle with links in .claude/file-history = %+v, %v, want the existing sandbox provisioned again", kept, err)
 	}

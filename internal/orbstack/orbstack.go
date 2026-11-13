@@ -42,6 +42,11 @@ type pin struct {
 	// pinned: never a bare name, which OrbStack resolves to a release of its
 	// own choice (debian to bookworm, OrbStack 2.2.5).
 	image string
+	// distro and version are the spelling under which OrbStack stores the
+	// image of a machine that was created from image (image.distro and
+	// image.version of orb list). Distribution maps a stored pair back to
+	// key through them.
+	distro, version string
 }
 
 // pins is the only place in the repository that names an OrbStack image
@@ -50,7 +55,8 @@ type pin struct {
 // changes only in a change that runs the integration tests and the escape
 // suite on it.
 var pins = []pin{
-	{key: "ubuntu", image: "ubuntu:26.04"},
+	{key: "ubuntu", image: "ubuntu:26.04", distro: "ubuntu", version: "resolute"},
+	{key: "debian", image: "debian:trixie", distro: "debian", version: "trixie"},
 }
 
 // Distributions returns the keys of the distributions that Create accepts,
@@ -141,6 +147,10 @@ var (
 	// Create refuses it before any command: no image or version of a caller
 	// reaches orb create.
 	ErrDistribution = errors.New("distribution has no pinned image")
+	// ErrUnknownImage reports a machine whose stored image is missing or is
+	// not the image of any pin, so that Orbit cannot tell which distribution
+	// it runs. Callers stop before they run anything in the machine.
+	ErrUnknownImage = errors.New("machine has an image that Orbit does not know")
 	// ErrForeignMachine reports a machine name without the prefix of the
 	// client. The client creates and deletes only machines with its prefix.
 	ErrForeignMachine = errors.New("machine name does not start with the required prefix")
@@ -231,6 +241,23 @@ func (c *Client) SSHAgentForwarded(ctx context.Context, name string) (bool, erro
 		return false, fmt.Errorf("list machines: %w", err)
 	}
 	return parseSSHAgentForwarded([]byte(list), name)
+}
+
+// Distribution returns the key of the distribution that the machine name was
+// created with, from the image that OrbStack stores for it in orb list. It
+// runs only orb status and orb list, so it never starts a machine, and it runs
+// no command when name lacks the prefix of the client. It fails with
+// ErrUnknownImage unless the stored image is the image of a pin, and with
+// ErrMachineList for a machine that is not listed or is listed twice.
+func (c *Client) Distribution(ctx context.Context, name string) (string, error) {
+	if err := c.checkOwned(name); err != nil {
+		return "", err
+	}
+	list, err := run(ctx, mountsArgs(), nil)
+	if err != nil {
+		return "", fmt.Errorf("list machines: %w", err)
+	}
+	return parseDistribution([]byte(list), name)
 }
 
 // Exists reports whether a machine with the given name exists.
@@ -526,8 +553,12 @@ func stopArgs(name string) []string {
 // machine is the part of an entry of "orb list --format json" that the
 // adapter reads.
 type machine struct {
-	Name   string `json:"name"`
-	State  string `json:"state"`
+	Name  string `json:"name"`
+	State string `json:"state"`
+	Image *struct {
+		Distro  string `json:"distro"`
+		Version string `json:"version"`
+	} `json:"image"`
 	Config struct {
 		ForwardSSHAgent *bool `json:"forward_ssh_agent"`
 		Mounts          []struct {
@@ -622,6 +653,40 @@ func parseSSHAgentForwarded(list []byte, name string) (bool, error) {
 		return false, fmt.Errorf("%w: machine %q has no config.forward_ssh_agent", ErrMachineList, name)
 	}
 	return *settings[0], nil
+}
+
+// parseDistribution returns the key of the pin whose stored image is the one
+// of the machine name in the output of "orb list --format json". It fails
+// with ErrMachineList on output that it cannot read and on a machine that is
+// not listed or is listed twice, and with ErrUnknownImage on an entry without
+// an image, without a distro or a version, or with a pair that no pin stores
+// (debian / bookworm, alpine / 3.23): it never guesses a distribution.
+func parseDistribution(list []byte, name string) (string, error) {
+	var machines []machine
+	if err := json.Unmarshal(list, &machines); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrMachineList, err)
+	}
+	var found []machine
+	for _, m := range machines {
+		if m.Name == name {
+			found = append(found, m)
+		}
+	}
+	switch {
+	case len(found) == 0:
+		return "", fmt.Errorf("%w: machine %q is not listed", ErrMachineList, name)
+	case len(found) > 1:
+		return "", fmt.Errorf("%w: machine %q is listed twice", ErrMachineList, name)
+	case found[0].Image == nil:
+		return "", fmt.Errorf("%w: machine %q has no image", ErrUnknownImage, name)
+	}
+	image := found[0].Image
+	for _, p := range pins {
+		if p.distro == image.Distro && p.version == image.Version {
+			return p.key, nil
+		}
+	}
+	return "", fmt.Errorf("%w: machine %q has the image %q / %q", ErrUnknownImage, name, image.Distro, image.Version)
 }
 
 // parseState returns the state of the machine name in the output of "orb

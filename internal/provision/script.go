@@ -29,6 +29,9 @@ const firewallPath = "/etc/nftables.conf"
 // is a symlink into the runtime directory of systemd-resolved.
 const resolvConfPath = "/etc/resolv.conf"
 
+// osReleasePath is the file that names the distribution of the machine.
+const osReleasePath = "/etc/os-release"
+
 // environmentPath holds the environment of every login, read by pam_env.
 const environmentPath = "/etc/environment"
 
@@ -71,6 +74,67 @@ type ScriptInput struct {
 	// ForwardSSHAgent is true when the machine forwards the SSH agent of the
 	// host. The agent user joins the group of the socket only then.
 	ForwardSSHAgent bool
+	// Distribution is the distribution of the machine: one of
+	// Distributions. The script stops before it changes anything unless
+	// /etc/os-release names that distribution. Any other value, and the empty
+	// string, fails with ErrScriptInput.
+	Distribution string
+}
+
+// profile holds what differs between the distributions that Script renders.
+// Everything else is shared: both are glibc, apt, and systemd.
+type profile struct {
+	// name is the key of the distribution.
+	name string
+	// osID and codename are what /etc/os-release must say: the values of ID
+	// and VERSION_CODENAME.
+	osID, codename string
+	// dockerPackages are the packages of the rootless engine, all from the
+	// archive of the distribution.
+	dockerPackages []string
+	// refusePrivileged makes the rootless engine refuse a privileged
+	// container. Ubuntu needs no guard: OrbStack refuses it there.
+	refusePrivileged bool
+}
+
+// profiles is the table of distributions, Ubuntu first. A new distribution is
+// a new row, never a branch in a renderer.
+var profiles = []profile{
+	{
+		name:           "ubuntu",
+		osID:           "ubuntu",
+		codename:       "resolute",
+		dockerPackages: []string{"docker.io", "docker-buildx", "docker-compose-v2", "rootlesskit", "uidmap", "slirp4netns", "dbus-user-session"},
+	},
+	{
+		name:             "debian",
+		osID:             "debian",
+		codename:         "trixie",
+		dockerPackages:   []string{"docker.io", "docker-cli", "docker-buildx", "docker-compose", "rootlesskit", "uidmap", "slirp4netns", "dbus-user-session"},
+		refusePrivileged: true,
+	},
+}
+
+// Distributions returns the keys of the distributions that Script renders, in
+// a new slice. They are the values of sandbox.Distribution; a test in
+// cmd/orbit keeps the two lists equal.
+func Distributions() []string {
+	keys := make([]string, len(profiles))
+	for i, p := range profiles {
+		keys[i] = p.name
+	}
+	return keys
+}
+
+// profileOf returns the profile of the distribution name, matched exactly, or
+// ErrScriptInput.
+func profileOf(name string) (profile, error) {
+	for _, p := range profiles {
+		if p.name == name {
+			return p, nil
+		}
+	}
+	return profile{}, fmt.Errorf("%w: unknown distribution %q; use one of: %s", ErrScriptInput, name, strings.Join(Distributions(), ", "))
 }
 
 // Script returns the root script that provisions a sandbox machine, as in
@@ -81,22 +145,27 @@ func Script(in ScriptInput) ([]byte, error) {
 	if in.DefaultUID == 0 {
 		return nil, fmt.Errorf("%w: the default uid is 0", ErrScriptInput)
 	}
-	files, err := scriptFiles(in.DefaultUID, in.AgentDomains)
+	distro, err := profileOf(in.Distribution)
+	if err != nil {
+		return nil, err
+	}
+	files, err := scriptFiles(distro, in.DefaultUID, in.AgentDomains)
 	if err != nil {
 		return nil, err
 	}
 	sections := [][]string{
-		prelude(),
+		prelude(distro),
 		installPackages(),
-		installDocker(),
+		installDocker(distro.dockerPackages),
 		maskRootfulDocker(),
 		staticDNS(),
+		distro.guardSetup(),
 		writeFiles(files),
 		startBoundary(),
 		createAgent(in.ForwardSSHAgent),
 		helperPermissions(),
 		startEngine(),
-		selfCheck(in.DefaultUID, in.ForwardSSHAgent),
+		selfCheck(distro, in.DefaultUID, in.ForwardSSHAgent),
 		writeMarker(),
 	}
 	return []byte(lines(group(slices.Concat(sections...))...)), nil
@@ -104,7 +173,7 @@ func Script(in ScriptInput) ([]byte, error) {
 
 // scriptFiles returns every file that the script writes, after the
 // configuration is validated.
-func scriptFiles(defaultUID uint32, agentDomains []string) ([]File, error) {
+func scriptFiles(distro profile, defaultUID uint32, agentDomains []string) ([]File, error) {
 	firewall, err := Firewall(firewallInput(defaultUID))
 	if err != nil {
 		return nil, err
@@ -125,6 +194,7 @@ func scriptFiles(defaultUID uint32, agentDomains []string) ([]File, error) {
 	}
 	files = append(files, Units(defaultUID)...)
 	files = append(files, sshFiles()...)
+	files = append(files, distro.guardFiles()...)
 	return files, checkDelimiter(files)
 }
 
@@ -175,9 +245,25 @@ func group(body []string) []string {
 
 // prelude stops at the first failure, drops the proxy settings that a
 // login of root gets from /etc/environment (root installs packages
-// directly, not through the allowlist), and removes the marker, so that a
-// failed run never leaves a machine that looks provisioned.
-func prelude() []string {
+// directly, not through the allowlist), fails unless the machine runs the
+// distribution of distro, and only then removes the marker, so that a failed
+// run never leaves a machine that looks provisioned, and a script that
+// reaches the wrong machine leaves it untouched.
+func prelude(distro profile) []string {
+	return slices.Concat(preludeStart(), osReleaseGuard(distro), []string{"rm -f " + MarkerPath})
+}
+
+// osReleaseGuard fails unless /etc/os-release holds the ID and the
+// VERSION_CODENAME of distro, each as a whole line.
+func osReleaseGuard(distro profile) []string {
+	return []string{
+		fmt.Sprintf(`grep -qx 'ID=%s' %s || fail "this machine is not %s"`, distro.osID, osReleasePath, distro.name),
+		fmt.Sprintf(`grep -qx 'VERSION_CODENAME=%s' %s || fail "this machine is not %s %s"`, distro.codename, osReleasePath, distro.name, distro.codename),
+	}
+}
+
+// preludeStart is the start of the prelude, up to the guard.
+func preludeStart() []string {
 	return []string{
 		"set -euo pipefail",
 		"umask 022",
@@ -186,7 +272,6 @@ func prelude() []string {
 		"unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy",
 		"fail() { echo \"orbit provisioning: $*\" >&2; exit 1; }",
 		`put() { cat > "$1.orbit-new"; chown root:root "$1.orbit-new"; chmod "$2" "$1.orbit-new"; mv -f "$1.orbit-new" "$1"; }`,
-		"rm -f " + MarkerPath,
 	}
 }
 
@@ -274,7 +359,7 @@ func createAgent(forwardSSHAgent bool) []string {
 // selfCheck verifies, as root, what the boundary depends on, including that
 // /run/nologin is absent, so PAM logins stay possible. Any failure stops the
 // script before the marker is written.
-func selfCheck(defaultUID uint32, forwardSSHAgent bool) []string {
+func selfCheck(distro profile, defaultUID uint32, forwardSSHAgent bool) []string {
 	script := slices.Concat(boundaryCheck(), []string{
 		`[ ! -e /run/nologin ] || fail "logins are disabled"`,
 		"for unit in " + strings.Join(resolvedUnits, " ") + "; do",
@@ -294,7 +379,7 @@ func selfCheck(defaultUID uint32, forwardSSHAgent bool) []string {
 		fmt.Sprintf("for group in %s; do", strings.Join(privilegedGroups, " ")),
 		fmt.Sprintf(`  case " $(id -nG %s) " in *" $group "*) fail "%s is in the group $group";; esac`, AgentUser, AgentUser),
 		"done",
-	}, sshCheck(forwardSSHAgent), dockerCheck())
+	}, sshCheck(forwardSSHAgent), dockerCheck(), distro.guardCheck())
 	return script
 }
 

@@ -81,7 +81,7 @@ fi
 
 V6=$(ip -6 -o addr show dev eth0 scope global | awk 'NR == 1 {split($4, a, "/"); print a[1]}')
 if [ -n "$V6" ]; then
-  python3 -c 'import socket, sys, time; s = socket.socket(socket.AF_INET6); s.bind((sys.argv[1], 8443)); s.listen(8); time.sleep(60)' "$V6" </dev/null >/dev/null 2>&1 &
+  timeout 60 nc -6 -k -l "$V6" 8443 </dev/null >/dev/null 2>&1 &
   listener=$!
   for try in 1 2 3 4 5 6 7 8 9 10; do ss -Hltn 'sport = :8443' | grep -q . && break; sleep 0.5; done
   allowed "root TCP over IPv6 to the machine" timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/8443"' sh "$V6"

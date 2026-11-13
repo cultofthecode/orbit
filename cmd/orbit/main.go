@@ -77,8 +77,8 @@ func initHandler(machines initialize.Machines, agents *agent.Registry) initializ
 
 // provisionScript fills the input of provision.Script from the arguments of
 // the handler of "orbit init".
-func provisionScript(defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error) {
-	return provision.Script(provision.ScriptInput{DefaultUID: defaultUID, AgentDomains: agentDomains, ForwardSSHAgent: forwardSSHAgent})
+func provisionScript(distribution string, defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error) {
+	return provision.Script(provision.ScriptInput{Distribution: distribution, DefaultUID: defaultUID, AgentDomains: agentDomains, ForwardSSHAgent: forwardSSHAgent})
 }
 
 // machineLister is the part of the adapter that listMachines converts.

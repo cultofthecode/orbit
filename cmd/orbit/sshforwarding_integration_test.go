@@ -113,7 +113,7 @@ func TestInitForwardsTheSSHAgentByDefaultAndRefusesTheOtherSetting(t *testing.T)
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
 
-	out, err := handler.Handle(ctx, initialize.Input{Dir: dir})
+	out, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)})
 	if err != nil || !out.Created {
 		t.Fatalf("Handle = %+v, %v, want a created sandbox; machines that this test did not create: %s", out, err, otherMachines(ctx, client, name))
 	}
@@ -129,7 +129,7 @@ func TestInitForwardsTheSSHAgentByDefaultAndRefusesTheOtherSetting(t *testing.T)
 
 	before := time.Now().Unix() + 1
 	time.Sleep(2 * time.Second)
-	refused, err := handler.Handle(ctx, initialize.Input{Dir: dir, NoSSHForwarding: true})
+	refused, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t), NoSSHForwarding: true})
 	if !errors.Is(err, sandbox.ErrSSHForwardingMismatch) || refused != (initialize.Output{}) {
 		t.Fatalf("Handle with NoSSHForwarding = %+v, %v, want %v", refused, err, sandbox.ErrSSHForwardingMismatch)
 	}
@@ -156,7 +156,7 @@ func TestInitLeavesTheSSHAgentOutOnRequest(t *testing.T) {
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
 
-	out, err := handler.Handle(ctx, initialize.Input{Dir: dir, NoSSHForwarding: true})
+	out, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t), NoSSHForwarding: true})
 	if err != nil || !out.Created {
 		t.Fatalf("Handle = %+v, %v, want a created sandbox; machines that this test did not create: %s", out, err, otherMachines(ctx, client, name))
 	}
@@ -164,11 +164,11 @@ func TestInitLeavesTheSSHAgentOutOnRequest(t *testing.T) {
 	if err := client.RunAsRoot(ctx, name, []byte(unforwardedProbes)); err != nil {
 		t.Errorf("probes in %s:\n%v", name, err)
 	}
-	again, err := handler.Handle(ctx, initialize.Input{Dir: dir, NoSSHForwarding: true})
+	again, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t), NoSSHForwarding: true})
 	if err != nil || again.Created {
 		t.Errorf("second Handle with NoSSHForwarding = %+v, %v, want the existing sandbox provisioned again", again, err)
 	}
-	if _, err := handler.Handle(ctx, initialize.Input{Dir: dir}); !errors.Is(err, sandbox.ErrSSHForwardingMismatch) {
+	if _, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)}); !errors.Is(err, sandbox.ErrSSHForwardingMismatch) {
 		t.Errorf("Handle without the flag on a sandbox without forwarding = %v, want %v", err, sandbox.ErrSSHForwardingMismatch)
 	}
 }

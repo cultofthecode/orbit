@@ -28,7 +28,9 @@ type Input struct {
 	// named none, which means sandbox.DefaultDistribution. Any other value
 	// fails with sandbox.ErrUnknownDistribution before OrbStack is asked
 	// anything. It decides only how a machine is created; a machine that
-	// already exists keeps the distribution it has.
+	// already exists keeps the distribution it has, and a value that names
+	// another one fails with sandbox.ErrDistributionMismatch before any
+	// command runs in the machine.
 	Distro string
 }
 
@@ -42,6 +44,10 @@ type Output struct {
 	// Created is true when this call created the machine, and false when
 	// the machine already existed.
 	Created bool
+	// Distribution is the distribution of the machine: the requested one
+	// for a machine that this call created, the one the machine was
+	// created with for a machine that existed.
+	Distribution sandbox.Distribution
 }
 
 // ErrNotDirectory reports a project path that is not a directory. It is
@@ -67,6 +73,11 @@ var ErrLinkedSandboxDir = sandbox.ErrLinkedSandboxDir
 // forwarding differs from the request, which init refuses before it runs a
 // command in the machine. It is sandbox.ErrSSHForwardingMismatch.
 var ErrSSHForwardingMismatch = sandbox.ErrSSHForwardingMismatch
+
+// ErrDistributionMismatch reports an existing sandbox that runs another
+// distribution than the one that --distro names, which init refuses before it
+// runs a command in the machine. It is sandbox.ErrDistributionMismatch.
+var ErrDistributionMismatch = sandbox.ErrDistributionMismatch
 
 // ErrNotRunning reports an existing sandbox in any state but running. Init
 // refuses it before it runs a command in the machine, because every command

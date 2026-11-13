@@ -23,7 +23,7 @@ var (
 	// path: it is not absolute, or it holds a colon or a comma.
 	ErrMountPath = errors.New("mount path is not absolute or contains a colon or a comma")
 	// ErrDistribution reports a distribution key that the adapter has no
-	// pinned image for: anything but "ubuntu".
+	// pinned image for: anything but "ubuntu" and "debian".
 	ErrDistribution = errors.New("distribution has no pinned image")
 	// ErrNoMachine reports a machine that does not exist, where orb fails
 	// with "machine not found".
@@ -49,6 +49,7 @@ const (
 	OpStop              = "stop"
 	OpExists            = "exists"
 	OpCreate            = "create"
+	OpDistribution      = "distribution"
 	OpSSHAgentForwarded = "ssh-agent-forwarded"
 	OpMounts            = "mounts"
 	OpList              = "list"
@@ -99,6 +100,13 @@ type Fake struct {
 	// Forwarded maps the name of a machine to its SSH agent forwarding. A
 	// machine without an entry does not forward. Create sets the entry.
 	Forwarded map[string]bool
+	// Distributions maps the name of a machine to its distribution key.
+	// Create sets the entry to the key it received. A machine without an
+	// entry is ubuntu, as every machine that was created before the
+	// distribution flag is.
+	Distributions map[string]string
+	// DistributionErr, when set, is the result of every Distribution call.
+	DistributionErr error
 	// CreatedForwarded, when set, is the forwarding that Create stores
 	// instead of the requested one: a machine that reports another setting
 	// than the one it was created with.
@@ -152,7 +160,7 @@ type Fake struct {
 // New returns a fake with no machines that creates only machines whose names
 // start with prefix.
 func New(prefix string) *Fake {
-	return &Fake{Machines: map[string]map[string]string{}, Active: map[string]map[string]string{}, Forwarded: map[string]bool{}, States: map[string]string{}, prefix: prefix}
+	return &Fake{Machines: map[string]map[string]string{}, Active: map[string]map[string]string{}, Forwarded: map[string]bool{}, Distributions: map[string]string{}, States: map[string]string{}, prefix: prefix}
 }
 
 // State returns the state of the machine name, or "" when it does not
@@ -233,7 +241,7 @@ func (f *Fake) Exists(_ context.Context, name string) (bool, error) {
 
 // distributions are the keys that Create accepts. A test in package orbstack
 // keeps the list equal to the pins of the adapter.
-var distributions = []string{"ubuntu"}
+var distributions = []string{"ubuntu", "debian"}
 
 // Distributions returns the distribution keys that Create accepts, in a new
 // slice.
@@ -263,10 +271,28 @@ func (f *Fake) Create(_ context.Context, name, dir, distribution string, forward
 	f.Machines[name] = map[string]string{dir: dir}
 	f.States[name] = StateRunning
 	f.Forwarded[name] = forwardSSHAgent
+	f.Distributions[name] = distribution
 	if f.CreatedForwarded != nil {
 		f.Forwarded[name] = *f.CreatedForwarded
 	}
 	return nil
+}
+
+// Distribution returns the distribution key of the machine name. It refuses
+// a name without the prefix of the fake and a machine that does not exist,
+// and it runs nothing in the machine, so it works on a stopped machine.
+func (f *Fake) Distribution(_ context.Context, name string) (string, error) {
+	f.Calls = append(f.Calls, Call{Op: OpDistribution, Name: name})
+	if err := f.checkExists(name); err != nil {
+		return "", err
+	}
+	if f.DistributionErr != nil {
+		return "", f.DistributionErr
+	}
+	if key, set := f.Distributions[name]; set {
+		return key, nil
+	}
+	return "ubuntu", nil
 }
 
 // SSHAgentForwarded returns the SSH agent forwarding of the machine name. It
@@ -355,6 +381,7 @@ func (f *Fake) Delete(_ context.Context, name string) error {
 	delete(f.Machines, name)
 	delete(f.Active, name)
 	delete(f.Forwarded, name)
+	delete(f.Distributions, name)
 	delete(f.States, name)
 	return nil
 }

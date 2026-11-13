@@ -16,6 +16,8 @@ type Distribution string
 const (
 	// Ubuntu is Ubuntu 26.04.
 	Ubuntu Distribution = "ubuntu"
+	// Debian is Debian 13 trixie.
+	Debian Distribution = "debian"
 )
 
 // DefaultDistribution is the distribution of a new sandbox when the user
@@ -25,8 +27,13 @@ const DefaultDistribution = Ubuntu
 // ErrUnknownDistribution reports a value that is not a Distribution.
 var ErrUnknownDistribution = errors.New("unknown distribution")
 
+// ErrDistributionMismatch reports a request for a distribution other than the
+// one that an existing sandbox runs. A sandbox keeps its distribution; the
+// user destroys it to get another.
+var ErrDistributionMismatch = errors.New("distribution mismatch")
+
 // distributions is the closed set, in the order that the help shows.
-var distributions = []Distribution{Ubuntu}
+var distributions = []Distribution{Ubuntu, Debian}
 
 // Distributions returns every distribution, Ubuntu first, in a new slice.
 func Distributions() []Distribution {
@@ -48,4 +55,32 @@ func ParseDistribution(s string) (Distribution, error) {
 		names[i] = string(d)
 	}
 	return "", fmt.Errorf("%w %q; use one of: %s", ErrUnknownDistribution, s, strings.Join(names, ", "))
+}
+
+// ResolveDistribution returns the distribution of the sandbox: the requested
+// one, or DefaultDistribution when none is requested, for a new machine, and
+// the existing one for an existing machine. requested is "" when --distro was
+// not given. It fails with ErrUnknownDistribution for a requested value that
+// is not a Distribution, whether or not the machine exists, and with
+// ErrDistributionMismatch when an existing machine runs another distribution
+// than the requested one.
+func ResolveDistribution(requested string, existing Distribution, exists bool) (Distribution, error) {
+	want := DefaultDistribution
+	if requested != "" {
+		parsed, err := ParseDistribution(requested)
+		if err != nil {
+			return "", err
+		}
+		want = parsed
+	}
+	if !exists {
+		return want, nil
+	}
+	if _, err := ParseDistribution(string(existing)); err != nil {
+		return "", err
+	}
+	if requested != "" && want != existing {
+		return "", fmt.Errorf("%w: it runs %s, not %s; run \"orbit destroy\" to replace it", ErrDistributionMismatch, existing, want)
+	}
+	return existing, nil
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -123,15 +124,17 @@ func TestEscapeNoSSHForwarding(t *testing.T) {
 		t.Fatalf("CONTROL FAILED: E15-no-ssh-agent: no test agent on the Mac: %v", err)
 	}
 	dir, name := newSandboxDir(ctx, t, client)
-	out, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir, NoSSHForwarding: true})
+	out, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t), NoSSHForwarding: true})
 	if err != nil || !out.Created {
 		t.Fatalf("init --no-ssh-forwarding = %+v, %v; machines that this test did not create: %s", out, err, otherMachines(ctx, client, name))
 	}
 	checkForwarding(ctx, t, client, name, false)
 	forwardedDir, forwardedName := newSandboxDir(ctx, t, client)
 	forwardedRig := escapeRig{client: client, name: forwardedName}
-	control := func(ctx context.Context) error {
-		out, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: forwardedDir})
+	var once sync.Once
+	var controlErr error
+	setUpControl := func(ctx context.Context) error {
+		out, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: forwardedDir, Distro: integrationDistro(t)})
 		if err != nil || !out.Created {
 			return fmt.Errorf("init with forwarding = %+v, %v", out, err)
 		}
@@ -140,6 +143,14 @@ func TestEscapeNoSSHForwarding(t *testing.T) {
 		}
 		return forwardedRig.runIn(ctx, agentSession, forwardedDetectorsControl)
 	}
+	control := func(ctx context.Context) error {
+		once.Do(func() { controlErr = setUpControl(ctx) })
+		return controlErr
+	}
 	rig := escapeRig{client: client, name: name, tally: &counts}
 	rig.run(ctx, t, attempt{id: "E15-no-ssh-agent", rule: "R08 D25", as: agentSession, controlFn: control, try: noSSHAgentTry})
+	buildProbeImage(ctx, t, rig)
+	if rig.privilegedGate(ctx, t, integrationDistro(t), "E21") {
+		rig.runAll(ctx, t, privilegedSSHAttempts(control, rig))
+	}
 }
