@@ -16,8 +16,6 @@ type Distribution string
 const (
 	// Ubuntu is Ubuntu 26.04.
 	Ubuntu Distribution = "ubuntu"
-	// Debian is Debian 13 trixie.
-	Debian Distribution = "debian"
 )
 
 // DefaultDistribution is the distribution of a new sandbox when the user
@@ -28,7 +26,7 @@ const DefaultDistribution = Ubuntu
 var ErrUnknownDistribution = errors.New("unknown distribution")
 
 // distributions is the closed set, in the order that the help shows.
-var distributions = []Distribution{Ubuntu, Debian}
+var distributions = []Distribution{Ubuntu}
 
 // Distributions returns every distribution, Ubuntu first, in a new slice.
 func Distributions() []Distribution {

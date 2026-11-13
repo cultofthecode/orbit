@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-func TestDistributionsListsUbuntuThenDebian(t *testing.T) {
-	want := []Distribution{Ubuntu, Debian}
+func TestDistributionsListsUbuntu(t *testing.T) {
+	want := []Distribution{Ubuntu}
 	if got := Distributions(); !slices.Equal(got, want) {
 		t.Errorf("Distributions() = %q, want %q", got, want)
 	}
@@ -25,7 +25,7 @@ func TestDistributionsReturnsACopy(t *testing.T) {
 }
 
 func TestParseDistributionAcceptsTheEnum(t *testing.T) {
-	tests := map[string]Distribution{"ubuntu": Ubuntu, "debian": Debian}
+	tests := map[string]Distribution{"ubuntu": Ubuntu}
 	for in, want := range tests {
 		got, err := ParseDistribution(in)
 		if err != nil || got != want {
@@ -36,7 +36,7 @@ func TestParseDistributionAcceptsTheEnum(t *testing.T) {
 
 func TestParseDistributionRefusesEverythingElse(t *testing.T) {
 	tests := []string{
-		"", " ", "Ubuntu", "DEBIAN", " ubuntu", "ubuntu ", "ubuntu\n", "ubuntu\ndebian", "\tdebian",
+		"", " ", "Ubuntu", "DEBIAN", "debian", " ubuntu", "ubuntu ", "ubuntu\n", "ubuntu\ndebian", "\tdebian",
 		"ubuntu:26.04", "debian:trixie", "debian:bookworm", "bookworm", "trixie", "26.04", "resolute",
 		"alpine", "alpine:3.23", "ubuntu debian", "ubuntu;debian", "ubuntu,debian", `"ubuntu"`, "'debian'",
 		"ubuntu;reboot", "$(ubuntu)", "`debian`", "-ubuntu", "--debian", "-", "--", "--mount", "../ubuntu",
@@ -56,12 +56,12 @@ func TestParseDistributionRefusesEverythingElse(t *testing.T) {
 
 func TestParseDistributionNamesTheChoices(t *testing.T) {
 	_, err := ParseDistribution("alpine")
-	want := `unknown distribution "alpine"; use one of: ubuntu, debian`
+	want := `unknown distribution "alpine"; use one of: ubuntu`
 	if err == nil || err.Error() != want {
 		t.Errorf("ParseDistribution(%q) error = %v, want %q", "alpine", err, want)
 	}
 	_, err = ParseDistribution("a\nb;$(x)\"")
-	if err == nil || err.Error() != `unknown distribution "a\nb;$(x)\""; use one of: ubuntu, debian` {
+	if err == nil || err.Error() != `unknown distribution "a\nb;$(x)\""; use one of: ubuntu` {
 		t.Errorf("a hostile value must be quoted in the error, got %v", err)
 	}
 }

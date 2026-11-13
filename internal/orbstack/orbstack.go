@@ -51,7 +51,6 @@ type pin struct {
 // suite on it.
 var pins = []pin{
 	{key: "ubuntu", image: "ubuntu:26.04"},
-	{key: "debian", image: "debian:trixie"},
 }
 
 // Distributions returns the keys of the distributions that Create accepts,

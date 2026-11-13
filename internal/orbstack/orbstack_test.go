@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/cultofthecode/orbit/internal/orbstack/orbstacktest"
 )
 
 const testPrefix = "orbit-"
@@ -99,7 +101,7 @@ func TestCreateArgs(t *testing.T) {
 }
 
 func TestCreateArgsPinsTheImageOfEveryDistribution(t *testing.T) {
-	want := map[string]string{"ubuntu": "ubuntu:26.04", "debian": "debian:trixie"}
+	want := map[string]string{"ubuntu": "ubuntu:26.04"}
 	keys := Distributions()
 	if len(keys) != len(want) {
 		t.Fatalf("Distributions() = %q, want the keys of %v", keys, want)
@@ -147,8 +149,8 @@ func TestCreateArgsRefusesAnythingButAKey(t *testing.T) {
 
 func TestDistributionsReturnsACopy(t *testing.T) {
 	got := Distributions()
-	if !slices.Equal(got, []string{"ubuntu", "debian"}) {
-		t.Fatalf("Distributions() = %q, want ubuntu then debian", got)
+	if !slices.Equal(got, []string{"ubuntu"}) {
+		t.Fatalf("Distributions() = %q, want ubuntu", got)
 	}
 	got[0] = "alpine"
 	if again := Distributions(); again[0] != "ubuntu" {
@@ -1932,5 +1934,11 @@ func TestListFailureDoesNotRepeatListInItsMessage(t *testing.T) {
 	if want := `OrbStack is not installed or orb is not on PATH (orb status: exec: "orb": executable file not found in $PATH); ` +
 		"install OrbStack with `brew install --cask orbstack` or from https://orbstack.dev, make sure orb is on PATH, and try again"; err.Error() != want {
 		t.Errorf("List without orb = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestFakeAcceptsTheDistributionsOfTheAdapter(t *testing.T) {
+	if got, want := orbstacktest.Distributions(), Distributions(); !slices.Equal(got, want) {
+		t.Errorf("orbstacktest.Distributions() = %q, want the pins of the adapter %q", got, want)
 	}
 }

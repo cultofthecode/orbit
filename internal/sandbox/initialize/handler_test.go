@@ -3304,7 +3304,6 @@ func TestHandleCreatesTheMachineOfTheRequestedDistribution(t *testing.T) {
 	}{
 		{distro: "", want: "ubuntu"},
 		{distro: "ubuntu", want: "ubuntu"},
-		{distro: "debian", want: "debian"},
 	}
 	for _, test := range tests {
 		t.Run(test.distro, func(t *testing.T) {
@@ -3335,7 +3334,7 @@ func TestHandleRefusesAnUnknownDistributionBeforeItAsksOrbStack(t *testing.T) {
 	home := newHome(t)
 	project := filepath.Join(home, "work", "api")
 	hostile := []string{
-		"Ubuntu", " ubuntu", "ubuntu ", "ubuntu\n", "ubuntu\ndebian", "ubuntu:26.04", "debian:trixie", "debian:bookworm",
+		"debian", "Ubuntu", " ubuntu", "ubuntu ", "ubuntu\n", "ubuntu\ndebian", "ubuntu:26.04", "debian:trixie", "debian:bookworm",
 		"bookworm", "alpine", "ubuntu;debian", `"ubuntu"`, "$(debian)", "-ubuntu", "--debian", "--mount", "../ubuntu", " ",
 	}
 	for _, distro := range hostile {

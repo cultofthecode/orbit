@@ -232,7 +232,6 @@ func TestCommandCreatesTheDistributionOfTheFlag(t *testing.T) {
 	}{
 		{args: nil, want: "ubuntu"},
 		{args: []string{"--distro", "ubuntu"}, want: "ubuntu"},
-		{args: []string{"--distro=debian"}, want: "debian"},
 		{args: []string{"--distro", ""}, want: "ubuntu"},
 	}
 	for _, test := range tests {
@@ -252,7 +251,7 @@ func TestCommandCreatesTheDistributionOfTheFlag(t *testing.T) {
 func TestCommandRefusesAnUnknownDistribution(t *testing.T) {
 	home := newHome(t)
 	t.Chdir(filepath.Join(home, "work", "api"))
-	for _, distro := range []string{"alpine", "Debian", "debian:trixie", "ubuntu:26.04", "bookworm", "--mount", "-x", "a b", "a;b", `a"b`, "a'b", "a\nb"} {
+	for _, distro := range []string{"alpine", "debian", "Debian", "debian:trixie", "ubuntu:26.04", "bookworm", "--mount", "-x", "a b", "a;b", `a"b`, "a'b", "a\nb"} {
 		t.Run(distro, func(t *testing.T) {
 			fake := orbstacktest.New(sandbox.NamePrefix)
 
@@ -277,7 +276,7 @@ func TestCommandHelpListsTheDistributions(t *testing.T) {
 	if flag == nil {
 		t.Fatal("no flag --distro")
 	}
-	if want := "distribution of a new sandbox: ubuntu, debian (default ubuntu)"; flag.Usage != want {
+	if want := "distribution of a new sandbox: ubuntu (default ubuntu)"; flag.Usage != want {
 		t.Errorf("usage = %q, want %q", flag.Usage, want)
 	}
 	if strings.Contains(flag.Usage, "alpine") {

@@ -168,19 +168,11 @@ func TestCreateMountsOnlyTheDirectoryAtItsOwnPath(t *testing.T) {
 	}
 }
 
-// TestActiveMountsShowASwappedPath creates a machine for a path that an
-// agent swapped for a relative symlink to another directory after the check
-// and before the mount. The configuration of OrbStack still names the
-// checked path; the active mounts show the target of the symlink. A path
-// swapped between two starts does not show there. While the machine exists,
-// init refuses every directory, so the test blocks the init tests of every
-// run on the host.
 // TestCreateUsesThePinnedImageOfEveryDistribution creates one machine per
 // distribution, one after the other, and reads the release that runs in it.
 func TestCreateUsesThePinnedImageOfEveryDistribution(t *testing.T) {
 	want := map[string][]string{
 		"ubuntu": {"ID=ubuntu", `VERSION_ID="26.04"`},
-		"debian": {"ID=debian", `VERSION_ID="13"`},
 	}
 	for _, key := range Distributions() {
 		t.Run(key, func(t *testing.T) {
@@ -201,6 +193,13 @@ func TestCreateUsesThePinnedImageOfEveryDistribution(t *testing.T) {
 	}
 }
 
+// TestActiveMountsShowASwappedPath creates a machine for a path that an
+// agent swapped for a relative symlink to another directory after the check
+// and before the mount. The configuration of OrbStack still names the
+// checked path; the active mounts show the target of the symlink. A path
+// swapped between two starts does not show there. While the machine exists,
+// init refuses every directory, so the test blocks the init tests of every
+// run on the host.
 func TestActiveMountsShowASwappedPath(t *testing.T) {
 	blockInit(t)
 	base := hostDir(t)

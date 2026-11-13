@@ -505,7 +505,7 @@ func TestFakeListReturnsItsError(t *testing.T) {
 }
 
 func TestFakeCreateRecordsTheDistributionAndRefusesOthers(t *testing.T) {
-	for _, key := range []string{"ubuntu", "debian"} {
+	for _, key := range []string{"ubuntu"} {
 		fake := New("orbit-")
 		if err := fake.Create(context.Background(), "orbit-api-1d9b22c9", "/work/api", key, true); err != nil {
 			t.Fatalf("Create(%q) = %v", key, err)

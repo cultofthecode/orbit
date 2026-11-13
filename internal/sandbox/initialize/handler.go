@@ -134,7 +134,7 @@ func (h Handler) Handle(ctx context.Context, in Input) (Output, error) {
 // prepare resolves the agent, validates the project directory, and builds the
 // scripts, without asking OrbStack anything.
 func (h Handler) prepare(in Input) (plan, error) {
-	distribution, err := distribution(in.Distro)
+	dist, err := distribution(in.Distro)
 	if err != nil {
 		return plan{}, err
 	}
@@ -150,7 +150,7 @@ func (h Handler) prepare(in Input) (plan, error) {
 	if err != nil {
 		return plan{}, fmt.Errorf("provisioning script: %w", err)
 	}
-	p := plan{name: sandbox.MachineName(facts.Path), dir: facts.Path, forwardSSHAgent: !in.NoSSHForwarding, distribution: distribution, provision: script, dockerSetup: h.DockerSetupScript()}
+	p := plan{name: sandbox.MachineName(facts.Path), dir: facts.Path, forwardSSHAgent: !in.NoSSHForwarding, distribution: dist, provision: script, dockerSetup: h.DockerSetupScript()}
 	if in.Agent != "" {
 		p.install = installScript(agent.Install)
 	}
