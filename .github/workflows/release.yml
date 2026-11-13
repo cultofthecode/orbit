@@ -118,7 +118,8 @@ jobs:
             exit 0
           fi
           base="$(gh api "repos/${TAP}" --jq .default_branch)"
-          gh api "repos/${TAP}/contents/Formula/orbit.rb?ref=${base}" >"${RUNNER_TEMP}/orbit.json"
+          base_sha="$(gh api "repos/${TAP}/git/ref/heads/${base}" --jq .object.sha)"
+          gh api "repos/${TAP}/contents/Formula/orbit.rb?ref=${base_sha}" >"${RUNNER_TEMP}/orbit.json"
           jq -r .content "${RUNNER_TEMP}/orbit.json" | base64 -d >"${RUNNER_TEMP}/orbit.rb"
           cp "${RUNNER_TEMP}/orbit.rb" "${RUNNER_TEMP}/orbit.before.rb"
           .github/scripts/bump-tap-formula.sh "${GITHUB_REF_NAME}" "${RUNNER_TEMP}/orbit.rb"
@@ -126,8 +127,13 @@ jobs:
             echo "The formula already names ${GITHUB_REF_NAME}; nothing to do."
             exit 0
           fi
-          gh api "repos/${TAP}/git/refs" -f "ref=refs/heads/${branch}" \
-            -f "sha=$(gh api "repos/${TAP}/git/ref/heads/${base}" --jq .object.sha)" >/dev/null
+          refs="$(gh api "repos/${TAP}/git/matching-refs/heads/${branch}")"
+          if jq -e --arg ref "refs/heads/${branch}" 'any(.[]; .ref == $ref)' <<<"$refs" >/dev/null; then
+            echo "${branch} is left from an earlier run and has no open PR; resetting it to ${base}."
+            gh api -X PATCH "repos/${TAP}/git/refs/heads/${branch}" -f "sha=${base_sha}" -F force=true >/dev/null
+          else
+            gh api "repos/${TAP}/git/refs" -f "ref=refs/heads/${branch}" -f "sha=${base_sha}" >/dev/null
+          fi
           gh api -X PUT "repos/${TAP}/contents/Formula/orbit.rb" \
             -f "message=orbit ${version}" -f "branch=${branch}" \
             -f "sha=$(jq -r .sha "${RUNNER_TEMP}/orbit.json")" \
