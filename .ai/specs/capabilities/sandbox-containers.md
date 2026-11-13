@@ -75,8 +75,14 @@ The system SHALL give the sandbox no socket, endpoint, variable, image, or conta
 This requirement describes observed platform behavior, not a guarantee of Orbit. Orbit cannot enforce that `docker run --privileged` fails: rootless Docker supports `--privileged` inside the user namespace of `agent`, and the agent owns its daemon and can start it with any flag (Q5). On OrbStack 2.2.5 the flag fails for a reason of the platform. The system SHALL carry an integration test that pins this behavior on the OrbStack version that the test runs on: the test fails when `--privileged` starts a container, and the owner then decides (Q5 b). The test does not run on the machine of a user, so a later OrbStack there can let the flag start a container without notice.
 
 ### Scenario: Privileged container
-- WHEN the integration test runs `docker run --privileged alpine true` as `agent` on OrbStack 2.2.5
-- THEN the container does not start; on an OrbStack version where it starts, the test fails
+- WHEN the integration test runs `docker run --privileged alpine true` as `agent` on OrbStack 2.2.5 on Ubuntu 26.04 or on Debian 13 trixie
+- THEN the container does not start on either distribution; on an OrbStack version where it starts, the test fails
+
+### Scenario: Equivalent capability combination
+- WHEN the integration test runs a container of `agent` with the capability set of `--privileged` on Debian 13 trixie
+- THEN the container does not start, as on Ubuntu 26.04
+
+Source: .ai/specs/2026-11-12-sandbox-distributions.md (Delta, MODIFIED; owner decision of 2026-11-13: `--privileged` and its equivalent are refused on every distribution, so the allowed scenario of the Delta is not archived)
 
 ## Requirement: Containers cannot change the boundary
 The system SHALL keep the firewall and proxy configuration and the proxy process out of reach of every container of `agent`.
