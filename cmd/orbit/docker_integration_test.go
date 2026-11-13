@@ -18,7 +18,7 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/stop"
 )
 
-// dockerTimeout bounds the Docker integration test: provisioning with the
+// dockerTimeout bounds the Docker integration test when the test binary has no deadline: provisioning with the
 // engine, pulls, three image builds, and four restarts of the machine.
 const dockerTimeout = 60 * time.Minute
 
@@ -321,8 +321,7 @@ func expectAgentVariables(ctx context.Context, t *testing.T, client *orbstack.Cl
 // each other, so they run in order.
 func TestInitGivesTheAgentRootlessDocker(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), dockerTimeout)
-	t.Cleanup(cancel)
+	ctx := boundedContext(t, dockerTimeout)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	t.Logf("machine %s", name)

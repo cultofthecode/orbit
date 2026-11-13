@@ -23,7 +23,7 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
 )
 
-// destroyTimeout bounds the destroy test: three runs of init, two with the
+// destroyTimeout bounds the destroy test when the test binary has no deadline: three runs of init, two with the
 // install of Claude Code, and the deletes.
 const destroyTimeout = 30 * time.Minute
 
@@ -143,8 +143,7 @@ func (p *poller) stop() []string {
 // one as running.
 func TestDestroyDeletesTheSandboxAndNothingElse(t *testing.T) {
 	lockInit(t, syscall.LOCK_SH)
-	ctx, cancel := context.WithTimeout(context.Background(), destroyTimeout)
-	t.Cleanup(cancel)
+	ctx := boundedContext(t, destroyTimeout)
 	client := orbstack.New(sandbox.NamePrefix)
 	setUp := initHandler(client, claudeRegistry(t))
 	dirA, nameA := newSandboxDir(ctx, t, client)

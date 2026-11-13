@@ -99,18 +99,26 @@ func waitToRunInit(t *testing.T) {
 // deletes the machine. Without a deadline it ends after provisionTimeout.
 func provisionContext(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithDeadline(context.Background(), provisionDeadline(t))
+	return boundedContext(t, provisionTimeout)
+}
+
+// boundedContext is provisionContext with fallback as the bound for a test
+// binary that has no deadline.
+func boundedContext(t *testing.T, fallback time.Duration) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(context.Background(), contextEnd(t, fallback))
 	t.Cleanup(cancel)
 	return ctx
 }
 
-// provisionDeadline returns the end of the context of provisionContext.
-func provisionDeadline(t *testing.T) time.Time {
+// contextEnd returns cleanupGrace before the deadline of the test binary, or
+// fallback from now when it has none.
+func contextEnd(t *testing.T, fallback time.Duration) time.Time {
 	t.Helper()
 	if deadline, ok := t.Deadline(); ok {
 		return deadline.Add(-cleanupGrace)
 	}
-	return time.Now().Add(provisionTimeout)
+	return time.Now().Add(fallback)
 }
 
 // otherMachines returns the names of the machines on the host besides
