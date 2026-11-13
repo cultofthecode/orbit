@@ -22,6 +22,9 @@ var (
 	// ErrMountPath reports a directory that cannot be mounted at its own
 	// path: it is not absolute, or it holds a colon or a comma.
 	ErrMountPath = errors.New("mount path is not absolute or contains a colon or a comma")
+	// ErrDistribution reports a distribution key that the adapter has no
+	// pinned image for: anything but "ubuntu".
+	ErrDistribution = errors.New("distribution has no pinned image")
 	// ErrNoMachine reports a machine that does not exist, where orb fails
 	// with "machine not found".
 	ErrNoMachine = errors.New("machine not found")
@@ -79,6 +82,8 @@ type Call struct {
 	Script string
 	// Forward is the SSH agent forwarding that a Create call asked for.
 	Forward bool
+	// Distribution is the distribution key that a Create call passed.
+	Distribution string
 }
 
 // Fake keeps machines in memory and records every call.
@@ -226,16 +231,31 @@ func (f *Fake) Exists(_ context.Context, name string) (bool, error) {
 	return exists, nil
 }
 
-// Create adds the machine name with dir mounted at its own path and the SSH
-// agent forwarding forwardSSHAgent. It refuses a name without the prefix of
-// the fake, and a directory that the adapter cannot mount at its own path.
-func (f *Fake) Create(_ context.Context, name, dir string, forwardSSHAgent bool) error {
-	f.Calls = append(f.Calls, Call{Op: OpCreate, Name: name, Dir: dir, Forward: forwardSSHAgent})
+// distributions are the keys that Create accepts. A test in package orbstack
+// keeps the list equal to the pins of the adapter.
+var distributions = []string{"ubuntu"}
+
+// Distributions returns the distribution keys that Create accepts, in a new
+// slice.
+func Distributions() []string {
+	return slices.Clone(distributions)
+}
+
+// Create adds the machine name of the distribution key with dir mounted at
+// its own path and the SSH agent forwarding forwardSSHAgent. It refuses a
+// name without the prefix of the fake, a directory that the adapter cannot
+// mount at its own path, and, after the directory like the adapter, a key
+// other than one of Distributions (ErrDistribution).
+func (f *Fake) Create(_ context.Context, name, dir, distribution string, forwardSSHAgent bool) error {
+	f.Calls = append(f.Calls, Call{Op: OpCreate, Name: name, Dir: dir, Forward: forwardSSHAgent, Distribution: distribution})
 	if err := f.checkOwned(name); err != nil {
 		return err
 	}
 	if !filepath.IsAbs(dir) || strings.ContainsAny(dir, ":,") {
 		return fmt.Errorf("%w: %q", ErrMountPath, dir)
+	}
+	if !slices.Contains(distributions, distribution) {
+		return fmt.Errorf("%w: %q", ErrDistribution, distribution)
 	}
 	if f.CreateErr != nil {
 		return f.CreateErr

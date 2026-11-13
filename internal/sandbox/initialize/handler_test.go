@@ -257,7 +257,7 @@ func checkCreates(t *testing.T, entry *user.User, dir, project string) {
 func checkedCreateCalls(name, project string) []orbstacktest.Call {
 	return []orbstacktest.Call{
 		{Op: orbstacktest.OpMounts},
-		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true},
+		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true, Distribution: "ubuntu"},
 		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpActiveMounts, Name: name},
@@ -2121,7 +2121,7 @@ func TestHandleReportsOrbStackFailures(t *testing.T) {
 			createErr: boom,
 			wantCalls: []orbstacktest.Call{
 				{Op: orbstacktest.OpMounts},
-				{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true},
+				{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true, Distribution: "ubuntu"},
 			},
 		},
 		{
@@ -2748,7 +2748,7 @@ func TestHandleCreatesWithoutForwardingWhenAsked(t *testing.T) {
 	}
 	want := []orbstacktest.Call{
 		{Op: orbstacktest.OpMounts},
-		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: false},
+		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: false, Distribution: "ubuntu"},
 		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpActiveMounts, Name: name},
@@ -2833,7 +2833,7 @@ func TestHandleDeletesACreatedMachineThatReportsAnotherForwarding(t *testing.T) 
 	}
 	want := []orbstacktest.Call{
 		{Op: orbstacktest.OpMounts},
-		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true},
+		{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true, Distribution: "ubuntu"},
 		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
 		{Op: orbstacktest.OpDelete, Name: name},
 	}
@@ -3290,6 +3290,65 @@ func TestHandleFollowsAHopOfAProtectedPathWithParentAfterAName(t *testing.T) {
 				dir := filepath.Join(home, "work", "api")
 				checkCreates(t, account(home), dir, dir)
 			})
+		})
+	}
+}
+
+func TestHandleCreatesTheMachineOfTheRequestedDistribution(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	name := sandbox.MachineName(project)
+	tests := []struct {
+		distro string
+		want   string
+	}{
+		{distro: "", want: "ubuntu"},
+		{distro: "ubuntu", want: "ubuntu"},
+	}
+	for _, test := range tests {
+		t.Run(test.distro, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Distro: test.distro})
+
+			if err != nil || got != (Output{Name: name, Dir: project, Created: true}) {
+				t.Fatalf("Handle = %+v, %v, want the created sandbox", got, err)
+			}
+			want := []orbstacktest.Call{
+				{Op: orbstacktest.OpMounts},
+				{Op: orbstacktest.OpCreate, Name: name, Dir: project, Forward: true, Distribution: test.want},
+				{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
+				{Op: orbstacktest.OpMounts},
+				{Op: orbstacktest.OpActiveMounts, Name: name},
+				{Op: orbstacktest.OpRunAsRoot, Name: name, Script: scriptFor(uint32(os.Getuid()), nil, true)},
+				{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testDockerSetupScript},
+			}
+			if !slices.Equal(fake.Calls, want) {
+				t.Errorf("calls = %v, want %v", fake.Calls, want)
+			}
+		})
+	}
+}
+
+func TestHandleRefusesAnUnknownDistributionBeforeItAsksOrbStack(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	hostile := []string{
+		"debian", "Ubuntu", " ubuntu", "ubuntu ", "ubuntu\n", "ubuntu\ndebian", "ubuntu:26.04", "debian:trixie", "debian:bookworm",
+		"bookworm", "alpine", "ubuntu;debian", `"ubuntu"`, "$(debian)", "-ubuntu", "--debian", "--mount", "../ubuntu", " ",
+	}
+	for _, distro := range hostile {
+		t.Run(distro, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+
+			_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Distro: distro})
+
+			if !errors.Is(err, sandbox.ErrUnknownDistribution) {
+				t.Errorf("Handle(%q) = %v, want %v", distro, err, sandbox.ErrUnknownDistribution)
+			}
+			if len(fake.Calls) != 0 {
+				t.Errorf("calls = %v, want none", fake.Calls)
+			}
 		})
 	}
 }

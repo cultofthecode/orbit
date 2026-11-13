@@ -26,6 +26,16 @@ func TestTheAdapterRunsInstallsAsTheAgentOfProvisioning(t *testing.T) {
 	}
 }
 
+func TestEveryDistributionHasAnImage(t *testing.T) {
+	var keys []string
+	for _, d := range sandbox.Distributions() {
+		keys = append(keys, string(d))
+	}
+	if got := orbstack.Distributions(); !slices.Equal(got, keys) {
+		t.Errorf("orbstack.Distributions() = %q, sandbox.Distributions() = %q, want the same list", got, keys)
+	}
+}
+
 func TestOrbitRegistersInitWithClaudeCode(t *testing.T) {
 	root, err := newOrbit()
 	if err != nil {

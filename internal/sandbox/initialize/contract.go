@@ -23,6 +23,13 @@ type Input struct {
 	// it creates the machine, so a machine whose setting differs fails with
 	// sandbox.ErrSSHForwardingMismatch.
 	NoSSHForwarding bool
+	// Distro is the distribution of a new sandbox: a value of
+	// sandbox.Distributions, as the user typed it, or empty when the user
+	// named none, which means sandbox.DefaultDistribution. Any other value
+	// fails with sandbox.ErrUnknownDistribution before OrbStack is asked
+	// anything. It decides only how a machine is created; a machine that
+	// already exists keeps the distribution it has.
+	Distro string
 }
 
 // Output is the sandbox of the project directory.

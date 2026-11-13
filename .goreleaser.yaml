@@ -34,4 +34,6 @@ changelog:
   disable: true
 
 release:
+  draft: true
+  replace_existing_draft: true
   prerelease: auto

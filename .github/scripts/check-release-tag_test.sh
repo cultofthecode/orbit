@@ -39,9 +39,17 @@ signed_tag() { git -c gpg.format=ssh -c "user.signingkey=$work/$2" tag -s -m rel
 failures=0
 
 expect() {
-  local want="$1" name="$2" tag="$3"
-  if "$script" "$tag" >/dev/null 2>&1; then got=accept; else got=refuse; fi
-  if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: wanted $want, got $got"; failures=$((failures + 1)); fi
+  local want="$1" name="$2" tag="$3" reason="${4:-}" out
+  if out="$("$script" "$tag" 2>&1)"; then got=accept; else got=refuse; fi
+  if [ "$got" != "$want" ]; then
+    echo "FAIL $name: wanted $want, got $got"
+    failures=$((failures + 1))
+  elif [ -n "$reason" ] && [[ "$out" != *"$reason"* ]]; then
+    echo "FAIL $name: refused for another reason: $out"
+    failures=$((failures + 1))
+  else
+    echo "ok   $name"
+  fi
 }
 
 git tag v0.1.0 "$main_commit"
@@ -50,6 +58,7 @@ signed_tag v0.3.0 bad "$main_commit"
 signed_tag v1.2 good "$main_commit"
 signed_tag release-1 good "$main_commit"
 signed_tag v0.4.0 good side
+side_commit="$(git rev-parse side)"
 signed_tag v0.5.0 good "$main_commit"
 signed_tag v0.6.0-rc.1 good "$main_commit"
 signed_tag v01.0.0 good "$main_commit"
@@ -59,23 +68,23 @@ git commit -q --allow-empty -m two
 git update-ref refs/remotes/origin/main HEAD
 signed_tag v0.7.0 good HEAD
 
-expect refuse "lightweight tag" v0.1.0
-expect refuse "unsigned annotated tag" v0.2.0
-expect refuse "tag signed by a key not in the file" v0.3.0
-expect refuse "v1.2" v1.2
+expect refuse "lightweight tag" v0.1.0 "lightweight"
+expect refuse "unsigned annotated tag" v0.2.0 "signature"
+expect refuse "tag signed by a key not in the file" v0.3.0 "signature"
+expect refuse "v1.2" v1.2 "not vMAJOR"
 expect refuse "release-1" release-1
 expect refuse "v01.0.0 (leading zero)" v01.0.0
-expect refuse "tag off main" v0.4.0
+GITHUB_SHA="$side_commit" expect refuse "tag off main" v0.4.0 "not an ancestor"
 expect refuse "missing tag" v9.9.9
-expect refuse "signed rc tag object pushed as v1.0.0" v1.0.0
-expect refuse "tag moved after the run started" v0.7.0
-GITHUB_SHA= expect refuse "GITHUB_SHA unset" v0.5.0
+expect refuse "signed rc tag object pushed as v1.0.0" v1.0.0 "must not be pushed under another name"
+expect refuse "tag moved after the run started" v0.7.0 "the tag moved"
+GITHUB_SHA='' expect refuse "GITHUB_SHA unset" v0.5.0 "GITHUB_SHA is not set"
 GITHUB_SHA="$(git rev-parse refs/tags/v0.5.0)" expect accept "GITHUB_SHA is the tag object" v0.5.0
 expect accept "signed tag on main" v0.5.0
 expect accept "signed prerelease tag on main" v0.6.0-rc.1
-FAKE_CI=failure expect refuse "ci failed" v0.5.0
+FAKE_CI=failure expect refuse "ci failed" v0.5.0 "is 'failure'"
 FAKE_CI=unfinished expect refuse "ci unfinished" v0.5.0
-FAKE_CI=none expect refuse "no ci run" v0.5.0
+FAKE_CI=none expect refuse "no ci run" v0.5.0 "is 'none'"
 ALLOWED_SIGNERS="$work/none" expect refuse "no allowed signers file" v0.5.0
 printf '# only a comment\n' >"$work/empty"
 ALLOWED_SIGNERS="$work/empty" expect refuse "allowed signers lists no key" v0.5.0

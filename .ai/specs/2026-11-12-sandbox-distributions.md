@@ -56,7 +56,7 @@ The table "What is Debian/Ubuntu-specific today" on #46 states premises that the
 - **Login gate.** The epic says that `systemd-user-sessions.service` holds every login on Ubuntu and Debian. It does not. `orb -m <m> -u <user>` ran 0.02 s after a slow boundary stand-in started, while `systemd-user-sessions.service` was `inactive` and `/run/nologin` existed. That happened on Ubuntu, trixie, and bookworm. Alpine has no gate at all (spike, topic 1). This matches #74 and the pinned observation O01 of the escape suite. Consequence: on every distribution, the gate for Orbit's own paths is the root-side check that Orbit runs before it hands the machine to the agent (`ReadinessScript` for `shell`, `BootCheckScript` for `start`, and the self-check of the root script for `init`). The `systemd-user-sessions.service` drop-in stays on Ubuntu and Debian. It still holds PAM logins (`su -`, `login`), and the readiness check requires it. No design in this spec relies on it for `orb` sessions. A session that someone opens by hand with `orb -m <m> -u agent` stays ungated on every distribution (known limit, O01).
 - **`/etc/environment` without PAM.** OrbStack reads it for every `orb -u` command, on Alpine too. Only `su -` on Alpine ignores it (spike, topic 6).
 - **`libstdc++` and `USE_BUILTIN_RIPGREP=0`.** Claude Code does not need either of them on musl (spike, topic 8; Q6).
-- **nftables stop.** The OpenRC service flushes the ruleset on stop, as the Debian unit does. Only the rules file differs (spike, topic 4).
+- **nftables stop.** The OpenRC service flushes the ruleset on stop. The Debian unit does too, but the same `ExecStop=` drop-in as on Ubuntu clears it (#168), and the Alpine profile needs its own equivalent. Only the rules file differs (spike, topic 4).
 
 ## 📝 Prior spec drift
 
@@ -122,7 +122,7 @@ The rest stays shared within the `aptSystemd` family, because the spike ran it u
 
 `BootCheckScript`, `MarkerCheckScript`, `ReadinessScript`, and `DockerSetupScript` stay without input in 0.1, because both distributions are systemd. In 0.2 they take the distribution, and `start` and `shell` read it from the adapter (topic 7).
 
-**Ubuntu bytes.** For `ubuntu`, the rendered script is byte-identical to today, except for the `/etc/os-release` guard of topic 7. A golden file proves it (Phase 2, steps 5 and 6). `Version` stays `3`: an Ubuntu machine provisioned by version 3 holds exactly the state that this build provisions, and a Debian machine is new.
+**Ubuntu bytes.** For `ubuntu`, the rendered script is byte-identical to today, except for the `/etc/os-release` guard of topic 7. A golden file proves it (Phase 2, steps 5 and 6). `Version` is `4` (#168 added the empty `ExecStop=` drop-in of `nftables.service`) and this work does not raise it: an Ubuntu machine provisioned by version 4 holds exactly the state that this build provisions, and a Debian machine is new.
 
 **Alternatives considered.**
 
@@ -469,7 +469,7 @@ The brief is a protected contract (`AGENTS.md`; `CODE_REVIEW.md`), and only the 
 
 ## 📋 Phasing
 
-- **Phase 1: plumbing with Ubuntu only (E04-S01-T01, #50).** The enum (with `ubuntu` only), the flag, the image table and `Create` key, `Distribution`, `ResolveDistribution`, and the composition test. Behavior is unchanged except the new flag and the output line.
+- **Phase 1: plumbing with Ubuntu only (E04-S01-T01, #50).** The enum (with `ubuntu` only), the flag, the image table (`ubuntu` only) and the `Create` key. Behavior is unchanged except the new flag. Decision 3 on #50 moves `ResolveDistribution`, `ErrDistributionMismatch`, the adapter `Distribution(ctx, name)`, `Output.Distribution`, `TestInitPinsTheStoredImage`, and the three-way composition test to Phase 2 (#51); the coordinator decision on #50 (13 Nov, M1 of PR #189) keeps `debian` out of Phase 1, so `orbit init --distro debian` is refused until #51.
 - **Phase 2: Debian (E04-S01-T02, #51).** Profiles, the os-release guard, a probe harness without `python3`, the privileged table with E18–E22 and M02, and then the `debian` value in all three tables at once, with the mismatch refusal. The PR that adds `debian` carries the Debian integration and escape runs, so `debian` never reaches `main` without evidence.
 - **Phase 3: records (E04-S01, #49).** The docs and the archive of the Delta.
 - **Release 0.2 (not planned here).** E04-S02 (#52), E04-S03 (#56), and E04-S04 (#57) wait for a 0.2 distribution spec that starts from topics 3, 4, 6, and 8 above, the Alpine failure table, and Q5–Q7.
@@ -479,9 +479,9 @@ The brief is a protected contract (`AGENTS.md`; `CODE_REVIEW.md`), and only the 
 ### Phase 1: plumbing with Ubuntu only
 
 1. **Characterize `init`.** Make `TestHandleCreatesTheMachine` and `TestHandleKeepsAnExistingMachine` assert the arguments of `Create` and the full call list on the fake, green on the unchanged handler. Commit alone. → verify: `go test ./internal/sandbox/...`
-2. **`sandbox.Distribution`.** Add the type with `Ubuntu` only, `ParseDistribution`, `ResolveDistribution`, the two errors, and the hostile-input tables. → verify: `go test ./internal/sandbox/...`
+2. **`sandbox.Distribution`.** Add the type with `Ubuntu` only, `ParseDistribution`, the hostile-input tables (`ResolveDistribution` and the errors move to #51). → verify: `go test ./internal/sandbox/...`
 3. **Adapter.** Add the image table (`ubuntu` only), the `Create` key, `ErrDistribution`, `Distribution`, `parseDistribution` with a real capture of `orb list --format json` committed as test data, and the fake. → verify: `go test ./internal/orbstack/...`
-4. **Slice and wiring.** Add `--distro`, `Input.Distro`, `Output.Distribution`, the order of topic 7, `cmd/orbit` wiring, `TestEveryDistributionHasAnImageAndAProfile` (with `provision.Distributions()` returning `ubuntu`), and the integration test `TestInitPinsTheStoredImage`. Update the tests of step 1 to the MODIFIED scenarios. → verify: full validation gate; `go test -tags integration -p 1 -run 'TestInitProvisionsTheSandbox|TestInitPinsTheStoredImage' ./cmd/orbit/`
+4. **Slice and wiring.** Add `--distro`, `Input.Distro`, and the `cmd/orbit` wiring; `Output.Distribution`, the order of topic 7, `TestEveryDistributionHasAnImageAndAProfile`, and `TestInitPinsTheStoredImage` move to #51. Update the tests of step 1 to the MODIFIED scenarios. → verify: full validation gate; `go test -tags integration -p 1 -run 'TestInitProvisionsTheSandbox|TestInitPinsTheStoredImage' ./cmd/orbit/`
 
 ### Phase 2: Debian
 

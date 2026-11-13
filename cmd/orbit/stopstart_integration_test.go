@@ -316,7 +316,7 @@ func TestStopAndStartRefuseAMachineInAnotherState(t *testing.T) {
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	created := make(chan error, 1)
-	go func() { created <- client.Create(ctx, name, dir, true) }()
+	go func() { created <- client.Create(ctx, name, dir, "ubuntu", true) }()
 
 	state := waitForTransientState(ctx, t, client, name)
 	_, stopErr := stop.Handler{Machines: client}.Handle(ctx, stop.Input{Dir: dir})

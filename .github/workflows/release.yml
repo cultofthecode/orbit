@@ -2,7 +2,9 @@ name: release
 
 # A signed annotated tag vX.Y.Z on main with green CI publishes one GitHub
 # Release: the darwin arm64 archive, checksums.txt, and a build provenance
-# attestation. The check job refuses a wrong tag before anything is published.
+# attestation. GoReleaser creates a draft; the last step publishes it only after
+# the attestation succeeded, and the release job waits for the `release`
+# environment approval. The check job refuses a wrong tag before anything is published.
 # Spec: .ai/specs/2026-11-11-homebrew-distribution.md (M3). Process: RELEASING.md.
 
 on:
@@ -10,6 +12,10 @@ on:
     tags: ["v*"]
 
 permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   GORELEASER_VERSION: v2.20.2
@@ -29,6 +35,8 @@ jobs:
           persist-credentials: false
       - name: Fetch the annotated tag object
         run: git fetch --force origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+      - name: Fetch main
+        run: git fetch --force origin "+refs/heads/main:refs/remotes/origin/main"
       - name: Check the tag
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,35 +88,40 @@ jobs:
           subject-path: |
             dist/orbit_*_darwin_arm64.tar.gz
             dist/checksums.txt
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false
 
   tap:
     name: tap
     needs: release
-    # Skipped while the tap App is not configured (repository variable
-    # TAP_APP_CLIENT_ID unset) and for pre-release tags (SemVer '-').
-    if: ${{ vars.TAP_APP_CLIENT_ID != '' && !contains(github.ref_name, '-') }}
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release
     permissions:
       contents: read
+    env:
+      TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
     steps:
+      - name: Check the tap token
+        id: token
+        run: |
+          if [ -z "${TAP_GITHUB_TOKEN}" ]; then
+            echo "Secret TAP_GITHUB_TOKEN is empty in the release environment. Skipping the tap update; edit the formula by hand (RELEASING.md)."
+            echo "present=false" >>"${GITHUB_OUTPUT}"
+          else
+            echo "present=true" >>"${GITHUB_OUTPUT}"
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.token.outputs.present == 'true'
         with:
           persist-credentials: false
-      - name: Get a token for the tap only
-        id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.TAP_APP_CLIENT_ID }}
-          private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
-          owner: cultofthecode
-          repositories: homebrew-tap
-          permission-contents: write
-          permission-pull-requests: write
       - name: Open the formula bump PR
+        if: steps.token.outputs.present == 'true'
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
           TAP: cultofthecode/homebrew-tap
         run: |
           version="${GITHUB_REF_NAME#v}"

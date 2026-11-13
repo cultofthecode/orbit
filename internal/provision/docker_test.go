@@ -12,7 +12,7 @@ import (
 
 // provisioningChanges names one change of provisioning per Version. A change
 // that bumps Version appends its name; a merge keeps every line.
-var provisioningChanges = []string{"base", "ssh-agent-forwarding", "rootless-docker"}
+var provisioningChanges = []string{"base", "ssh-agent-forwarding", "rootless-docker", "firewall-survives-stop"}
 
 func TestVersionCountsTheProvisioningChanges(t *testing.T) {
 	if Version != len(provisioningChanges) {
