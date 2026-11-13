@@ -122,10 +122,10 @@ func tableCell(expected privilegedExpectation, ok bool) string {
 // would prove nothing, and the test fails.
 func (r escapeRig) privilegedStarts(ctx context.Context, t *testing.T) bool {
 	t.Helper()
-	if err := r.runIn(ctx, agentContainer, "docker run --rm $IMG true\n"); err != nil {
+	if err := r.runIn(ctx, agentContainer, "docker run --rm $IMG true || fail \"docker run failed\"\n"); err != nil {
 		t.Fatalf("CONTROL FAILED: a container of the probe image without --privileged does not start in %s, so a refusal of --privileged would prove nothing: %v", r.name, err)
 	}
-	return r.runIn(ctx, agentContainer, "docker run --rm --privileged $IMG true\n") == nil
+	return r.runIn(ctx, agentContainer, "docker run --rm --privileged $IMG true || fail \"docker run --privileged failed\"\n") == nil
 }
 
 // kernelVariants and the other variant lists are the binding Containers
