@@ -30,7 +30,7 @@ func NewCommand(handler Handler, agents []string) *cobra.Command {
 	}
 	command.Flags().StringVar(&agent, "agent", "", "agent to install in the sandbox: "+strings.Join(agents, ", ")+" (default none)")
 	command.Flags().StringVar(&distro, "distro", "", "distribution of a new sandbox: "+distributionNames()+" (default "+string(sandbox.DefaultDistribution)+")")
-	command.Flags().BoolVar(&noSSHForwarding, "no-ssh-forwarding", false, "do not forward the host SSH agent into the sandbox")
+	command.Flags().BoolVar(&noSSHForwarding, "no-ssh-forwarding", false, "do not forward the host SSH agent into the sandbox (by default the sandbox can use every key in it)")
 	return command
 }
 
