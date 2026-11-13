@@ -173,9 +173,13 @@ func TestCreateMountsOnlyTheDirectoryAtItsOwnPath(t *testing.T) {
 func TestCreateUsesThePinnedImageOfEveryDistribution(t *testing.T) {
 	want := map[string][]string{
 		"ubuntu": {"ID=ubuntu", `VERSION_ID="26.04"`},
+		"debian": {"ID=debian", "VERSION_CODENAME=trixie"},
 	}
 	for _, key := range Distributions() {
 		t.Run(key, func(t *testing.T) {
+			if len(want[key]) == 0 {
+				t.Fatalf("no os-release lines to check for %s", key)
+			}
 			dir := hostDir(t)
 			client, name := newDistroMachine(t, dir, key, false)
 			ctx := testContext(t)
