@@ -1,0 +1,9 @@
+# Public SSH signing keys that may sign a release tag (Q9 of
+# .ai/specs/2026-11-11-homebrew-distribution.md). Format: ssh-keygen(1)
+# ALLOWED SIGNERS, one key per line, for example:
+#
+#   maintainer@example.com namespaces="git" ssh-ed25519 AAAA...
+#
+# OWNER STEP: add the public key of the Maintainer here. Until a key is
+# listed, .github/scripts/check-release-tag.sh refuses every tag (fail closed).
+# Never add a private key.
