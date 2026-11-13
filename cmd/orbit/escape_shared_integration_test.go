@@ -33,7 +33,7 @@ func TestEscapeShared(t *testing.T) {
 	var counts tally
 	t.Cleanup(func() { t.Log(counts.summary()) })
 	handler := initHandler(client, claudeRegistry(t))
-	if out, err := handler.Handle(ctx, initialize.Input{Dir: dir, Agent: claude.Definition.Name}); err != nil || !out.Created {
+	if out, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t), Agent: claude.Definition.Name}); err != nil || !out.Created {
 		t.Fatalf("init --agent claude-code = %+v, %v; machines that this test did not create: %s", out, err, otherMachines(ctx, client, name))
 	}
 	rig := escapeRig{client: client, name: name, tally: &counts}

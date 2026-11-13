@@ -79,7 +79,7 @@ func TestInitInstallsClaudeCodeAndDropsItsHostsWithoutAgent(t *testing.T) {
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
 
-	first, err := handler.Handle(ctx, initialize.Input{Dir: dir, Agent: claude.Definition.Name})
+	first, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t), Agent: claude.Definition.Name})
 	if err != nil || !first.Created {
 		t.Fatalf("Handle with claude-code = %+v, %v, want a created sandbox; machines that this test did not create: %s", first, err, otherMachines(ctx, client, name))
 	}
@@ -87,7 +87,7 @@ func TestInitInstallsClaudeCodeAndDropsItsHostsWithoutAgent(t *testing.T) {
 		t.Errorf("probes with Claude Code in %s:\n%v", name, err)
 	}
 
-	second, err := handler.Handle(ctx, initialize.Input{Dir: dir})
+	second, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)})
 	if err != nil || second.Created {
 		t.Fatalf("Handle without agent = %+v, %v, want the existing sandbox provisioned again; machines that this test did not create: %s", second, err, otherMachines(ctx, client, name))
 	}
@@ -111,7 +111,7 @@ func TestInitDeletesTheNewMachineWhenTheDownloadIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := initHandler(client, agents).Handle(ctx, initialize.Input{Dir: dir, Agent: refused.Name})
+	out, err := initHandler(client, agents).Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t), Agent: refused.Name})
 
 	if err == nil || !strings.Contains(err.Error(), "install the agent in sandbox "+name) {
 		t.Fatalf("Handle = %+v, %v, want the install to fail; machines that this test did not create: %s", out, err, otherMachines(ctx, client, name))

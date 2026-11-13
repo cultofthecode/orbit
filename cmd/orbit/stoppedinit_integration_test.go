@@ -25,7 +25,7 @@ func TestInitRefusesAStoppedSandboxAndNeverStartsIt(t *testing.T) {
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	setUp := initHandler(client, claudeRegistry(t))
-	if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir}); err != nil {
+	if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)}); err != nil {
 		t.Fatalf("init in %s = %v; machines that this test did not create: %s", dir, err, otherMachines(ctx, client, name))
 	}
 	if _, err := (stop.Handler{Machines: client}).Handle(ctx, stop.Input{Dir: dir}); err != nil {
@@ -33,7 +33,7 @@ func TestInitRefusesAStoppedSandboxAndNeverStartsIt(t *testing.T) {
 	}
 	expectState(ctx, t, client, name, "stopped", "after the stop")
 
-	_, err := setUp.Handle(ctx, initialize.Input{Dir: dir})
+	_, err := setUp.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)})
 
 	if !errors.Is(err, initialize.ErrNotRunning) || !strings.Contains(err.Error(), "orbit start") {
 		t.Errorf("init in a stopped sandbox = %v, want %v naming orbit start", err, initialize.ErrNotRunning)
@@ -44,7 +44,7 @@ func TestInitRefusesAStoppedSandboxAndNeverStartsIt(t *testing.T) {
 	if _, err := startHandler(client).Handle(ctx, start.Input{Dir: dir}); err != nil {
 		t.Fatalf("start of %s = %v", name, err)
 	}
-	if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir}); err != nil {
+	if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)}); err != nil {
 		t.Errorf("init after orbit start = %v, want success", err)
 	}
 	expectOrbStackRunning(t)

@@ -66,7 +66,7 @@ func TestEscapeSymlinkSwap(t *testing.T) {
 		return os.Symlink(filepath.Join("..", "secret"), checked)
 	}}
 
-	_, err := initHandler(machines, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: checked})
+	_, err := initHandler(machines, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: checked, Distro: integrationDistro(t)})
 
 	rig := escapeRig{client: client, name: name, tally: &counts}
 	t.Run("E16-symlink-swap", func(t *testing.T) {
@@ -232,7 +232,7 @@ func TestEscapeCredentialLocations(t *testing.T) {
 			t.Logf("E17 proves R08 D08: init on %s", form.path)
 			result := attemptResult{id: "E17 " + form.name}
 			deleteMachinesOfForm(ctx, t, client, form.path)
-			out, err := handler.Handle(ctx, initialize.Input{Dir: form.path})
+			out, err := handler.Handle(ctx, initialize.Input{Dir: form.path, Distro: integrationDistro(t)})
 			if !refusedAsACredential(err) {
 				result.escaped, result.evidence = true, "init on "+form.path+" = "+errString(err)+" "+out.Name
 			}

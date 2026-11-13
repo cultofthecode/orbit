@@ -88,7 +88,7 @@ func TestEscapeWeakenedBoundary(t *testing.T) {
 	dir, name := newSandboxDir(ctx, t, client)
 	var counts tally
 	t.Cleanup(func() { t.Log(counts.summary()) })
-	if out, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir}); err != nil || !out.Created {
+	if out, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)}); err != nil || !out.Created {
 		t.Fatalf("init = %+v, %v; machines that this test did not create: %s", out, err, otherMachines(ctx, client, name))
 	}
 	rig := escapeRig{client: client, name: name, tally: &counts}

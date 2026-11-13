@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -87,9 +88,12 @@ func integrationDistro(t *testing.T) string {
 	if _, err := sandbox.ParseDistribution(value); err != nil {
 		t.Fatalf("ORBIT_IT_DISTRO: %v", err)
 	}
-	t.Logf("distribution: %s", value)
+	logDistribution.Do(func() { t.Logf("distribution: %s", value) })
 	return value
 }
+
+// logDistribution makes integrationDistro log the distribution once per run.
+var logDistribution sync.Once
 
 // TestInitRefusesAnotherDistribution creates a sandbox on Ubuntu, then runs
 // init --distro debian over it. Init must fail with the mismatch before it

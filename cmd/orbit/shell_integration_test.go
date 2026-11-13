@@ -106,7 +106,7 @@ func TestShellIsTheAgentInTheProjectDirectory(t *testing.T) {
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	initRepository(t, dir)
-	if _, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir, Agent: claude.Definition.Name}); err != nil {
+	if _, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t), Agent: claude.Definition.Name}); err != nil {
 		t.Fatalf("init --agent claude-code in %s = %v; machines that this test did not create: %s", dir, err, otherMachines(ctx, client, name))
 	}
 	handler := shell.Handler{Machines: client, ReadinessScript: provision.ReadinessScript}
