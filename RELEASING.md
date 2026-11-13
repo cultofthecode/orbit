@@ -12,7 +12,7 @@ A release holds one archive, `orbit_X.Y.Z_darwin_arm64.tar.gz` (Apple Silicon on
 4. **Push the tag over SSH:** `git push origin vX.Y.Z`. Never push `--tags`.
 5. **Watch the release run** (`gh run watch`). The `check` job refuses a tag that is lightweight, unsigned, signed by another key, not SemVer, a signed tag object pushed under another name, moved after the push, off `main`, or on a commit whose `ci` run is not green. GoReleaser releases the pushed tag even when a pre-release tag points to the same commit. Then `release` builds with GoReleaser and attests the archive.
 6. **Verify:** `gh attestation verify orbit_X.Y.Z_darwin_arm64.tar.gz --repo cultofthecode/orbit`, and compare the archive with `checksums.txt` (`shasum -a 256 -c`).
-7. **Merge the tap PR** once the tap exists (E06-S04 and E06-S05).
+7. **Merge the tap PR.** For a stable tag the `tap` job opens a PR on `cultofthecode/homebrew-tap` that changes `url` and `sha256` only (pre-release tags open none). Merge it with a merge commit after the tap CI is green. While the tap App is not configured, the job is skipped; then edit the formula by hand or run `brew bump-formula-pr`.
 
 ## Rules
 
@@ -26,3 +26,4 @@ A release holds one archive, `orbit_X.Y.Z_darwin_arm64.tar.gz` (Apple Silicon on
 - Put the public signing key into `.github/allowed_signers` (until then the check refuses every tag).
 - Make the repository public (E06-T03). On GitHub Free a private repository has neither the `release` environment nor artifact attestations, so the workflow first runs for real after that. Create the `release` environment limited to `v*` tags.
 - `.github/scripts/check-release-tag_test.sh` runs the tag check against a scratch repository; run it after you change the script.
+- Tap updates (E06-S05): create a GitHub App installed only on `cultofthecode/homebrew-tap` with `contents: write` and `pull_requests: write`. Store its private key as the secret `TAP_APP_PRIVATE_KEY` of the `release` environment, and its client ID as the repository variable `TAP_APP_CLIENT_ID` (setting the variable switches the `tap` job on). `.github/scripts/bump-tap-formula_test.sh` tests the formula edit; run it after you change `bump-tap-formula.sh`.

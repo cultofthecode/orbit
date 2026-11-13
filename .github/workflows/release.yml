@@ -80,3 +80,58 @@ jobs:
           subject-path: |
             dist/orbit_*_darwin_arm64.tar.gz
             dist/checksums.txt
+
+  tap:
+    name: tap
+    needs: release
+    # Skipped while the tap App is not configured (repository variable
+    # TAP_APP_CLIENT_ID unset) and for pre-release tags (SemVer '-').
+    if: ${{ vars.TAP_APP_CLIENT_ID != '' && !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Get a token for the tap only
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
+          owner: cultofthecode
+          repositories: homebrew-tap
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open the formula bump PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAP: cultofthecode/homebrew-tap
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          branch="bump-orbit-${version}"
+          if [ -n "$(gh pr list --repo "$TAP" --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "A PR for ${branch} is already open; nothing to do."
+            exit 0
+          fi
+          base="$(gh api "repos/${TAP}" --jq .default_branch)"
+          gh api "repos/${TAP}/contents/Formula/orbit.rb?ref=${base}" >"${RUNNER_TEMP}/orbit.json"
+          jq -r .content "${RUNNER_TEMP}/orbit.json" | base64 -d >"${RUNNER_TEMP}/orbit.rb"
+          cp "${RUNNER_TEMP}/orbit.rb" "${RUNNER_TEMP}/orbit.before.rb"
+          .github/scripts/bump-tap-formula.sh "${GITHUB_REF_NAME}" "${RUNNER_TEMP}/orbit.rb"
+          if cmp -s "${RUNNER_TEMP}/orbit.rb" "${RUNNER_TEMP}/orbit.before.rb"; then
+            echo "The formula already names ${GITHUB_REF_NAME}; nothing to do."
+            exit 0
+          fi
+          gh api "repos/${TAP}/git/refs" -f "ref=refs/heads/${branch}" \
+            -f "sha=$(gh api "repos/${TAP}/git/ref/heads/${base}" --jq .object.sha)" >/dev/null
+          gh api -X PUT "repos/${TAP}/contents/Formula/orbit.rb" \
+            -f "message=orbit ${version}" -f "branch=${branch}" \
+            -f "sha=$(jq -r .sha "${RUNNER_TEMP}/orbit.json")" \
+            -f "content=$(base64 -w0 "${RUNNER_TEMP}/orbit.rb")" >/dev/null
+          gh pr create --repo "$TAP" --base "$base" --head "$branch" \
+            --title "orbit ${version}" \
+            --body "Release [${GITHUB_REF_NAME}](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}) of orbit. Changes \`url\` and \`sha256\` only. Merge after the tap CI passes; nothing merges this automatically."
