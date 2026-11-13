@@ -334,7 +334,7 @@ func TestInitGivesTheAgentRootlessDocker(t *testing.T) {
 	expectRoot(ctx, t, name, "the refusals in the log of the proxy", refusalLog)
 	expectAgent(ctx, t, client, name, dir, "Docker Compose", composeScenario)
 	hostContainer := hostContainerReachableByRoot(ctx, t, client, name)
-	expectAgent(ctx, t, client, name, dir, "Container traffic and the boundary", strings.Replace(containerTraffic, "%s", hostContainer, 1))
+	expectAgent(ctx, t, client, name, dir, "Container traffic and the boundary", containerTrafficFor(integrationDistro(t), hostContainer))
 	expectAgent(ctx, t, client, name, dir, "Daemon replaced by the agent", replacedDaemon)
 
 	restart(ctx, t, client, dir)

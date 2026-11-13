@@ -49,6 +49,11 @@ type privilegedObservation struct {
 // operation failed with an error other than the one that the line lists.
 const unexpectedErrnoMarker = "PROBE UNEXPECTED ERRNO"
 
+// escapeMarker is what a line of E18 to E22 prints when the operation that
+// it tries succeeded. An attempt whose output has both markers is an escape:
+// an unexpected errno on one line never hides a success on another.
+const escapeMarker = "PROBE ESCAPE"
+
 // toolMissingMarker is what a probe prints, and exits non-zero, when a tool
 // that it needs is missing.
 const toolMissingMarker = "PROBE TOOL MISSING"
@@ -108,7 +113,7 @@ func attemptVerdict(r attemptResult) (outcome, string) {
 	if r.escaped && strings.Contains(r.evidence, toolMissingMarker) {
 		return outcomeToolMissing, fmt.Sprintf("%s: %s", r.id, r.evidence)
 	}
-	if r.escaped && strings.Contains(r.evidence, unexpectedErrnoMarker) && !strings.Contains(r.evidence, "succeeded") {
+	if r.escaped && strings.Contains(r.evidence, unexpectedErrnoMarker) && !strings.Contains(r.evidence, escapeMarker) {
 		return outcomeControlFailed, fmt.Sprintf("CONTROL FAILED: %s: %s", r.id, r.evidence)
 	}
 	if r.escaped {
@@ -189,6 +194,7 @@ func TestAttemptVerdict(t *testing.T) {
 		{"privileged allowed and started, attempt failed", attemptResult{id: "E22", hasControl: true, privileged: &privilegedObservation{distro: "debian", expected: privilegedAllowed, started: true}}, outcomePass, ""},
 		{"privileged allowed and started, attempt succeeded", attemptResult{id: "E22", hasControl: true, escaped: true, evidence: "nft flush ruleset succeeded", privileged: &privilegedObservation{distro: "debian", expected: privilegedAllowed, started: true}}, outcomeEscape, "ESCAPE: E22 succeeded"},
 		{"line failed with another errno", attemptResult{id: "E18", hasControl: true, escaped: true, evidence: unexpectedErrnoMarker + ": insmod: No such file"}, outcomeControlFailed, "CONTROL FAILED: E18"},
+		{"line failed with another errno beside an escape", attemptResult{id: "E18", hasControl: true, escaped: true, evidence: unexpectedErrnoMarker + ": insmod: No such file\n" + escapeMarker + ": /proc/sys/kernel/core_pattern changed"}, outcomeEscape, "ESCAPE: E18 succeeded"},
 		{"probe tool missing", attemptResult{id: "E05", hasControl: true, escaped: true, evidence: toolMissingMarker + ": curl"}, outcomeToolMissing, "PROBE TOOL MISSING: curl"},
 	}
 	for _, tt := range tests {
