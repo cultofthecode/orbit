@@ -63,8 +63,8 @@ func TestTheSelfCheckProvesEveryRuntimeGoesThroughTheWrapper(t *testing.T) {
 	}
 	text := strings.Join(p.guardCheck(), "\n")
 	for _, want := range []string{
-		"docker info --format '{{range .Runtimes}}{{.Path}}",
-		`for runtime_path in $runtime_paths; do`,
+		"docker info --format '{{range .Runtimes}}path={{.Path}}",
+		`while IFS= read -r runtime_line; do`,
 		`readlink -f "$resolved"`,
 		"does not go through the guard",
 		"/proc/$daemon_pid/environ",
@@ -192,12 +192,78 @@ func TestRuntimeWrapperRefusesWhatIsNotMasked(t *testing.T) {
 		{"default capabilities, no seccomp, no AppArmor", []string{"create", "--bundle", bundle(createConfig(defaultCaps, "", "")), "id"}, true},
 		{"one added capability, no seccomp, no AppArmor", []string{"create", "--bundle", bundle(createConfig(defaultCaps+`,"CAP_SYS_ADMIN"`, "", "")), "id"}, true},
 		{"every capability, default profiles", []string{"create", "--bundle", bundle(createConfig(allCaps, defaultSeccomp, `"apparmorProfile":"docker-default",`)), "id"}, true},
+		{"restore without masked paths", []string{"restore", "--bundle", bundle(`{"linux":{"namespaces":[]}}`), "id"}, false},
+		{"restore with short flag, no config", []string{"--root", "/r", "restore", "-b", bundle(""), "id"}, false},
+		{"restore with masked paths", []string{"restore", "--bundle", bundle(`{"linux":{"maskedPaths":["/proc/kcore"]}}`), "id"}, true},
+		{"restore with every capability and no profiles", []string{"restore", "--bundle", bundle(createConfig(allCaps, "", "")), "id"}, false},
+		{"unknown subcommand", []string{"frobnicate", "id"}, false},
+		{"unknown subcommand after global flags", []string{"--root", "/r", "--log", "/l", "--systemd-cgroup", "frobnicate"}, false},
+		{"unknown global flag with a value", []string{"--mystery", "x", "state", "id"}, false},
+		{"global flags with equals signs", []string{"--root=/r", "--log=/l", "state", "id"}, true},
+		{"state", []string{"--root", "/r", "state", "id"}, true},
+		{"delete", []string{"delete", "--force", "id"}, true},
+		{"list", []string{"--root", "/r", "list"}, true},
+		{"every capability, seccomp that only logs, AppArmor unconfined", []string{"create", "--bundle", bundle(createConfig(allCaps, `"seccomp":{"defaultAction":"SCMP_ACT_LOG"},`, `"apparmorProfile":"unconfined",`)), "id"}, false},
+		{"every capability, seccomp with an unknown default action", []string{"create", "--bundle", bundle(createConfig(allCaps, `"seccomp":{"defaultAction":"SCMP_ACT_NEW"},`, `"apparmorProfile":"unconfined",`)), "id"}, false},
+		{"every capability, seccomp with the trace default action", []string{"create", "--bundle", bundle(createConfig(allCaps, `"seccomp":{"defaultAction":"SCMP_ACT_TRACE"},`, `"apparmorProfile":"unconfined",`)), "id"}, false},
+		{"every capability, seccomp with an empty object", []string{"create", "--bundle", bundle(createConfig(allCaps, `"seccomp":{},`, `"apparmorProfile":"unconfined",`)), "id"}, false},
+		{"every capability, seccomp that kills by default", []string{"create", "--bundle", bundle(createConfig(allCaps, `"seccomp":{"defaultAction":"SCMP_ACT_KILL_PROCESS"},`, `"apparmorProfile":"unconfined",`)), "id"}, true},
+		{"every capability, seccomp that traps by default", []string{"create", "--bundle", bundle(createConfig(allCaps, `"seccomp":{"defaultAction":"SCMP_ACT_TRAP"},`, `"apparmorProfile":"unconfined",`)), "id"}, true},
+		{"every capability, a user annotation named like the AppArmor field", []string{"create", "--bundle", bundle(annotatedConfig(`"apparmorProfile":"x"`)), "id"}, false},
 		{"id that equals create", []string{"kill", "create", "9"}, false},
 		{"other command", []string{"kill", "id", "9"}, true},
 		{"version", []string{"--version"}, true},
 	}
 	for _, tt := range tests {
 		err := exec.Command(wrapper, tt.args...).Run()
+		if (err == nil) != tt.ok {
+			t.Errorf("%s: err = %v, want ok = %t", tt.name, err, tt.ok)
+		}
+	}
+}
+
+// annotatedConfig is a container with every capability, no seccomp filter, and
+// no AppArmor field in its process, and with a user-controlled annotation
+// after the root object.
+func annotatedConfig(annotation string) string {
+	return `{"process":{"capabilities":{"bounding":[` + allCaps + `]}},"root":{"path":"rootfs"},"annotations":{` + annotation + `},"linux":{"maskedPaths":["/proc/kcore"]}}`
+}
+
+func TestTheSelfCheckLoopFailsForARuntimeWithAnEmptyPath(t *testing.T) {
+	p, err := profileOf("debian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loop []string
+	in := false
+	for _, line := range p.guardCheck() {
+		if strings.HasPrefix(line, "while ") {
+			in = true
+		}
+		if in {
+			loop = append(loop, line)
+		}
+	}
+	wrapper := t.TempDir() + "/runc"
+	if err := os.WriteFile(wrapper, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.ReplaceAll(strings.Join(loop, "\n"), runtimeWrapperPath, wrapper)
+	tests := []struct {
+		name  string
+		paths string
+		ok    bool
+	}{
+		{"one runtime that resolves to the wrapper", "path=" + wrapper, true},
+		{"two runtimes that resolve to the wrapper", "path=" + wrapper + "\npath=" + wrapper, true},
+		{"empty path", "path=", false},
+		{"empty path after a good one", "path=" + wrapper + "\npath=", false},
+		{"empty path before a good one", "path=\npath=" + wrapper, false},
+		{"path that is not the wrapper", "path=/bin/sh", false},
+	}
+	for _, tt := range tests {
+		script := "fail() { echo \"$*\" >&2; exit 1; }\ndaemon_path=/usr/bin:/bin\nruntime_paths=$1\n" + body + "\n"
+		err := exec.Command("bash", "-c", script, "bash", tt.paths).Run()
 		if (err == nil) != tt.ok {
 			t.Errorf("%s: err = %v, want ok = %t", tt.name, err, tt.ok)
 		}

@@ -634,6 +634,16 @@ for runtime in default runc io.containerd.runc.v2; do
   [ "$runtime" = default ] && flag=
   blocked "every capability without seccomp and AppArmor on the runtime $runtime" docker run --rm $flag --cap-add ALL --security-opt seccomp=unconfined --security-opt apparmor=unconfined $IMG true
 done
+tmp=$(mktemp -d)
+echo '{"defaultAction":"SCMP_ACT_LOG"}' > "$tmp/log.json"
+allowed "a seccomp profile that only logs, alone" docker run --rm --security-opt seccomp="$tmp/log.json" $IMG true
+blocked "every capability with a seccomp profile that only logs and no AppArmor" docker run --rm --cap-add ALL --security-opt seccomp="$tmp/log.json" --security-opt apparmor=unconfined $IMG true
+mkdir "$tmp/bundle"
+echo '{}' > "$tmp/bundle/config.json"
+allowed "the runtime version" /usr/sbin/runc --version
+blocked "runc restore with a bundle without masked paths" /usr/sbin/runc restore --bundle "$tmp/bundle" orbit-probe-restore
+blocked "runc with an unknown subcommand" /usr/sbin/runc orbit-unknown-command
+rm -rf "$tmp"
 `
 
 // refusedPrivilegedExec is the privileged exec line of E08, for a distribution

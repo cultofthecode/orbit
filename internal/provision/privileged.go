@@ -56,29 +56,39 @@ func (p profile) guardCheck() []string {
 		`[ "${daemon_pid:-0}" -gt 0 ] || fail "the Docker daemon of ` + AgentUser + ` has no main process"`,
 		`daemon_path=$(tr '\0' '\n' < "/proc/$daemon_pid/environ" | sed -n 's/^PATH=//p')`,
 		fmt.Sprintf(`runtime_paths=$(%s)`,
-			asAgentUser(`env DOCKER_HOST=unix:///run/user/$agent_uid/docker.sock docker info --format '{{range .Runtimes}}{{.Path}}{{"\n"}}{{end}}'`)),
+			asAgentUser(`env DOCKER_HOST=unix:///run/user/$agent_uid/docker.sock docker info --format '{{range .Runtimes}}path={{.Path}}{{"\n"}}{{end}}'`)),
 		`[ -n "$runtime_paths" ] || fail "the Docker daemon of ` + AgentUser + ` lists no runtime"`,
-		`for runtime_path in $runtime_paths; do`,
+		`while IFS= read -r runtime_line; do`,
+		`  runtime_path=${runtime_line#path=}`,
+		`  [ -n "$runtime_path" ] || fail "a runtime of the Docker daemon of ` + AgentUser + ` has no path"`,
 		`  resolved=$(PATH=$daemon_path command -v "$runtime_path" || true)`,
 		fmt.Sprintf(`  [ -n "$resolved" ] && [ "$(readlink -f "$resolved")" = "$(readlink -f %s)" ] || fail "the runtime $runtime_path of `+AgentUser+` does not go through the guard"`,
 			runtimeWrapperPath),
-		`done`,
+		`done < <(printf '%s\n' "$runtime_paths")`,
 	}
 }
 
-// runtimeWrapper refuses to create a container whose OCI configuration has no
-// masked paths, which is what --privileged (and systempaths=unconfined)
-// produces, refuses a container that has every capability and neither a
-// seccomp filter nor an AppArmor profile (--cap-add ALL with
-// seccomp=unconfined and apparmor=unconfined, which the owner treats like
-// --privileged; a seccomp profile whose default action is allow counts as no
-// filter, and a profile name other than unconfined counts as a profile),
-// refuses an exec whose process spec holds a capability that the
+// runtimeWrapper refuses to create a container (create, run, restore) whose
+// OCI configuration has no masked paths, which is what --privileged (and
+// systempaths=unconfined) produces, and refuses a container that has every
+// capability (the five that follow: CAP_SYS_ADMIN,
+// CAP_SYS_MODULE, CAP_SYS_RAWIO, CAP_SYS_BOOT, CAP_MAC_ADMIN) and neither a
+// seccomp filter nor an AppArmor profile (--cap-add ALL with seccomp=unconfined
+// and apparmor=unconfined, which the owner treats like --privileged). Only a
+// seccomp object whose default action blocks (ERRNO, KILL, KILL_PROCESS,
+// KILL_THREAD, TRAP) counts as a filter: allow, log, and every other default
+// action count as none. A text check cannot judge an allow-list profile that
+// allows every call by rule. An AppArmor profile name other than unconfined
+// counts as a profile, and the wrapper reads the field only in the part of the
+// configuration before the root object, so a key of the user elsewhere does
+// not count. It refuses an exec whose process spec holds a capability that the
 // bounding set of the container lacks, which is what docker exec --privileged
-// produces, and runs the real runtime for everything else. It fails closed: a
-// bundle, a process file, or a state that it cannot read is refused. It looks
-// at every argument, not at the first word, so a container ID that equals
-// create, run, or exec is refused or checked too, never skipped.
+// produces. It passes only the subcommands of an allowlist that neither
+// create nor change a container's configuration (state, kill, delete, list,
+// and so on); an unknown subcommand is refused. It fails closed: a bundle, a
+// process file, or a state that it cannot read is refused. It looks at every
+// argument, not at the first word, so a container ID that equals create, run,
+// restore, or exec is refused or checked too, never skipped.
 func runtimeWrapper() string {
 	return lines(
 		"#!/bin/bash",
@@ -87,30 +97,39 @@ func runtimeWrapper() string {
 		`refuse() { echo "orbit: $1" >&2; exit 1; }`,
 		`args=("$@")`,
 		"create=",
+		"sub=",
 		"exec_at=",
 		"bundle=",
 		"process=",
 		"n=0",
 		`while [ $# -gt 0 ]; do`,
 		`  case $1 in`,
-		`    create|run) create=1;;`,
-		`    exec) [ -n "$exec_at" ] || exec_at=$n;;`,
+		`    create|run|restore) create=1; [ -n "$sub" ] || sub=$1;;`,
+		`    exec) [ -n "$exec_at" ] || exec_at=$n; [ -n "$sub" ] || sub=$1;;`,
+		`    --root|--log|--log-format|--criu|--rootless) [ -n "$sub" ] || { shift; n=$((n + 1)); };;`,
 		`    --bundle|-b) bundle=${2:-}; shift; n=$((n + 1));;`,
 		`    --bundle=*) bundle=${1#--bundle=};;`,
 		`    --process|-p) process=${2:-}; shift; n=$((n + 1));;`,
 		`    --process=*) process=${1#--process=};;`,
+		`    -*) ;;`,
+		`    *) [ -n "$sub" ] || sub=$1;;`,
 		`  esac`,
 		`  shift`,
 		`  n=$((n + 1))`,
 		`done`,
+		`case $sub in`,
+		`  ""|create|run|restore|exec|state|kill|delete|list|ps|events|features|spec|start|pause|resume|checkpoint|update|help|version) ;;`,
+		`  *) refuse "the runtime command $sub is refused in this sandbox";;`,
+		`esac`,
 		`if [ -n "$create" ]; then`,
 		`  config=$bundle/config.json`,
 		`  [ -n "$bundle" ] && [ -r "$config" ] || refuse "cannot read the container configuration; refused"`,
 		`  config_text=$(tr -d ' \t\n' < "$config")`,
 		`  case $config_text in *'"maskedPaths":["/'*) ;; *) refuse "privileged containers are refused in this sandbox";; esac`,
 		`  unconfined=1`,
-		`  case $config_text in *'"seccomp":{"defaultAction":"SCMP_ACT_ALLOW"'*) ;; *'"seccomp":{'*) unconfined=;; esac`,
-		`  case $config_text in *'"apparmorProfile":"unconfined"'*) ;; *'"apparmorProfile":"'*) unconfined=;; esac`,
+		`  case $config_text in *'"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"'*|*'"seccomp":{"defaultAction":"SCMP_ACT_KILL"'*|*'"seccomp":{"defaultAction":"SCMP_ACT_KILL_PROCESS"'*|*'"seccomp":{"defaultAction":"SCMP_ACT_KILL_THREAD"'*|*'"seccomp":{"defaultAction":"SCMP_ACT_TRAP"'*) unconfined=;; esac`,
+		`  process_text=${config_text%%'"root":{'*}`,
+		`  case $process_text in *'"apparmorProfile":"unconfined"'*) ;; *'"apparmorProfile":"'*) unconfined=;; esac`,
 		`  if [ -n "$unconfined" ]; then`,
 		`    caps=$(printf '%s' "$config_text" | sed -n 's/.*"bounding":\[\([^]]*\)\].*/\1/p')`,
 		`    every=1`,

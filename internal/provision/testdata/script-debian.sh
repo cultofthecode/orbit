@@ -280,30 +280,39 @@ real=/usr/sbin/runc.real
 refuse() { echo "orbit: $1" >&2; exit 1; }
 args=("$@")
 create=
+sub=
 exec_at=
 bundle=
 process=
 n=0
 while [ $# -gt 0 ]; do
   case $1 in
-    create|run) create=1;;
-    exec) [ -n "$exec_at" ] || exec_at=$n;;
+    create|run|restore) create=1; [ -n "$sub" ] || sub=$1;;
+    exec) [ -n "$exec_at" ] || exec_at=$n; [ -n "$sub" ] || sub=$1;;
+    --root|--log|--log-format|--criu|--rootless) [ -n "$sub" ] || { shift; n=$((n + 1)); };;
     --bundle|-b) bundle=${2:-}; shift; n=$((n + 1));;
     --bundle=*) bundle=${1#--bundle=};;
     --process|-p) process=${2:-}; shift; n=$((n + 1));;
     --process=*) process=${1#--process=};;
+    -*) ;;
+    *) [ -n "$sub" ] || sub=$1;;
   esac
   shift
   n=$((n + 1))
 done
+case $sub in
+  ""|create|run|restore|exec|state|kill|delete|list|ps|events|features|spec|start|pause|resume|checkpoint|update|help|version) ;;
+  *) refuse "the runtime command $sub is refused in this sandbox";;
+esac
 if [ -n "$create" ]; then
   config=$bundle/config.json
   [ -n "$bundle" ] && [ -r "$config" ] || refuse "cannot read the container configuration; refused"
   config_text=$(tr -d ' \t\n' < "$config")
   case $config_text in *'"maskedPaths":["/'*) ;; *) refuse "privileged containers are refused in this sandbox";; esac
   unconfined=1
-  case $config_text in *'"seccomp":{"defaultAction":"SCMP_ACT_ALLOW"'*) ;; *'"seccomp":{'*) unconfined=;; esac
-  case $config_text in *'"apparmorProfile":"unconfined"'*) ;; *'"apparmorProfile":"'*) unconfined=;; esac
+  case $config_text in *'"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"'*|*'"seccomp":{"defaultAction":"SCMP_ACT_KILL"'*|*'"seccomp":{"defaultAction":"SCMP_ACT_KILL_PROCESS"'*|*'"seccomp":{"defaultAction":"SCMP_ACT_KILL_THREAD"'*|*'"seccomp":{"defaultAction":"SCMP_ACT_TRAP"'*) unconfined=;; esac
+  process_text=${config_text%%'"root":{'*}
+  case $process_text in *'"apparmorProfile":"unconfined"'*) ;; *'"apparmorProfile":"'*) unconfined=;; esac
   if [ -n "$unconfined" ]; then
     caps=$(printf '%s' "$config_text" | sed -n 's/.*"bounding":\[\([^]]*\)\].*/\1/p')
     every=1
@@ -395,12 +404,14 @@ docker compose version >/dev/null || fail "docker compose is missing"
 daemon_pid=$(runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user show -p MainPID --value docker.service) || fail "cannot read the main process of the Docker daemon of agent"
 [ "${daemon_pid:-0}" -gt 0 ] || fail "the Docker daemon of agent has no main process"
 daemon_path=$(tr '\0' '\n' < "/proc/$daemon_pid/environ" | sed -n 's/^PATH=//p')
-runtime_paths=$(runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid env DOCKER_HOST=unix:///run/user/$agent_uid/docker.sock docker info --format '{{range .Runtimes}}{{.Path}}{{"\n"}}{{end}}')
+runtime_paths=$(runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid env DOCKER_HOST=unix:///run/user/$agent_uid/docker.sock docker info --format '{{range .Runtimes}}path={{.Path}}{{"\n"}}{{end}}')
 [ -n "$runtime_paths" ] || fail "the Docker daemon of agent lists no runtime"
-for runtime_path in $runtime_paths; do
+while IFS= read -r runtime_line; do
+  runtime_path=${runtime_line#path=}
+  [ -n "$runtime_path" ] || fail "a runtime of the Docker daemon of agent has no path"
   resolved=$(PATH=$daemon_path command -v "$runtime_path" || true)
   [ -n "$resolved" ] && [ "$(readlink -f "$resolved")" = "$(readlink -f /usr/sbin/runc)" ] || fail "the runtime $runtime_path of agent does not go through the guard"
-done
+done < <(printf '%s\n' "$runtime_paths")
 mkdir -p /etc/orbit
 put /etc/orbit/provisioned 0644 <<'ORBIT_EOF'
 4
