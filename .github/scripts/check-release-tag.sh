@@ -3,12 +3,16 @@
 #
 # Usage: check-release-tag.sh <tag>
 #
-# Checks, in order: SemVer name, annotated tag, signature accepted against the
-# allowed signers file, tagged commit is an ancestor of origin/main, and the
-# ci workflow concluded success for that commit. Any failure exits non-zero.
+# Checks, in order: SemVer name, annotated tag whose own name is the ref name
+# (a signed tag object pushed under another name is a replay), signature
+# accepted against the allowed signers file, tagged commit is an ancestor of
+# origin/main, tag is the one the run started for, and the ci workflow
+# concluded success for that commit. Any failure exits non-zero.
 #
 # Environment:
 #   GITHUB_REPOSITORY  owner/name for the CI lookup (required)
+#   GITHUB_SHA         commit (or tag object) the run started for (required);
+#                      the release job builds this commit
 #   ALLOWED_SIGNERS    path of the allowed signers file (default: .github/allowed_signers)
 #   MAIN_REF           ref that releases must come from (default: origin/main)
 #   GH_TOKEN           token for `gh api` (needs actions: read)
@@ -24,6 +28,7 @@ tag="${1:-}"
 allowed_signers="${ALLOWED_SIGNERS:-.github/allowed_signers}"
 main_ref="${MAIN_REF:-origin/main}"
 repo="${GITHUB_REPOSITORY:-}"
+run_sha="${GITHUB_SHA:-}"
 
 num='(0|[1-9][0-9]*)'
 pre='([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*|0|[1-9][0-9]*)'
@@ -37,6 +42,12 @@ check_annotated() {
   local kind
   kind="$(git cat-file -t "refs/tags/$tag" 2>/dev/null)" || fail "tag '$tag' does not exist"
   [ "$kind" = "tag" ] || fail "tag '$tag' is lightweight; it must be an annotated, signed tag"
+}
+
+check_name() {
+  local name
+  name="$(git for-each-ref --format='%(tag)' "refs/tags/$tag")"
+  [ "$name" = "$tag" ] || fail "tag object is named '$name', not '$tag'; a signed tag must not be pushed under another name"
 }
 
 check_signature() {
@@ -56,6 +67,12 @@ check_on_main() {
   git merge-base --is-ancestor "$1" "$main_ref" || fail "commit $1 is not an ancestor of $main_ref"
 }
 
+check_run_sha() {
+  [ -n "$run_sha" ] || fail "GITHUB_SHA is not set"
+  [ "$1" = "$run_sha" ] || [ "$(git rev-parse "refs/tags/$tag")" = "$run_sha" ] \
+    || fail "tag '$tag' points to $1, but the run started for $run_sha; the tag moved"
+}
+
 check_ci() {
   [ -n "$repo" ] || fail "GITHUB_REPOSITORY is not set"
   local conclusion
@@ -68,10 +85,12 @@ check_ci() {
 main() {
   check_semver
   check_annotated
+  check_name
   check_signature
   local commit
   commit="$(tagged_commit)"
   check_on_main "$commit"
+  check_run_sha "$commit"
   check_ci "$commit"
   echo "check-release-tag: tag $tag on $commit accepted"
 }
