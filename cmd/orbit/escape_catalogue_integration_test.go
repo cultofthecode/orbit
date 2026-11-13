@@ -641,8 +641,9 @@ blocked "every capability with a seccomp profile that only logs and no AppArmor"
 mkdir "$tmp/bundle"
 echo '{}' > "$tmp/bundle/config.json"
 allowed "the runtime version" /usr/sbin/runc --version
-blocked "runc restore with a bundle without masked paths" /usr/sbin/runc restore --bundle "$tmp/bundle" orbit-probe-restore
-blocked "runc with an unknown subcommand" /usr/sbin/runc orbit-unknown-command
+refused_by_guard() { local what=$1; shift; local out; out=$("$@" 2>&1) && fail "$what succeeded"; case "$out" in *"orbit: "*) ;; *) fail "$what failed without the orbit: refusal: $out";; esac; }
+refused_by_guard "runc restore with a bundle without masked paths" /usr/sbin/runc restore --bundle "$tmp/bundle" orbit-probe-restore
+refused_by_guard "runc with an unknown subcommand" /usr/sbin/runc orbit-unknown-command
 rm -rf "$tmp"
 `
 

@@ -341,3 +341,25 @@ func TestRuntimeWrapperPassesAnAllowedExecThroughUnchanged(t *testing.T) {
 		t.Errorf("real call = %q, want %q", lines[len(lines)-1], want)
 	}
 }
+
+func TestRuntimeWrapperPassesTheAllowedSubcommands(t *testing.T) {
+	for _, sub := range []string{"start", "pause", "resume", "ps", "events", "features", "update", "checkpoint", "spec", "help", "version", ""} {
+		t.Run("sub="+sub, func(t *testing.T) {
+			rig := newWrapperRig(t, true, containerConfig)
+			args := []string{"--root", "/r"}
+			if sub != "" {
+				args = append(args, sub, "id")
+			}
+			if err := rig.run(args...); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(rig.log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := strings.Join(args, " "); strings.TrimSpace(string(got)) != want {
+				t.Errorf("real call = %q, want %q", got, want)
+			}
+		})
+	}
+}

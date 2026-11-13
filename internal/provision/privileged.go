@@ -83,9 +83,9 @@ func (p profile) guardCheck() []string {
 // configuration before the root object, so a key of the user elsewhere does
 // not count. It refuses an exec whose process spec holds a capability that the
 // bounding set of the container lacks, which is what docker exec --privileged
-// produces. It passes only the subcommands of an allowlist that neither
-// create nor change a container's configuration (state, kill, delete, list,
-// and so on); an unknown subcommand is refused. It fails closed: a bundle, a
+// produces. It passes only the subcommands of an allowlist that do not
+// create a container (state, kill, delete, list, and so on; update changes
+// the resource limits of a container, not its privileges); an unknown subcommand is refused. It fails closed: a bundle, a
 // process file, or a state that it cannot read is refused. It looks at every
 // argument, not at the first word, so a container ID that equals create, run,
 // restore, or exec is refused or checked too, never skipped.
