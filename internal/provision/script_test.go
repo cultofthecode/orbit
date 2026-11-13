@@ -322,7 +322,7 @@ func TestScriptWritesTheMarkerLast(t *testing.T) {
 		want := []string{
 			"mkdir -p /etc/orbit",
 			"put /etc/orbit/provisioned 0644 <<'ORBIT_EOF'",
-			"3",
+			"4",
 			"ORBIT_EOF",
 			"}",
 		}

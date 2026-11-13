@@ -82,11 +82,16 @@ func proxyAddressUnit() string {
 }
 
 // firewallDropIn orders the firewall of the distribution before user
-// sessions.
+// sessions and removes its ExecStop=, which flushes the whole ruleset: a stop
+// or restart of the unit by root then leaves the table loaded, and egress
+// stays closed (#168). The empty assignment clears the list of the unit.
 func firewallDropIn() string {
 	return lines(
 		"[Unit]",
 		"Before="+unitUserSessions,
+		"",
+		"[Service]",
+		"ExecStop=",
 	)
 }
 

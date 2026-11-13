@@ -222,7 +222,7 @@ func (e escapeEnv) privilegedOtherSandboxAttempts() []attempt {
 	hosts := e.fill("@TARGET_ADDR@ @TARGET@.orb.local")
 	try := e.fill(privilegedHelpers + perVariant(sandboxVariants, func(f string) string {
 		return fmt.Sprintf(`for host in `+hosts+` ; do
-  blocked_priv "direct to $host (%[1]s)" '%[1]s' sh -c 'ip link add orbit-e19 type dummy 2>/dev/null; ip route add "$1/32" $(ip route show default | head -n1 | cut -d" " -f2-) 2>/dev/null; curl -sS --noproxy "*" -m 5 -o /dev/null "http://$1:@TARGET_PORT@"' sh "$host"
+  blocked_priv "direct to $host (%[1]s)" '%[1]s' sh -c 'ip route add "$1/32" $(ip route show default | head -n1 | cut -d" " -f2-) 2>/dev/null; curl -sS --noproxy "*" -m 5 -o /dev/null "http://$1:@TARGET_PORT@"' sh "$host"
   out=$(P '%[1]s' curl -sS -m 15 -x http://172.31.255.1:3128 -o /dev/null "https://$host:@TARGET_PORT@" 2>&1) && escape "CONNECT through the proxy to $host (%[1]s) succeeded"
   case "$out" in *403*) ;; *) echo "`+unexpectedErrnoMarker+`: CONNECT to $host: $out" >&2; fail "CONNECT to $host failed without a 403: $out";; esac
 done

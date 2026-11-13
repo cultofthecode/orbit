@@ -139,6 +139,9 @@ mkdir -p /etc/systemd/system/nftables.service.d
 put /etc/systemd/system/nftables.service.d/orbit.conf 0644 <<'ORBIT_EOF'
 [Unit]
 Before=systemd-user-sessions.service
+
+[Service]
+ExecStop=
 ORBIT_EOF
 mkdir -p /etc/systemd/system/tinyproxy.service.d
 put /etc/systemd/system/tinyproxy.service.d/orbit.conf 0644 <<'ORBIT_EOF'
@@ -239,6 +242,7 @@ put /usr/local/libexec/orbit-boundary-gate 0755 <<'ORBIT_EOF'
 set -euo pipefail
 fail() { echo "$*" >&2; exit 1; }
 nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"
+[ -z "$(systemctl show --value -p ExecStop nftables.service)" ] || fail "nftables.service has an ExecStop= that flushes the firewall table"
 for unit in nftables.service orbit-proxy-address.service tinyproxy.service orbit-harden.service; do
   systemctl is-active --quiet "$unit" || fail "$unit is not active"
 done
@@ -288,6 +292,7 @@ systemctl start "user@$agent_uid.service"
 runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user daemon-reload
 runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user start docker.service
 nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"
+[ -z "$(systemctl show --value -p ExecStop nftables.service)" ] || fail "nftables.service has an ExecStop= that flushes the firewall table"
 for unit in nftables.service orbit-proxy-address.service tinyproxy.service orbit-harden.service systemd-user-sessions.service; do
   systemctl is-active --quiet "$unit" || fail "$unit is not active"
 done
@@ -334,6 +339,6 @@ docker buildx version >/dev/null || fail "docker buildx is missing"
 docker compose version >/dev/null || fail "docker compose is missing"
 mkdir -p /etc/orbit
 put /etc/orbit/provisioned 0644 <<'ORBIT_EOF'
-3
+4
 ORBIT_EOF
 }
