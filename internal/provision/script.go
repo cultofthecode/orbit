@@ -13,7 +13,7 @@ import (
 
 // Version is the provisioning version that the root script writes into the
 // marker file as its last action.
-const Version = 3
+const Version = 4
 
 // MarkerPath is the file that exists only in a machine that provisioning
 // completed. A later slice can refuse a machine without it.
@@ -330,11 +330,12 @@ func boundaryUnitsCheck() []string {
 	return unitsCheck(boundaryUnits())
 }
 
-// unitsCheck fails unless the firewall table is loaded and every unit of
-// units is active.
+// unitsCheck fails unless the firewall table is loaded, nftables.service has
+// no ExecStop= that would flush it, and every unit of units is active.
 func unitsCheck(units []string) []string {
 	return []string{
 		`nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`,
+		`[ -z "$(systemctl show --value -p ExecStop nftables.service)" ] || fail "nftables.service has an ExecStop= that flushes the firewall table"`,
 		"for unit in " + strings.Join(units, " ") + "; do",
 		`  systemctl is-active --quiet "$unit" || fail "$unit is not active"`,
 		"done",

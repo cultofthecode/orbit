@@ -20,6 +20,23 @@ func TestUnitsStartBeforeUserSessions(t *testing.T) {
 	}
 }
 
+func TestFirewallStopKeepsTheRuleset(t *testing.T) {
+	file := unitFile(t, "/etc/systemd/system/nftables.service.d/orbit.conf")
+	section := ""
+	var stops []string
+	for _, line := range strings.Split(file.Content, "\n") {
+		if strings.HasPrefix(line, "[") {
+			section = line
+		}
+		if strings.HasPrefix(line, "ExecStop") {
+			stops = append(stops, section+line)
+		}
+	}
+	if !slices.Equal(stops, []string{"[Service]ExecStop="}) {
+		t.Errorf("the firewall drop-in has the stop lines %q, want one empty ExecStop= in [Service], so that a stop does not flush the ruleset:\n%s", stops, file.Content)
+	}
+}
+
 func TestUserSessionsRequireTheBoundary(t *testing.T) {
 	file := unitFile(t, "/etc/systemd/system/systemd-user-sessions.service.d/orbit.conf")
 	for _, unit := range []string{"nftables.service", "orbit-proxy-address.service", "tinyproxy.service", "orbit-harden.service"} {
