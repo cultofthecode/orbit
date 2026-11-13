@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/cultofthecode/orbit/internal/provision"
 )
 
 // outcome is what the suite concludes about one attempt.
@@ -15,7 +17,54 @@ const (
 	outcomeControlFailed
 	outcomeToolMissing
 	outcomeInconclusive
+	outcomeNotApplicable
+	outcomeStale
 )
+
+// privilegedExpectation says whether docker run --privileged is expected to
+// start a container on a distribution, on the pinned OrbStack version.
+type privilegedExpectation int
+
+const (
+	privilegedRefused privilegedExpectation = iota
+	privilegedAllowed
+)
+
+// privilegedTable holds the expectation per value of ORBIT_IT_DISTRO. Every
+// row says refused: the owner decided on 2026-11-13 that --privileged is
+// refused on every distribution. Ubuntu refuses it by platform; the Debian
+// profile refuses it with a root-owned runtime wrapper. A run on a
+// distribution without a row fails, so no run counts as evidence without it.
+var privilegedTable = map[string]privilegedExpectation{
+	"ubuntu": privilegedRefused,
+	"debian": privilegedRefused,
+}
+
+// runtimeGuardTable says, per value of ORBIT_IT_DISTRO, whether the profile
+// of the distribution carries the runc guard of internal/provision. E08 tries
+// a privileged exec only where it does. A test keeps the keys equal to the
+// distributions that provision renders.
+var runtimeGuardTable = map[string]bool{
+	"ubuntu": false,
+	"debian": true,
+}
+
+// privilegedObservation holds the expectation and the observation of
+// --privileged on one distribution.
+type privilegedObservation struct {
+	distro   string
+	expected privilegedExpectation
+	started  bool
+}
+
+// unexpectedErrnoMarker is what a line of E18 to E22 prints when the
+// operation failed with an error other than the one that the line lists.
+const unexpectedErrnoMarker = "PROBE UNEXPECTED ERRNO"
+
+// escapeMarker is what a line of E18 to E22 prints when the operation that
+// it tries succeeded. An attempt whose output has both markers is an escape:
+// an unexpected errno on one line never hides a success on another.
+const escapeMarker = "PROBE ESCAPE"
 
 // toolMissingMarker is what a probe prints, and exits non-zero, when a tool
 // that it needs is missing.
@@ -46,6 +95,9 @@ type attemptResult struct {
 	escaped bool
 	// evidence is what the attempt printed.
 	evidence string
+	// privileged is set on the gate of E18 to E22 and M02, and is nil on
+	// every other attempt.
+	privileged *privilegedObservation
 }
 
 // inconclusiveControl reports whether the control failed in a way that is
@@ -61,12 +113,20 @@ func (r attemptResult) inconclusiveControl() bool {
 // attemptVerdict returns the outcome of an attempt and its message. An
 // attempt passes only when its control succeeded and the attempt failed.
 func attemptVerdict(r attemptResult) (outcome, string) {
+	if r.privileged != nil {
+		if o, message, decided := privilegedVerdict(r.id, *r.privileged); decided {
+			return o, message
+		}
+	}
 	informational := r.inconclusiveControl()
 	if r.hasControl && r.controlFailed && !informational {
 		return outcomeControlFailed, fmt.Sprintf("CONTROL FAILED: %s: %s", r.id, r.controlOutput)
 	}
 	if r.escaped && strings.Contains(r.evidence, toolMissingMarker) {
 		return outcomeToolMissing, fmt.Sprintf("%s: %s", r.id, r.evidence)
+	}
+	if r.escaped && strings.Contains(r.evidence, unexpectedErrnoMarker) && !strings.Contains(r.evidence, escapeMarker) {
+		return outcomeControlFailed, fmt.Sprintf("CONTROL FAILED: %s: %s", r.id, r.evidence)
 	}
 	if r.escaped {
 		return outcomeEscape, fmt.Sprintf("ESCAPE: %s succeeded: %s", r.id, r.evidence)
@@ -77,9 +137,25 @@ func attemptVerdict(r attemptResult) (outcome, string) {
 	return outcomePass, ""
 }
 
+// privilegedVerdict compares the observation of --privileged with the table.
+// It decides when the attempts must not run: refused and refused is not
+// applicable, and the other three combinations fail the run. Allowed and
+// started is not decided: the attempts run.
+func privilegedVerdict(id string, p privilegedObservation) (outcome, string, bool) {
+	switch {
+	case p.expected == privilegedRefused && !p.started:
+		return outcomeNotApplicable, fmt.Sprintf("%s: n/a: --privileged refused on %s", id, p.distro), true
+	case p.expected == privilegedRefused:
+		return outcomeEscape, fmt.Sprintf("ESCAPE: %s: --privileged starts on %s, where the table says refused; the owner decides", id, p.distro), true
+	case !p.started:
+		return outcomeStale, fmt.Sprintf("%s: privileged expectation stale for %s", id, p.distro), true
+	}
+	return outcomePass, "", false
+}
+
 // tally counts the outcomes of one TestEscape test.
 type tally struct {
-	passed, failed, controlsFailed, inconclusive, observationsHeld int
+	passed, failed, controlsFailed, inconclusive, notApplicable, observationsHeld int
 }
 
 // add counts one outcome.
@@ -91,6 +167,8 @@ func (c *tally) add(o outcome) {
 		c.controlsFailed++
 	case outcomeInconclusive:
 		c.inconclusive++
+	case outcomeNotApplicable:
+		c.notApplicable++
 	default:
 		c.failed++
 	}
@@ -98,8 +176,8 @@ func (c *tally) add(o outcome) {
 
 // summary returns the line that ends a TestEscape test.
 func (c *tally) summary() string {
-	return fmt.Sprintf("escape attempts: %d passed, %d failed, %d controls failed, %d inconclusive; observations: %d held",
-		c.passed, c.failed, c.controlsFailed, c.inconclusive, c.observationsHeld)
+	return fmt.Sprintf("escape attempts: %d passed, %d failed, %d controls failed, %d inconclusive; observations: %d held; n/a: %d",
+		c.passed, c.failed, c.controlsFailed, c.inconclusive, c.observationsHeld, c.notApplicable)
 }
 
 func TestAttemptVerdict(t *testing.T) {
@@ -122,6 +200,13 @@ func TestAttemptVerdict(t *testing.T) {
 		{"target network unreachable, check other than E04", attemptResult{id: "E05", hasControl: true, controlFailed: true, controlOutput: targetUnreachableMarker + ": no answer"}, outcomeControlFailed, "CONTROL FAILED: E05: TARGET NETWORK UNREACHABLE"},
 		{"target network unreachable, attempt succeeded, other check", attemptResult{id: "E05", hasControl: true, controlFailed: true, controlOutput: targetUnreachableMarker, escaped: true, evidence: "reached"}, outcomeControlFailed, "CONTROL FAILED: E05"},
 		{"target reached, listener missing", attemptResult{id: "E04", hasControl: true, unreachableControlInconclusive: true, controlFailed: true, controlOutput: "connection refused"}, outcomeControlFailed, "CONTROL FAILED: E04: connection refused"},
+		{"privileged refused as expected", attemptResult{id: "E18", privileged: &privilegedObservation{distro: "ubuntu", expected: privilegedRefused}}, outcomeNotApplicable, "E18: n/a: --privileged refused on ubuntu"},
+		{"privileged starts where the table says refused", attemptResult{id: "E18", privileged: &privilegedObservation{distro: "ubuntu", expected: privilegedRefused, started: true}}, outcomeEscape, "the owner decides"},
+		{"privileged expectation stale", attemptResult{id: "E22", privileged: &privilegedObservation{distro: "debian", expected: privilegedAllowed}}, outcomeStale, "privileged expectation stale for debian"},
+		{"privileged allowed and started, attempt failed", attemptResult{id: "E22", hasControl: true, privileged: &privilegedObservation{distro: "debian", expected: privilegedAllowed, started: true}}, outcomePass, ""},
+		{"privileged allowed and started, attempt succeeded", attemptResult{id: "E22", hasControl: true, escaped: true, evidence: "nft flush ruleset succeeded", privileged: &privilegedObservation{distro: "debian", expected: privilegedAllowed, started: true}}, outcomeEscape, "ESCAPE: E22 succeeded"},
+		{"line failed with another errno", attemptResult{id: "E18", hasControl: true, escaped: true, evidence: unexpectedErrnoMarker + ": insmod: No such file"}, outcomeControlFailed, "CONTROL FAILED: E18"},
+		{"line failed with another errno beside an escape", attemptResult{id: "E18", hasControl: true, escaped: true, evidence: unexpectedErrnoMarker + ": insmod: No such file\n" + escapeMarker + ": /proc/sys/kernel/core_pattern changed"}, outcomeEscape, "ESCAPE: E18 succeeded"},
 		{"probe tool missing", attemptResult{id: "E05", hasControl: true, escaped: true, evidence: toolMissingMarker + ": curl"}, outcomeToolMissing, "PROBE TOOL MISSING: curl"},
 	}
 	for _, tt := range tests {
@@ -136,12 +221,32 @@ func TestAttemptVerdict(t *testing.T) {
 
 func TestTallySummary(t *testing.T) {
 	var c tally
-	for _, o := range []outcome{outcomePass, outcomePass, outcomeEscape, outcomeControlFailed, outcomeInconclusive, outcomeToolMissing} {
+	for _, o := range []outcome{outcomePass, outcomePass, outcomeEscape, outcomeControlFailed, outcomeInconclusive, outcomeToolMissing, outcomeNotApplicable, outcomeStale} {
 		c.add(o)
 	}
 	c.observationsHeld = 1
-	want := "escape attempts: 2 passed, 2 failed, 1 controls failed, 1 inconclusive; observations: 1 held"
+	want := "escape attempts: 2 passed, 3 failed, 1 controls failed, 1 inconclusive; observations: 1 held; n/a: 1"
 	if got := c.summary(); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
+	}
+}
+
+func TestPrivilegedTableKeepsEveryDistributionRefused(t *testing.T) {
+	for _, distro := range []string{"ubuntu", "debian"} {
+		if got := privilegedTable[distro]; got != privilegedRefused {
+			t.Errorf("%s row = %v, want refused (owner decision 2026-11-13)", distro, got)
+		}
+	}
+}
+
+func TestRuntimeGuardTableHasOneRowPerDistribution(t *testing.T) {
+	keys := provision.Distributions()
+	if len(runtimeGuardTable) != len(keys) {
+		t.Errorf("runtimeGuardTable has %d rows, provision renders %d distributions", len(runtimeGuardTable), len(keys))
+	}
+	for _, key := range keys {
+		if _, ok := runtimeGuardTable[key]; !ok {
+			t.Errorf("runtimeGuardTable has no row for %s", key)
+		}
 	}
 }

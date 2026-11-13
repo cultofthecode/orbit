@@ -58,7 +58,7 @@ func TestEscapeRestart(t *testing.T) {
 	var counts tally
 	t.Cleanup(func() { t.Log(counts.summary()) })
 	handler := initHandler(client, claudeRegistry(t))
-	if out, err := handler.Handle(ctx, initialize.Input{Dir: dir}); err != nil || !out.Created {
+	if out, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)}); err != nil || !out.Created {
 		t.Fatalf("init = %+v, %v; machines that this test did not create: %s", out, err, otherMachines(ctx, client, name))
 	}
 	rig := escapeRig{client: client, name: name, tally: &counts}
@@ -157,7 +157,7 @@ func checkABoundaryUnitThatFailsAtBoot(ctx context.Context, t *testing.T, rig es
 			result.escaped, result.evidence = true, err.Error()+"\n"+out
 		}
 		expectRoot(ctx, t, name, "remove the failing drop-in", removeFail)
-		if _, err := handler.Handle(ctx, initialize.Input{Dir: dir}); err != nil {
+		if _, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)}); err != nil {
 			t.Fatalf("init to repair the failed boot: %v", err)
 		}
 		rig.report(t, result)

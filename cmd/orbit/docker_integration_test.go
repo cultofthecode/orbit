@@ -303,7 +303,7 @@ func initWithHostVariables(ctx context.Context, t *testing.T, client *orbstack.C
 			_ = os.Unsetenv(name)
 		}
 	}()
-	if _, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir}); err != nil {
+	if _, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)}); err != nil {
 		t.Fatalf("init: %v; machines that this test did not create: %s", err, otherMachines(ctx, client, sandbox.MachineName(dir)))
 	}
 	expectAgentVariables(ctx, t, client, dir)
@@ -334,7 +334,7 @@ func TestInitGivesTheAgentRootlessDocker(t *testing.T) {
 	expectRoot(ctx, t, name, "the refusals in the log of the proxy", refusalLog)
 	expectAgent(ctx, t, client, name, dir, "Docker Compose", composeScenario)
 	hostContainer := hostContainerReachableByRoot(ctx, t, client, name)
-	expectAgent(ctx, t, client, name, dir, "Container traffic and the boundary", strings.Replace(containerTraffic, "%s", hostContainer, 1))
+	expectAgent(ctx, t, client, name, dir, "Container traffic and the boundary", containerTrafficFor(integrationDistro(t), hostContainer))
 	expectAgent(ctx, t, client, name, dir, "Daemon replaced by the agent", replacedDaemon)
 
 	restart(ctx, t, client, dir)
@@ -356,7 +356,7 @@ func TestInitGivesTheAgentRootlessDocker(t *testing.T) {
 	orbMachine(ctx, t, "start", name)
 	expectRoot(ctx, t, name, "Boundary unit failed at boot", bootFailure)
 	expectRoot(ctx, t, name, "remove the failing drop-in", removeFail)
-	if _, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir}); err != nil {
+	if _, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)}); err != nil {
 		t.Fatalf("init to repair the failed boot: %v", err)
 	}
 	expectRoot(ctx, t, name, "Repair after a failed boot", repaired)

@@ -88,7 +88,7 @@ func TestEscapeWeakenedBoundary(t *testing.T) {
 	dir, name := newSandboxDir(ctx, t, client)
 	var counts tally
 	t.Cleanup(func() { t.Log(counts.summary()) })
-	if out, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir}); err != nil || !out.Created {
+	if out, err := initHandler(client, claudeRegistry(t)).Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)}); err != nil || !out.Created {
 		t.Fatalf("init = %+v, %v; machines that this test did not create: %s", out, err, otherMachines(ctx, client, name))
 	}
 	rig := escapeRig{client: client, name: name, tally: &counts}
@@ -96,6 +96,9 @@ func TestEscapeWeakenedBoundary(t *testing.T) {
 
 	checkAnAllowRuleDoesNotOpenTheMac(ctx, t, rig)
 	checkTheWeakenedBoundaryIsDetected(ctx, t, rig)
+	if rig.privilegedGate(ctx, t, integrationDistro(t), "M02") {
+		checkThePrivilegedLeakIsDetected(ctx, t, rig)
+	}
 }
 
 // checkAnAllowRuleDoesNotOpenTheMac is E12 (Q13). Only the bridge-address

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cultofthecode/orbit/internal/orbstack"
 	"github.com/cultofthecode/orbit/internal/provision"
@@ -53,6 +54,10 @@ type attempt struct {
 	// unreachableInconclusive means that a control that finds the network
 	// of its target unreachable makes the attempt inconclusive (E04).
 	unreachableInconclusive bool
+	// after runs in the test process after try, and fails the attempt when
+	// it returns an error: root compares the boundary with what it was
+	// before (E22).
+	after func(ctx context.Context) error
 	// try is the shell that must fail. It exits non-zero and prints the
 	// evidence on standard error when the attempt succeeded.
 	try string
@@ -113,6 +118,11 @@ func (r escapeRig) run(ctx context.Context, t *testing.T, a attempt) {
 		if !result.controlFailed || result.inconclusiveControl() {
 			if err := r.runIn(ctx, a.as, a.try); err != nil {
 				result.escaped, result.evidence = true, err.Error()
+			}
+			if a.after != nil {
+				if err := a.after(ctx); err != nil {
+					result.escaped, result.evidence = true, result.evidence+" after the attempt: "+err.Error()
+				}
 			}
 		}
 		r.report(t, result)
@@ -188,6 +198,12 @@ type escapeEnv struct {
 	defaultUID                     int
 	target, targetAddr             string
 	rig                            escapeRig
+	// privileged is true when --privileged is allowed on this distribution and
+	// started: E08 then checks the uids of a privileged container.
+	privileged bool
+	// runtimeGuard is true when the profile of this distribution carries the
+	// runc guard: E08 then also tries a privileged exec.
+	runtimeGuard bool
 }
 
 const targetPort = "9099"
@@ -224,7 +240,7 @@ func (e escapeEnv) fill(body string) string {
 // LAN address.
 func newEscapeEnv(t *testing.T, dir string, rig escapeRig) escapeEnv {
 	t.Helper()
-	e := escapeEnv{dir: dir, rig: rig, defaultUID: os.Getuid(), sentinelContent: fmt.Sprintf("secret-%d-%d", os.Getpid(), os.Getuid())}
+	e := escapeEnv{dir: dir, rig: rig, defaultUID: os.Getuid(), sentinelContent: fmt.Sprintf("secret-%d-%d", os.Getpid(), os.Getuid()), runtimeGuard: runtimeGuardTable[integrationDistro(t)]}
 	e.sentinel = filepath.Join(filepath.Dir(dir), "escape-sentinel-"+filepath.Base(dir))
 	if err := os.WriteFile(e.sentinel, []byte(e.sentinelContent+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -264,12 +280,14 @@ func buildProbeImage(ctx context.Context, t *testing.T, rig escapeRig) {
 	t.Helper()
 	body := `wait_docker_or_exit
 dir=$(mktemp -d)
-printf 'FROM alpine\nRUN apk add curl bind-tools\n' > "$dir/Dockerfile"
+printf 'FROM alpine\nRUN apk add curl bind-tools nftables iproute2 iptables kmod util-linux openssh-client socat\n' > "$dir/Dockerfile"
 docker build -q -t ` + probeImage + ` "$dir" >/dev/null 2>"$dir/err" || fail "build ` + probeImage + `: $(tail -3 "$dir/err")"
 `
+	started := time.Now()
 	if err := rig.runIn(ctx, agentSession, body); err != nil {
 		t.Fatalf("CONTROL FAILED: image: %v", err)
 	}
+	t.Logf("probe image built in %s", time.Since(started).Round(time.Second))
 }
 
 // macReachedByRoot is the control of the attempts on the Mac: root reaches
@@ -484,8 +502,13 @@ for group in sudo admin adm docker lxd disk shadow; do
   if id -nG | tr ' ' '\n' | grep -qx "$group"; then fail "the agent is in the group $group"; fi
 done
 `)
-	containerTry := `blocked "a privileged container" docker run --rm --privileged alpine true
-`
+	containerTry := refusedPrivilegedRuns
+	if e.runtimeGuard {
+		containerTry += refusedUnconfinedRuns + refusedPrivilegedExec
+	}
+	if e.privileged {
+		containerTry = privilegedUIDs
+	}
 	return []attempt{
 		{id: "E08-root-agent", rule: "R10 D14 D17", as: agentSession, try: agentTry},
 		{id: "E08-root-container", rule: "R10 D14 D17", as: agentContainer, try: containerTry},
@@ -571,9 +594,12 @@ func startTarget(ctx context.Context, t *testing.T, client *orbstack.Client) (na
 	if err := client.Create(ctx, name, dir, "ubuntu", false); err != nil {
 		t.Fatalf("create the target %s of E11: %v; machines that this test did not create: %s", name, err, otherMachines(ctx, client, name))
 	}
-	listen := "set -eu\nsystemd-run --quiet --unit=orbit-escape-listener python3 -m http.server " + targetPort + " --bind 0.0.0.0\nfor try in $(seq 20); do ss -Hltn 'sport = :" + targetPort + "' | grep -q . && exit 0; sleep 0.5; done\nexit 1\n"
+	listen := "set -eu\nsystemd-run --quiet --unit=orbit-escape-listener bash -c \"while true; do printf 'HTTP/1.0 200 OK\\\\r\\\\nContent-Length: 0\\\\r\\\\n\\\\r\\\\n' | nc -l " + targetPort + "; done\"\nfor try in $(seq 20); do ss -Hltn 'sport = :" + targetPort + "' | grep -q . && exit 0; sleep 0.5; done\nexit 1\n"
 	if out, err := orbRoot(ctx, name, listen); err != nil {
 		t.Fatalf("start the listener in the target %s of E11: %v\n%s", name, err, out)
+	}
+	if out, err := orbRoot(ctx, name, "echo sentinel > /root/"+targetSentinel+"\n"); err != nil {
+		t.Fatalf("write the sentinel of E19 in the target %s: %v\n%s", name, err, out)
 	}
 	out, err := orbRoot(ctx, name, "ip -4 -o addr show eth0 | awk '{split($4, a, \"/\"); print a[1]}'\n")
 	if err != nil || strings.TrimSpace(out) == "" {
@@ -581,3 +607,68 @@ func startTarget(ctx context.Context, t *testing.T, client *orbstack.Client) (na
 	}
 	return name, strings.TrimSpace(out)
 }
+
+// refusedPrivilegedRuns is the privileged line of E08 on a distribution where
+// --privileged is refused: on the default runtime and on each runtime that
+// the daemon registers by itself, so that no runtime name skips the refusal.
+// Each runtime has a control, an unprivileged container of the same image on
+// the same runtime, so that a refusal never comes from a wrong runtime name or
+// a missing image.
+const refusedPrivilegedRuns = `blocked "a privileged container" docker run --rm --privileged $IMG true
+for runtime in runc io.containerd.runc.v2; do
+  allowed "an unprivileged container on the runtime $runtime" docker run --rm --runtime="$runtime" $IMG true
+  blocked "a privileged container on the runtime $runtime" docker run --rm --runtime="$runtime" --privileged $IMG true
+done
+`
+
+// refusedUnconfinedRuns is the line of E08 for a distribution whose profile
+// carries the runc guard: a container with every capability and neither a
+// seccomp filter nor an AppArmor profile is refused like --privileged, on the
+// default runtime and on each registered one. Its controls show that each
+// half alone still starts, so that the refusal comes from the combination and
+// the flags are valid.
+const refusedUnconfinedRuns = `allowed "every capability with the default profiles" docker run --rm --cap-add ALL $IMG true
+allowed "the default capabilities without seccomp and AppArmor" docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined $IMG true
+for runtime in default runc io.containerd.runc.v2; do
+  flag=--runtime=$runtime
+  [ "$runtime" = default ] && flag=
+  blocked "every capability without seccomp and AppArmor on the runtime $runtime" docker run --rm $flag --cap-add ALL --security-opt seccomp=unconfined --security-opt apparmor=unconfined $IMG true
+done
+tmp=$(mktemp -d)
+echo '{"defaultAction":"SCMP_ACT_LOG"}' > "$tmp/log.json"
+allowed "a seccomp profile that only logs, alone" docker run --rm --security-opt seccomp="$tmp/log.json" $IMG true
+blocked "every capability with a seccomp profile that only logs and no AppArmor" docker run --rm --cap-add ALL --security-opt seccomp="$tmp/log.json" --security-opt apparmor=unconfined $IMG true
+mkdir "$tmp/bundle"
+echo '{}' > "$tmp/bundle/config.json"
+allowed "the runtime version" /usr/sbin/runc --version
+blocked "runc restore with a bundle without masked paths" /usr/sbin/runc restore --bundle "$tmp/bundle" orbit-probe-restore
+blocked "runc with an unknown subcommand" /usr/sbin/runc orbit-unknown-command
+rm -rf "$tmp"
+`
+
+// refusedPrivilegedExec is the privileged exec line of E08, for a distribution
+// whose profile carries the runc guard. An unprivileged exec in the same
+// container is its control.
+const refusedPrivilegedExec = `id=$(docker run -d $IMG sleep 60) || { fail "the container of the exec probe did not start"; id=; }
+if [ -n "$id" ]; then
+  allowed "an exec in a running container" docker exec "$id" true
+  blocked "a privileged exec in a running container" docker exec --privileged "$id" true
+  docker rm -f "$id" >/dev/null 2>&1
+fi
+`
+
+// privilegedUIDs is the privileged line of E08 on a distribution where
+// --privileged is allowed: every process of a privileged container runs, as
+// the machine sees it, under the uid of the agent or one of its sub-uids,
+// never uid 0.
+const privilegedUIDs = `id=$(docker run -d --privileged $IMG sleep 30) || { fail "the privileged container did not start"; id=; }
+if [ -n "$id" ]; then
+  pids=$(docker top "$id" -eo pid | tail -n +2)
+  [ -n "$pids" ] || fail "docker top lists no process of the privileged container"
+  for pid in $pids; do
+    uid=$(awk '/^Uid:/ {print $2}' "/proc/$pid/status" 2>/dev/null) || continue
+    { [ "$uid" -ne 0 ] && [ "$uid" -ge "$(id -u)" ]; } || fail "process $pid of the privileged container runs as uid $uid"
+  done
+  docker rm -f "$id" >/dev/null 2>&1
+fi
+`

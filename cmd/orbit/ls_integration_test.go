@@ -30,7 +30,7 @@ func TestListSandboxes(t *testing.T) {
 	dirB, nameB := newSandboxDir(ctx, t, client)
 	setUp := initHandler(client, claudeRegistry(t))
 	for dir, name := range map[string]string{dirA: nameA, dirB: nameB} {
-		if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir}); err != nil {
+		if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t)}); err != nil {
 			t.Fatalf("init in %s = %v; machines that this test did not create: %s", dir, err, otherMachines(ctx, client, name))
 		}
 	}

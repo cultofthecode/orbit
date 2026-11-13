@@ -525,3 +525,39 @@ func TestFakeCreateRecordsTheDistributionAndRefusesOthers(t *testing.T) {
 		}
 	}
 }
+
+func TestFakeRemembersTheDistributionOfAMachine(t *testing.T) {
+	fake := New("orbit-")
+	ctx := context.Background()
+	if err := fake.Create(ctx, "orbit-api-1d9b22c9", "/work/api", "debian", true); err != nil {
+		t.Fatalf("Create = %v", err)
+	}
+	if got, err := fake.Distribution(ctx, "orbit-api-1d9b22c9"); err != nil || got != "debian" {
+		t.Errorf("Distribution after Create(debian) = %q, %v, want debian", got, err)
+	}
+	fake.Machines["orbit-old-00000000"] = map[string]string{"/work/old": "/work/old"}
+	if got, err := fake.Distribution(ctx, "orbit-old-00000000"); err != nil || got != "ubuntu" {
+		t.Errorf("Distribution of a machine without a record = %q, %v, want ubuntu", got, err)
+	}
+	fake.States["orbit-api-1d9b22c9"] = StateStopped
+	if got, err := fake.Distribution(ctx, "orbit-api-1d9b22c9"); err != nil || got != "debian" {
+		t.Errorf("Distribution of a stopped machine = %q, %v, want debian: it must not need a running machine", got, err)
+	}
+	if _, err := fake.Distribution(ctx, "orbit-missing-00000000"); !errors.Is(err, ErrNoMachine) {
+		t.Errorf("Distribution of a missing machine = %v, want %v", err, ErrNoMachine)
+	}
+	if _, err := fake.Distribution(ctx, "ubuntu"); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("Distribution of a foreign name = %v, want %v", err, ErrForeignMachine)
+	}
+	boom := errors.New("boom")
+	fake.DistributionErr = boom
+	if _, err := fake.Distribution(ctx, "orbit-api-1d9b22c9"); !errors.Is(err, boom) {
+		t.Errorf("Distribution with DistributionErr = %v, want %v", err, boom)
+	}
+	if err := fake.Delete(ctx, "orbit-api-1d9b22c9"); err != nil {
+		t.Fatalf("Delete = %v", err)
+	}
+	if _, set := fake.Distributions["orbit-api-1d9b22c9"]; set {
+		t.Error("Delete keeps the distribution of the machine")
+	}
+}

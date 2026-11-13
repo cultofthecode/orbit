@@ -108,7 +108,7 @@ func TestSignInKeepsTheLoginAndTakesNoHostCredential(t *testing.T) {
 	dir, name := newSandboxDir(ctx, t, client)
 	marker := setCredentialVariablesOnTheHost(t)
 	setUp := initHandler(client, claudeRegistry(t))
-	if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir, Agent: claude.Definition.Name}); err != nil {
+	if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t), Agent: claude.Definition.Name}); err != nil {
 		t.Fatalf("init --agent claude-code in %s = %v; machines that this test did not create: %s", dir, err, otherMachines(ctx, client, name))
 	}
 
@@ -116,7 +116,7 @@ func TestSignInKeepsTheLoginAndTakesNoHostCredential(t *testing.T) {
 	checkNoHostClaude(ctx, t, client, name, dir)
 	checkHomeKept(ctx, t, client, name, "after the first init")
 
-	if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir, Agent: claude.Definition.Name}); err != nil {
+	if _, err := setUp.Handle(ctx, initialize.Input{Dir: dir, Distro: integrationDistro(t), Agent: claude.Definition.Name}); err != nil {
 		t.Fatalf("second init --agent claude-code in %s = %v", dir, err)
 	}
 	checkHomeKept(ctx, t, client, name, "after the second init")

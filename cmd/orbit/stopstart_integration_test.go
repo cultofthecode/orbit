@@ -122,10 +122,10 @@ func newSandboxes(ctx context.Context, t *testing.T) sandboxes {
 	setUp := initHandler(client, claudeRegistry(t))
 	s.dirA, s.nameA = newSandboxDir(ctx, t, client)
 	s.dirB, s.nameB = newSandboxDir(ctx, t, client)
-	if _, err := setUp.Handle(ctx, initialize.Input{Dir: s.dirA, Agent: claude.Definition.Name}); err != nil {
+	if _, err := setUp.Handle(ctx, initialize.Input{Dir: s.dirA, Distro: integrationDistro(t), Agent: claude.Definition.Name}); err != nil {
 		t.Fatalf("init --agent claude-code in %s = %v; machines that this test did not create: %s", s.dirA, err, otherMachines(ctx, client, s.nameA))
 	}
-	if _, err := setUp.Handle(ctx, initialize.Input{Dir: s.dirB}); err != nil {
+	if _, err := setUp.Handle(ctx, initialize.Input{Dir: s.dirB, Distro: integrationDistro(t)}); err != nil {
 		t.Fatalf("init in %s = %v; machines that this test did not create: %s", s.dirB, err, otherMachines(ctx, client, s.nameB))
 	}
 	return s

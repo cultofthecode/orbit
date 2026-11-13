@@ -53,6 +53,27 @@ leak_probe() {
 }
 `
 
+// privilegedPinRefused is the line of containerTraffic on a distribution
+// where the privileged table says refused, and privilegedPinAllowed the
+// line where it says allowed (the requirement "Privileged containers on the
+// tested OrbStack version"). On such a distribution the escape suite checks
+// what the container can reach.
+const (
+	privilegedPinRefused = `blocked "privileged container" docker run --rm --privileged alpine true`
+	privilegedPinAllowed = `allowed "privileged container" docker run --rm --privileged alpine true`
+)
+
+// containerTrafficFor returns containerTraffic for a distribution, with
+// the address of the container of the host engine and the privileged line
+// that the table of the distribution calls for.
+func containerTrafficFor(distro, hostContainer string) string {
+	script := strings.Replace(containerTraffic, "%s", hostContainer, 1)
+	if privilegedTable[distro] == privilegedAllowed {
+		script = strings.Replace(script, privilegedPinRefused, privilegedPinAllowed, 1)
+	}
+	return script
+}
+
 // containerTraffic is the scenarios "Direct connections from containers",
 // "Refused host through the proxy", "Host engine out of reach",
 // "Machine namespaces are allowed", and "Host mounts and the machine pid
@@ -85,7 +106,7 @@ blocked "write /etc/nftables.conf through a mount of /etc" docker run --rm -v /e
 blocked "write the allowlist through a mount of /" docker run --rm -v /:/h alpine sh -c 'echo x >> /h/etc/tinyproxy/allowlist'
 blocked "kill tinyproxy from the pid namespace of the machine" docker run --rm --pid host alpine sh -c 'kill -9 $(pidof tinyproxy)'
 [ "$(pidof tinyproxy 2>/dev/null || true)" = "$before" ] || fail "tinyproxy changed its pid"
-blocked "privileged container" docker run --rm --privileged alpine true
+` + privilegedPinRefused + `
 docker network rm orbit-it-net >/dev/null 2>&1
 finish
 `
@@ -212,7 +233,7 @@ fi
 
 V6=$(ip -6 -o addr show dev eth0 scope global | awk 'NR == 1 {split($4, a, "/"); print a[1]}')
 if [ -n "$V6" ]; then
-  python3 -c 'import socket, sys, time; s = socket.socket(socket.AF_INET6); s.bind((sys.argv[1], ` + ipv6ProbePort + `)); s.listen(8); time.sleep(60)' "$V6" </dev/null >/dev/null 2>&1 &
+  timeout 60 nc -6 -k -l "$V6" ` + ipv6ProbePort + ` </dev/null >/dev/null 2>&1 &
   listener=$!
   for try in 1 2 3 4 5 6 7 8 9 10; do ss -Hltn 'sport = :` + ipv6ProbePort + `' | grep -q . && break; sleep 0.5; done
   allowed "root TCP over IPv6 to the machine" timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/` + ipv6ProbePort + `"' sh "$V6"
@@ -297,5 +318,23 @@ func TestProbeScriptsMatchGolden(t *testing.T) {
 		if got != string(want) {
 			t.Errorf("%s differs from testdata/escape-golden/%s.sh", name, name)
 		}
+	}
+}
+
+// TestContainerTrafficFollowsThePrivilegedTable checks that the privileged
+// line of containerTraffic depends on the table of the distribution.
+func TestContainerTrafficFollowsThePrivilegedTable(t *testing.T) {
+	refused := containerTrafficFor("ubuntu", "172.17.0.2")
+	if !strings.Contains(refused, privilegedPinRefused) || strings.Contains(refused, privilegedPinAllowed) {
+		t.Error("a distribution where the table says refused must keep the blocked line")
+	}
+	if refused != strings.Replace(containerTraffic, "%s", "172.17.0.2", 1) {
+		t.Error("the script of a refused distribution differs from the golden script")
+	}
+	privilegedTable["test-allowed"] = privilegedAllowed
+	t.Cleanup(func() { delete(privilegedTable, "test-allowed") })
+	allowed := containerTrafficFor("test-allowed", "172.17.0.2")
+	if strings.Contains(allowed, privilegedPinRefused) || !strings.Contains(allowed, privilegedPinAllowed) {
+		t.Error("a distribution where the table says allowed must carry the allowed line")
 	}
 }

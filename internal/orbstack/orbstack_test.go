@@ -101,7 +101,7 @@ func TestCreateArgs(t *testing.T) {
 }
 
 func TestCreateArgsPinsTheImageOfEveryDistribution(t *testing.T) {
-	want := map[string]string{"ubuntu": "ubuntu:26.04"}
+	want := map[string]string{"ubuntu": "ubuntu:26.04", "debian": "debian:trixie"}
 	keys := Distributions()
 	if len(keys) != len(want) {
 		t.Fatalf("Distributions() = %q, want the keys of %v", keys, want)
@@ -130,7 +130,7 @@ func TestCreateArgsPinsTheImageOfEveryDistribution(t *testing.T) {
 
 func TestCreateArgsRefusesAnythingButAKey(t *testing.T) {
 	tests := []string{
-		"", " ", "Ubuntu", " ubuntu", "ubuntu ", "ubuntu\n", "ubuntu\ndebian",
+		"", " ", "Ubuntu", "Debian", " ubuntu", "ubuntu ", "debian ", "ubuntu\n", "ubuntu\ndebian",
 		"ubuntu:26.04", "debian:trixie", "debian:bookworm", "debian:latest", "bookworm", "26.04",
 		"alpine", "alpine:3.23", "ubuntu debian", "ubuntu;debian", `"ubuntu"`, "'debian'",
 		"$(debian)", "-ubuntu", "--debian", "--forward-ssh-agent", "--mount", "../ubuntu", "ubuntu\x00",
@@ -149,8 +149,8 @@ func TestCreateArgsRefusesAnythingButAKey(t *testing.T) {
 
 func TestDistributionsReturnsACopy(t *testing.T) {
 	got := Distributions()
-	if !slices.Equal(got, []string{"ubuntu"}) {
-		t.Fatalf("Distributions() = %q, want ubuntu", got)
+	if !slices.Equal(got, []string{"ubuntu", "debian"}) {
+		t.Fatalf("Distributions() = %q, want ubuntu, debian", got)
 	}
 	got[0] = "alpine"
 	if again := Distributions(); again[0] != "ubuntu" {
@@ -160,7 +160,7 @@ func TestDistributionsReturnsACopy(t *testing.T) {
 
 func TestCreateRefusesAnUnpinnedDistributionBeforeAnyCommand(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	for _, key := range []string{"", "alpine", "ubuntu:26.04", "--debian", "ubuntu;debian"} {
+	for _, key := range []string{"", "alpine", "ubuntu:26.04", "debian:trixie", "--debian", "ubuntu;debian"} {
 		err := New(testPrefix).Create(context.Background(), "orbit-api-1d9b22c9", "/Users/dev/Project/api", key, true)
 		if !errors.Is(err, ErrDistribution) {
 			t.Errorf("Create with distribution %q = %v, want %v", key, err, ErrDistribution)
@@ -1940,5 +1940,92 @@ func TestListFailureDoesNotRepeatListInItsMessage(t *testing.T) {
 func TestFakeAcceptsTheDistributionsOfTheAdapter(t *testing.T) {
 	if got, want := orbstacktest.Distributions(), Distributions(); !slices.Equal(got, want) {
 		t.Errorf("orbstacktest.Distributions() = %q, want the pins of the adapter %q", got, want)
+	}
+}
+
+// distributionList is the part of "orb list --format json" of OrbStack 2.2.5
+// that parseDistribution reads, for the machine of testdata/orb-list-ubuntu.json
+// and, with the image of a Debian machine, the spelling that OrbStack is
+// expected to store for debian:trixie (UNCONFIRMED until a Debian run).
+func distributionList(distro, version string) []byte {
+	return []byte(`[{"name":"orbit-api-1d9b22c9","state":"running","image":{"distro":"` + distro + `","version":"` + version + `","arch":"arm64","variant":"default"},"config":{}}]`)
+}
+
+func TestParseDistributionReadsTheStoredImage(t *testing.T) {
+	capture, err := os.ReadFile(filepath.Join("testdata", "orb-list-ubuntu.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		list []byte
+		want string
+	}{
+		{name: "the capture of an Ubuntu 26.04 machine", list: capture, want: "ubuntu"},
+		{name: "ubuntu", list: distributionList("ubuntu", "resolute"), want: "ubuntu"},
+		{name: "debian", list: distributionList("debian", "trixie"), want: "debian"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseDistribution(tt.list, "orbit-api-1d9b22c9")
+			if err != nil || got != tt.want {
+				t.Errorf("parseDistribution = %q, %v, want %q", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseDistributionFailsClosed(t *testing.T) {
+	const name = "orbit-api-1d9b22c9"
+	tests := []struct {
+		name    string
+		list    string
+		wantErr error
+	}{
+		{name: "no image", list: `[{"name":"` + name + `","state":"running","config":{}}]`, wantErr: ErrUnknownImage},
+		{name: "null image", list: `[{"name":"` + name + `","state":"running","image":null,"config":{}}]`, wantErr: ErrUnknownImage},
+		{name: "empty image", list: `[{"name":"` + name + `","image":{}}]`, wantErr: ErrUnknownImage},
+		{name: "no version", list: `[{"name":"` + name + `","image":{"distro":"ubuntu"}}]`, wantErr: ErrUnknownImage},
+		{name: "no distro", list: `[{"name":"` + name + `","image":{"version":"resolute"}}]`, wantErr: ErrUnknownImage},
+		{name: "debian bookworm", list: string(distributionList("debian", "bookworm")), wantErr: ErrUnknownImage},
+		{name: "ubuntu with the version of debian", list: string(distributionList("ubuntu", "trixie")), wantErr: ErrUnknownImage},
+		{name: "alpine", list: string(distributionList("alpine", "3.23")), wantErr: ErrUnknownImage},
+		{name: "wrong case", list: string(distributionList("Debian", "trixie")), wantErr: ErrUnknownImage},
+		{name: "trailing space", list: string(distributionList("debian ", "trixie")), wantErr: ErrUnknownImage},
+		{name: "not listed", list: `[{"name":"orbit-other-00000000","image":{"distro":"ubuntu","version":"resolute"}}]`, wantErr: ErrMachineList},
+		{name: "empty list", list: `[]`, wantErr: ErrMachineList},
+		{name: "null", list: `null`, wantErr: ErrMachineList},
+		{name: "invalid JSON", list: `{`, wantErr: ErrMachineList},
+		{name: "empty output", list: ``, wantErr: ErrMachineList},
+		{name: "listed twice", list: `[{"name":"` + name + `","image":{"distro":"ubuntu","version":"resolute"}},{"name":"` + name + `","image":{"distro":"debian","version":"trixie"}}]`, wantErr: ErrMachineList},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseDistribution([]byte(tt.list), name)
+			if !errors.Is(err, tt.wantErr) || got != "" {
+				t.Errorf("parseDistribution = %q, %v, want \"\", %v", got, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestEveryPinStoresADistinctImage(t *testing.T) {
+	seen := map[string]string{}
+	for _, p := range pins {
+		pair := p.distro + "/" + p.version
+		if other, dup := seen[pair]; dup {
+			t.Errorf("pins %q and %q both store %q", other, p.key, pair)
+		}
+		seen[pair] = p.key
+		if p.distro == "" || p.version == "" || !strings.HasPrefix(p.image, p.distro+":") {
+			t.Errorf("pin %q = %+v, want a stored pair and an image of that distribution", p.key, p)
+		}
+	}
+}
+
+func TestDistributionRunsNoCommandForAForeignName(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if _, err := New(testPrefix).Distribution(context.Background(), "ubuntu"); !errors.Is(err, ErrForeignMachine) {
+		t.Errorf("Distribution of a foreign name = %v, want %v", err, ErrForeignMachine)
 	}
 }
