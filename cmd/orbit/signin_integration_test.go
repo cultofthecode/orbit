@@ -22,8 +22,9 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/stop"
 )
 
-// signInTimeout bounds the sign-in test: two runs of init, one with the
-// install of Claude Code, one stop, one start, and the probes.
+// signInTimeout bounds the sign-in test when the test binary has no
+// deadline: two runs of init, one with the install of Claude Code, one stop,
+// one start, and the probes.
 const signInTimeout = 20 * time.Minute
 
 // credentialVariables are the variables of the provider that the client
@@ -102,8 +103,7 @@ sha256sum -c --quiet ` + accountSum + ` || fail "the checksum of /home/agent/.cl
 // and orbit start. It never reads or writes .credentials.json.
 func TestSignInKeepsTheLoginAndTakesNoHostCredential(t *testing.T) {
 	lockInit(t, syscall.LOCK_SH)
-	ctx, cancel := context.WithTimeout(context.Background(), signInTimeout)
-	t.Cleanup(cancel)
+	ctx := boundedContext(t, signInTimeout)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	marker := setCredentialVariablesOnTheHost(t)
