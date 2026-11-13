@@ -7,3 +7,4 @@
 # OWNER STEP: add the public key of the Maintainer here. Until a key is
 # listed, .github/scripts/check-release-tag.sh refuses every tag (fail closed).
 # Never add a private key.
+jakub.tobiasz@icloud.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIWVXVDapqUvegjgwV+6awvRLQ7OknZKp2HDod0zzZ2
