@@ -5,3 +5,4 @@
 
 # Binary that `go build` leaves in the repository root
 /orbit
+/dist/
