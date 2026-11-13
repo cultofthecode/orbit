@@ -32,8 +32,8 @@ import (
 // install, and the probes.
 const provisionTimeout = 10 * time.Minute
 
-// cleanupGrace is the time that provisionContext leaves before the
-// deadline of the test binary, so that t.Cleanup can delete the machine.
+// cleanupGrace is the time that boundedContext leaves before the deadline
+// of the test binary, so that t.Cleanup can delete the machine.
 const cleanupGrace = 3 * time.Minute
 
 // initLockPath is the file that serializes the integration runs on one
@@ -93,24 +93,32 @@ func waitToRunInit(t *testing.T) {
 	}
 }
 
-// provisionContext returns a context that ends cleanupGrace before the
-// deadline of the test binary, so that the -timeout the caller chose
-// absorbs the load of other runs on one OrbStack and t.Cleanup still
-// deletes the machine. Without a deadline it ends after provisionTimeout.
+// provisionContext returns boundedContext with provisionTimeout as the
+// bound for a test binary that has no deadline.
 func provisionContext(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithDeadline(context.Background(), provisionDeadline(t))
+	return boundedContext(t, provisionTimeout)
+}
+
+// boundedContext returns a context that ends cleanupGrace before the
+// deadline of the test binary, so that the -timeout the caller chose absorbs
+// the load of other runs on one OrbStack and t.Cleanup still deletes the
+// machine. Without a deadline it ends after fallback.
+func boundedContext(t *testing.T, fallback time.Duration) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(context.Background(), contextEnd(t, fallback))
 	t.Cleanup(cancel)
 	return ctx
 }
 
-// provisionDeadline returns the end of the context of provisionContext.
-func provisionDeadline(t *testing.T) time.Time {
+// contextEnd returns cleanupGrace before the deadline of the test binary, or
+// fallback from now when it has none.
+func contextEnd(t *testing.T, fallback time.Duration) time.Time {
 	t.Helper()
 	if deadline, ok := t.Deadline(); ok {
 		return deadline.Add(-cleanupGrace)
 	}
-	return time.Now().Add(provisionTimeout)
+	return time.Now().Add(fallback)
 }
 
 // otherMachines returns the names of the machines on the host besides
