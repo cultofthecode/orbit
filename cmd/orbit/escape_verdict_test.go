@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/cultofthecode/orbit/internal/provision"
 )
 
 // outcome is what the suite concludes about one attempt.
@@ -36,6 +38,15 @@ const (
 var privilegedTable = map[string]privilegedExpectation{
 	"ubuntu": privilegedRefused,
 	"debian": privilegedRefused,
+}
+
+// runtimeGuardTable says, per value of ORBIT_IT_DISTRO, whether the profile
+// of the distribution carries the runc guard of internal/provision. E08 tries
+// a privileged exec only where it does. A test keeps the keys equal to the
+// distributions that provision renders.
+var runtimeGuardTable = map[string]bool{
+	"ubuntu": false,
+	"debian": true,
 }
 
 // privilegedObservation holds the expectation and the observation of
@@ -224,6 +235,18 @@ func TestPrivilegedTableKeepsEveryDistributionRefused(t *testing.T) {
 	for _, distro := range []string{"ubuntu", "debian"} {
 		if got := privilegedTable[distro]; got != privilegedRefused {
 			t.Errorf("%s row = %v, want refused (owner decision 2026-11-13)", distro, got)
+		}
+	}
+}
+
+func TestRuntimeGuardTableHasOneRowPerDistribution(t *testing.T) {
+	keys := provision.Distributions()
+	if len(runtimeGuardTable) != len(keys) {
+		t.Errorf("runtimeGuardTable has %d rows, provision renders %d distributions", len(runtimeGuardTable), len(keys))
+	}
+	for _, key := range keys {
+		if _, ok := runtimeGuardTable[key]; !ok {
+			t.Errorf("runtimeGuardTable has no row for %s", key)
 		}
 	}
 }

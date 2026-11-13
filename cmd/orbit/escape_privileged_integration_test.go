@@ -389,8 +389,9 @@ func checkThePrivilegedLeakIsDetected(ctx context.Context, t *testing.T, rig esc
 func TestPrivilegedScriptsParse(t *testing.T) {
 	e := escapeEnv{dir: "/Users/orbit/project", sentinel: "/Users/orbit/escape-sentinel", sentinelContent: "secret", macPort: 4242, defaultUID: 501, target: "orbit-target", targetAddr: "198.19.249.5"}
 	scripts := map[string]string{
-		"weaken": weakenForPrivilegedLeak,
-		"E08":    privilegedUIDs,
+		"weaken":      weakenForPrivilegedLeak,
+		"E08":         privilegedUIDs,
+		"E08-refused": refusedPrivilegedRuns + refusedPrivilegedExec,
 	}
 	for _, attempts := range [][]attempt{
 		e.privilegedKernelAttempts(), e.privilegedOtherSandboxAttempts(), e.privilegedMacAttempts(),

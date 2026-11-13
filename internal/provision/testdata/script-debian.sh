@@ -25,6 +25,7 @@ systemctl mask systemd-resolved.service systemd-resolved-varlink.socket systemd-
 put /etc/resolv.conf 0644 <<'ORBIT_EOF'
 nameserver 0.250.250.200
 ORBIT_EOF
+if [ "$(dpkg-divert --truename /usr/sbin/runc)" != /usr/sbin/runc.real ]; then dpkg-divert --local --rename --divert /usr/sbin/runc.real --add /usr/sbin/runc >/dev/null; fi
 mkdir -p /etc
 put /etc/nftables.conf 0644 <<'ORBIT_EOF'
 #!/usr/sbin/nft -f
@@ -271,37 +272,48 @@ github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okW
 github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
 github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
 ORBIT_EOF
-mkdir -p /usr/local/libexec
-put /usr/local/libexec/orbit-runc 0755 <<'ORBIT_EOF'
+mkdir -p /usr/sbin
+put /usr/sbin/runc 0755 <<'ORBIT_EOF'
 #!/bin/bash
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+real=/usr/sbin/runc.real
+refuse() { echo "orbit: $1" >&2; exit 1; }
 args=("$@")
 create=
+exec_at=
 bundle=
+process=
+n=0
 while [ $# -gt 0 ]; do
   case $1 in
     create|run) create=1;;
-    --bundle|-b) bundle=${2:-}; shift;;
+    exec) [ -n "$exec_at" ] || exec_at=$n;;
+    --bundle|-b) bundle=${2:-}; shift; n=$((n + 1));;
     --bundle=*) bundle=${1#--bundle=};;
+    --process|-p) process=${2:-}; shift; n=$((n + 1));;
+    --process=*) process=${1#--process=};;
   esac
   shift
+  n=$((n + 1))
 done
 if [ -n "$create" ]; then
   config=$bundle/config.json
-  [ -n "$bundle" ] && [ -r "$config" ] || { echo "orbit: cannot read the container configuration; refused" >&2; exit 1; }
+  [ -n "$bundle" ] && [ -r "$config" ] || refuse "cannot read the container configuration; refused"
   config_text=$(tr -d ' \t\n' < "$config")
-  case $config_text in *'"maskedPaths":["/'*) ;; *) echo "orbit: privileged containers are refused in this sandbox" >&2; exit 1;; esac
+  case $config_text in *'"maskedPaths":["/'*) ;; *) refuse "privileged containers are refused in this sandbox";; esac
 fi
-exec /usr/sbin/runc "${args[@]}"
-ORBIT_EOF
-mkdir -p /etc/orbit
-put /etc/orbit/docker-daemon.json 0644 <<'ORBIT_EOF'
-{"default-runtime": "orbit-runc", "runtimes": {"orbit-runc": {"path": "/usr/local/libexec/orbit-runc"}}}
-ORBIT_EOF
-mkdir -p /etc/systemd/user/docker.service.d
-put /etc/systemd/user/docker.service.d/orbit-privileged.conf 0644 <<'ORBIT_EOF'
-[Service]
-ExecStart=
-ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --config-file=/etc/orbit/docker-daemon.json
+if [ -n "$exec_at" ]; then
+  id=${args[${#args[@]} - 1]}
+  [ -n "$process" ] && [ -r "$process" ] || refuse "cannot read the process of the exec; refused"
+  state=$("$real" "${args[@]:0:$exec_at}" state "$id" 2>/dev/null) || refuse "cannot read the state of the container; refused"
+  dir=$(printf '%s' "$state" | tr -d ' \t\n' | sed -n 's/.*"bundle":"\([^"]*\)".*/\1/p')
+  [ -n "$dir" ] && [ -r "$dir/config.json" ] || refuse "cannot read the container configuration; refused"
+  bounding=" $(tr -d ' \t\n' < "$dir/config.json" | sed -n 's/.*"bounding":\[\([^]]*\)\].*/\1/p' | grep -o 'CAP_[A-Z_]*' | tr '\n' ' ') "
+  for cap in $(tr -d ' \t\n' < "$process" | sed -n 's/.*"capabilities":{\([^}]*\)}.*/\1/p' | grep -o 'CAP_[A-Z_]*'); do
+    case $bounding in *" $cap "*) ;; *) refuse "privileged exec is refused in this sandbox";; esac
+  done
+fi
+exec "$real" "${args[@]}"
 ORBIT_EOF
 systemctl daemon-reload
 systemctl enable nftables.service orbit-proxy-address.service tinyproxy.service orbit-harden.service orbit-boundary-gate.service >/dev/null
@@ -369,7 +381,17 @@ systemctl is-active --quiet orbit-boundary-gate.service || fail "orbit-boundary-
 runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user is-active --quiet docker.service || fail "docker.service of agent is not active"
 docker buildx version >/dev/null || fail "docker buildx is missing"
 docker compose version >/dev/null || fail "docker compose is missing"
-[ "$(runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid env DOCKER_HOST=unix:///run/user/$agent_uid/docker.sock docker info --format '{{.DefaultRuntime}}')" = orbit-runc ] || fail "the Docker daemon of agent does not use the runtime orbit-runc"
+[ "$(dpkg-divert --truename /usr/sbin/runc)" = /usr/sbin/runc.real ] && [ -x /usr/sbin/runc.real ] || fail "runc is not diverted to /usr/sbin/runc.real"
+[ "$(stat -c %U:%a /usr/sbin/runc)" = root:755 ] && grep -q 'privileged containers are refused' /usr/sbin/runc || fail "/usr/sbin/runc is not the root-owned guard"
+daemon_pid=$(runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user show -p MainPID --value docker.service) || fail "cannot read the main process of the Docker daemon of agent"
+[ "${daemon_pid:-0}" -gt 0 ] || fail "the Docker daemon of agent has no main process"
+daemon_path=$(tr '\0' '\n' < "/proc/$daemon_pid/environ" | sed -n 's/^PATH=//p')
+runtime_paths=$(runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid env DOCKER_HOST=unix:///run/user/$agent_uid/docker.sock docker info --format '{{range .Runtimes}}{{.Path}}{{"\n"}}{{end}}')
+[ -n "$runtime_paths" ] || fail "the Docker daemon of agent lists no runtime"
+for runtime_path in $runtime_paths; do
+  resolved=$(PATH=$daemon_path command -v "$runtime_path" || true)
+  [ -n "$resolved" ] && [ "$(readlink -f "$resolved")" = "$(readlink -f /usr/sbin/runc)" ] || fail "the runtime $runtime_path of agent does not go through the guard"
+done
 mkdir -p /etc/orbit
 put /etc/orbit/provisioned 0644 <<'ORBIT_EOF'
 4

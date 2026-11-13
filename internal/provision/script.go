@@ -159,6 +159,7 @@ func Script(in ScriptInput) ([]byte, error) {
 		installDocker(distro.dockerPackages),
 		maskRootfulDocker(),
 		staticDNS(),
+		distro.guardSetup(),
 		writeFiles(files),
 		startBoundary(),
 		createAgent(in.ForwardSSHAgent),

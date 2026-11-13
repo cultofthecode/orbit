@@ -201,6 +201,9 @@ type escapeEnv struct {
 	// privileged is true when --privileged is allowed on this distribution and
 	// started: E08 then checks the uids of a privileged container.
 	privileged bool
+	// runtimeGuard is true when the profile of this distribution carries the
+	// runc guard: E08 then also tries a privileged exec.
+	runtimeGuard bool
 }
 
 const targetPort = "9099"
@@ -237,7 +240,7 @@ func (e escapeEnv) fill(body string) string {
 // LAN address.
 func newEscapeEnv(t *testing.T, dir string, rig escapeRig) escapeEnv {
 	t.Helper()
-	e := escapeEnv{dir: dir, rig: rig, defaultUID: os.Getuid(), sentinelContent: fmt.Sprintf("secret-%d-%d", os.Getpid(), os.Getuid())}
+	e := escapeEnv{dir: dir, rig: rig, defaultUID: os.Getuid(), sentinelContent: fmt.Sprintf("secret-%d-%d", os.Getpid(), os.Getuid()), runtimeGuard: runtimeGuardTable[integrationDistro(t)]}
 	e.sentinel = filepath.Join(filepath.Dir(dir), "escape-sentinel-"+filepath.Base(dir))
 	if err := os.WriteFile(e.sentinel, []byte(e.sentinelContent+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -499,8 +502,10 @@ for group in sudo admin adm docker lxd disk shadow; do
   if id -nG | tr ' ' '\n' | grep -qx "$group"; then fail "the agent is in the group $group"; fi
 done
 `)
-	containerTry := `blocked "a privileged container" docker run --rm --privileged alpine true
-`
+	containerTry := refusedPrivilegedRuns
+	if e.runtimeGuard {
+		containerTry += refusedPrivilegedExec
+	}
 	if e.privileged {
 		containerTry = privilegedUIDs
 	}
@@ -602,6 +607,30 @@ func startTarget(ctx context.Context, t *testing.T, client *orbstack.Client) (na
 	}
 	return name, strings.TrimSpace(out)
 }
+
+// refusedPrivilegedRuns is the privileged line of E08 on a distribution where
+// --privileged is refused: on the default runtime and on each runtime that
+// the daemon registers by itself, so that no runtime name skips the refusal.
+// Each runtime has a control, an unprivileged container of the same image on
+// the same runtime, so that a refusal never comes from a wrong runtime name or
+// a missing image.
+const refusedPrivilegedRuns = `blocked "a privileged container" docker run --rm --privileged $IMG true
+for runtime in runc io.containerd.runc.v2; do
+  allowed "an unprivileged container on the runtime $runtime" docker run --rm --runtime="$runtime" $IMG true
+  blocked "a privileged container on the runtime $runtime" docker run --rm --runtime="$runtime" --privileged $IMG true
+done
+`
+
+// refusedPrivilegedExec is the privileged exec line of E08, for a distribution
+// whose profile carries the runc guard. An unprivileged exec in the same
+// container is its control.
+const refusedPrivilegedExec = `id=$(docker run -d $IMG sleep 60) || { fail "the container of the exec probe did not start"; id=; }
+if [ -n "$id" ]; then
+  allowed "an exec in a running container" docker exec "$id" true
+  blocked "a privileged exec in a running container" docker exec --privileged "$id" true
+  docker rm -f "$id" >/dev/null 2>&1
+fi
+`
 
 // privilegedUIDs is the privileged line of E08 on a distribution where
 // --privileged is allowed: every process of a privileged container runs, as
