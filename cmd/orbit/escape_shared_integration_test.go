@@ -21,7 +21,8 @@ allowed "tinyproxy runs" pgrep -x tinyproxy
 blocked "the agent reaches 1.1.1.1 directly" setpriv --reuid agent --regid agent --clear-groups curl -sS --noproxy '*' -m 5 -k -o /dev/null https://1.1.1.1
 `
 
-// TestEscapeShared runs the read-only attempts E01 to E11, and E09 last, in
+// TestEscapeShared runs the read-only attempts E01 to E11, then E18, E19, E20,
+// and E22 where --privileged is allowed, and E09 last, in
 // one sandbox that init --agent claude-code provisioned (Q3, Q11). E11
 // creates one disposable target.
 func TestEscapeShared(t *testing.T) {
@@ -42,6 +43,7 @@ func TestEscapeShared(t *testing.T) {
 	env.hostContainer, env.hostContainerErr = startHostContainer(ctx, t)
 	env.target, env.targetAddr = startTarget(ctx, t, client)
 	t.Logf("sandbox %s, target of E11 %s at %s", name, env.target, env.targetAddr)
+	env.privileged = rig.privilegedGate(ctx, t, integrationDistro(t), "E18", "E19", "E20", "E22")
 
 	for _, group := range [][]attempt{
 		env.hostPathAttempts(), env.engineAttempts(), env.macAttempts(), env.hostContainerAttempts(),
@@ -49,6 +51,15 @@ func TestEscapeShared(t *testing.T) {
 		env.noSessionAttempts(), env.otherSandboxAttempts(),
 	} {
 		rig.runAll(ctx, t, group)
+	}
+	if env.privileged {
+		rig.runAll(ctx, t, env.privilegedKernelAttempts())
+		rig.runAll(ctx, t, env.privilegedOtherSandboxAttempts())
+		rig.runAll(ctx, t, env.privilegedMacAttempts())
+		rig.runAll(ctx, t, env.privilegedEgressAttempts())
+		if err := rig.runIn(ctx, rootSession, boundaryIntact); err != nil {
+			t.Fatalf("the boundary of %s is damaged after E22, so no later result may come from it: %v", name, err)
+		}
 	}
 	rig.runAll(ctx, t, env.boundaryAttempts())
 	if err := rig.runIn(ctx, rootSession, boundaryIntact); err != nil {

@@ -96,6 +96,9 @@ func TestEscapeWeakenedBoundary(t *testing.T) {
 
 	checkAnAllowRuleDoesNotOpenTheMac(ctx, t, rig)
 	checkTheWeakenedBoundaryIsDetected(ctx, t, rig)
+	if rig.privilegedGate(ctx, t, integrationDistro(t), "M02") {
+		checkThePrivilegedLeakIsDetected(ctx, t, rig)
+	}
 }
 
 // checkAnAllowRuleDoesNotOpenTheMac is E12 (Q13). Only the bridge-address

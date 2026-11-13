@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cultofthecode/orbit/internal/orbstack"
 	"github.com/cultofthecode/orbit/internal/provision"
@@ -53,6 +54,10 @@ type attempt struct {
 	// unreachableInconclusive means that a control that finds the network
 	// of its target unreachable makes the attempt inconclusive (E04).
 	unreachableInconclusive bool
+	// after runs in the test process after try, and fails the attempt when
+	// it returns an error: root compares the boundary with what it was
+	// before (E22).
+	after func(ctx context.Context) error
 	// try is the shell that must fail. It exits non-zero and prints the
 	// evidence on standard error when the attempt succeeded.
 	try string
@@ -113,6 +118,11 @@ func (r escapeRig) run(ctx context.Context, t *testing.T, a attempt) {
 		if !result.controlFailed || result.inconclusiveControl() {
 			if err := r.runIn(ctx, a.as, a.try); err != nil {
 				result.escaped, result.evidence = true, err.Error()
+			}
+			if a.after != nil {
+				if err := a.after(ctx); err != nil {
+					result.escaped, result.evidence = true, result.evidence+" after the attempt: "+err.Error()
+				}
 			}
 		}
 		r.report(t, result)
@@ -188,6 +198,9 @@ type escapeEnv struct {
 	defaultUID                     int
 	target, targetAddr             string
 	rig                            escapeRig
+	// privileged is true when --privileged is allowed on this distribution and
+	// started: E08 then checks the uids of a privileged container.
+	privileged bool
 }
 
 const targetPort = "9099"
@@ -264,12 +277,14 @@ func buildProbeImage(ctx context.Context, t *testing.T, rig escapeRig) {
 	t.Helper()
 	body := `wait_docker_or_exit
 dir=$(mktemp -d)
-printf 'FROM alpine\nRUN apk add curl bind-tools\n' > "$dir/Dockerfile"
+printf 'FROM alpine\nRUN apk add curl bind-tools nftables iproute2 iptables kmod util-linux openssh-client socat\n' > "$dir/Dockerfile"
 docker build -q -t ` + probeImage + ` "$dir" >/dev/null 2>"$dir/err" || fail "build ` + probeImage + `: $(tail -3 "$dir/err")"
 `
+	started := time.Now()
 	if err := rig.runIn(ctx, agentSession, body); err != nil {
 		t.Fatalf("CONTROL FAILED: image: %v", err)
 	}
+	t.Logf("probe image built in %s", time.Since(started).Round(time.Second))
 }
 
 // macReachedByRoot is the control of the attempts on the Mac: root reaches
@@ -486,6 +501,9 @@ done
 `)
 	containerTry := `blocked "a privileged container" docker run --rm --privileged alpine true
 `
+	if e.privileged {
+		containerTry = privilegedUIDs
+	}
 	return []attempt{
 		{id: "E08-root-agent", rule: "R10 D14 D17", as: agentSession, try: agentTry},
 		{id: "E08-root-container", rule: "R10 D14 D17", as: agentContainer, try: containerTry},
@@ -575,9 +593,28 @@ func startTarget(ctx context.Context, t *testing.T, client *orbstack.Client) (na
 	if out, err := orbRoot(ctx, name, listen); err != nil {
 		t.Fatalf("start the listener in the target %s of E11: %v\n%s", name, err, out)
 	}
+	if out, err := orbRoot(ctx, name, "echo sentinel > /root/"+targetSentinel+"\n"); err != nil {
+		t.Fatalf("write the sentinel of E19 in the target %s: %v\n%s", name, err, out)
+	}
 	out, err := orbRoot(ctx, name, "ip -4 -o addr show eth0 | awk '{split($4, a, \"/\"); print a[1]}'\n")
 	if err != nil || strings.TrimSpace(out) == "" {
 		t.Fatalf("address of the target %s of E11: %q, %v", name, out, err)
 	}
 	return name, strings.TrimSpace(out)
 }
+
+// privilegedUIDs is the privileged line of E08 on a distribution where
+// --privileged is allowed: every process of a privileged container runs, as
+// the machine sees it, under the uid of the agent or one of its sub-uids,
+// never uid 0.
+const privilegedUIDs = `id=$(docker run -d --privileged $IMG sleep 30) || { fail "the privileged container did not start"; id=; }
+if [ -n "$id" ]; then
+  pids=$(docker top "$id" -eo pid | tail -n +2)
+  [ -n "$pids" ] || fail "docker top lists no process of the privileged container"
+  for pid in $pids; do
+    uid=$(awk '/^Uid:/ {print $2}' "/proc/$pid/status" 2>/dev/null) || continue
+    { [ "$uid" -ne 0 ] && [ "$uid" -ge "$(id -u)" ]; } || fail "process $pid of the privileged container runs as uid $uid"
+  done
+  docker rm -f "$id" >/dev/null 2>&1
+fi
+`
