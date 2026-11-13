@@ -53,12 +53,13 @@ func TestInitProvisionsTheSandbox(t *testing.T) {
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
 
-	first, err := handler.Handle(ctx, initialize.Input{Dir: dir})
-	if err != nil || !first.Created {
+	distro := integrationDistro(t)
+	first, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: distro})
+	if err != nil || !first.Created || string(first.Distribution) != distro {
 		t.Fatalf("first Handle = %+v, %v, want a created sandbox; machines that this test did not create: %s", first, err, otherMachines(ctx, client, name))
 	}
-	second, err := handler.Handle(ctx, initialize.Input{Dir: dir})
-	if err != nil || second.Created {
+	second, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: distro})
+	if err != nil || second.Created || string(second.Distribution) != distro {
 		t.Fatalf("second Handle = %+v, %v, want the existing sandbox provisioned again; machines that this test did not create: %s", second, err, otherMachines(ctx, client, name))
 	}
 
@@ -71,6 +72,76 @@ func TestInitProvisionsTheSandbox(t *testing.T) {
 	}
 	checkAgentWroteTheProject(t, dir)
 	checkProxyClosedFromTheMac(t, name)
+}
+
+// integrationDistro returns the distribution that this run of the integration
+// tests creates with init: the value of ORBIT_IT_DISTRO, or ubuntu when it is
+// unset. It fails the test for a value that is not a distribution, and logs
+// the distribution so that a transcript shows which one it ran on.
+func integrationDistro(t *testing.T) string {
+	t.Helper()
+	value := os.Getenv("ORBIT_IT_DISTRO")
+	if value == "" {
+		value = string(sandbox.DefaultDistribution)
+	}
+	if _, err := sandbox.ParseDistribution(value); err != nil {
+		t.Fatalf("ORBIT_IT_DISTRO: %v", err)
+	}
+	t.Logf("distribution: %s", value)
+	return value
+}
+
+// TestInitRefusesAnotherDistribution creates a sandbox on Ubuntu, then runs
+// init --distro debian over it. Init must fail with the mismatch before it
+// runs anything in the machine, and the machine must be untouched. It runs
+// on Ubuntu only: the mismatch needs a sandbox of the other distribution.
+func TestInitRefusesAnotherDistribution(t *testing.T) {
+	if integrationDistro(t) != string(sandbox.Ubuntu) {
+		t.Skip("the refusal is checked from an Ubuntu sandbox")
+	}
+	waitToRunInit(t)
+	ctx := provisionContext(t)
+	client := orbstack.New(sandbox.NamePrefix)
+	dir, name := newSandboxDir(ctx, t, client)
+	handler := initHandler(client, claudeRegistry(t))
+	if _, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: "ubuntu"}); err != nil {
+		t.Fatalf("first Handle = %v; machines that this test did not create: %s", err, otherMachines(ctx, client, name))
+	}
+	if err := client.RunAsRoot(ctx, name, []byte("test \"$(cat "+provision.MarkerPath+")\" = "+fmt.Sprint(provision.Version)+"\n")); err != nil {
+		t.Fatalf("marker before the refusal: %v", err)
+	}
+	if err := client.RunAsRoot(ctx, name, []byte("rm "+provision.MarkerPath+"\n")); err != nil {
+		t.Fatalf("remove the marker to detect a script run: %v", err)
+	}
+
+	_, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: "debian"})
+
+	if !errors.Is(err, sandbox.ErrDistributionMismatch) {
+		t.Fatalf("Handle --distro debian on an Ubuntu sandbox = %v, want %v", err, sandbox.ErrDistributionMismatch)
+	}
+	if err := client.RunAsRoot(ctx, name, []byte("test ! -e "+provision.MarkerPath+"\n")); err != nil {
+		t.Errorf("the refused init ran a script in the machine (the marker came back): %v", err)
+	}
+	if exists, err := client.Exists(ctx, name); err != nil || !exists {
+		t.Errorf("Exists after the refusal = %v, %v, want the machine kept", exists, err)
+	}
+}
+
+// TestInitPinsTheStoredImage checks that Distribution reads back the key that
+// Create used, for the distribution of this run. It pins the spelling that
+// OrbStack stores for each image: ubuntu / resolute and debian / trixie.
+func TestInitPinsTheStoredImage(t *testing.T) {
+	distro := integrationDistro(t)
+	waitToRunInit(t)
+	ctx := provisionContext(t)
+	client := orbstack.New(sandbox.NamePrefix)
+	dir, name := newSandboxDir(ctx, t, client)
+	if err := client.Create(ctx, name, dir, distro, false); err != nil {
+		t.Fatalf("Create(%s) = %v", distro, err)
+	}
+	if got, err := client.Distribution(ctx, name); err != nil || got != distro {
+		t.Errorf("Distribution after Create(%s) = %q, %v, want %q", distro, got, err, distro)
+	}
 }
 
 // waitToRunInit holds a shared lock on initLockPath until the end of t. It
@@ -162,14 +233,15 @@ func TestInitRunsAgainAfterRepeatedRuns(t *testing.T) {
 	dir, name := newSandboxDir(ctx, t, client)
 	handler := initHandler(client, claudeRegistry(t))
 
-	if _, err := handler.Handle(ctx, initialize.Input{Dir: dir}); err != nil {
+	distro := integrationDistro(t)
+	if _, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: distro}); err != nil {
 		t.Fatalf("first Handle = %v; machines that this test did not create: %s", err, otherMachines(ctx, client, name))
 	}
 	for run := 2; run <= 3; run++ {
 		if err := client.RunAsRoot(ctx, name, []byte(hardenRestarts)); err != nil {
 			t.Fatalf("restarts of orbit-harden.service before run %d in %s:\n%v", run, name, err)
 		}
-		if out, err := handler.Handle(ctx, initialize.Input{Dir: dir}); err != nil || out.Created {
+		if out, err := handler.Handle(ctx, initialize.Input{Dir: dir, Distro: distro}); err != nil || out.Created {
 			t.Fatalf("Handle run %d = %+v, %v, want the existing sandbox provisioned again; machines that this test did not create: %s", run, out, err, otherMachines(ctx, client, name))
 		}
 	}

@@ -75,10 +75,12 @@ func TestBootCheckScriptChecksTheTableAndEveryBoundaryUnit(t *testing.T) {
 }
 
 func TestBootCheckScriptMatchesTheSelfCheckOfScript(t *testing.T) {
-	provisioning := strings.Join(script(t), "\n")
-	if check := strings.Join(boundaryCheck(), "\n"); !strings.Contains(provisioning, check) {
-		t.Errorf("Script does not run the boundary check of BootCheckScript:\n%s", check)
-	}
+	eachDistribution(t, func(t *testing.T, distribution string) {
+		provisioning := strings.Join(script(t, distribution), "\n")
+		if check := strings.Join(boundaryCheck(), "\n"); !strings.Contains(provisioning, check) {
+			t.Errorf("Script does not run the boundary check of BootCheckScript:\n%s", check)
+		}
+	})
 }
 
 func TestMarkerCheckScriptComparesTheMarkerWithTheVersion(t *testing.T) {

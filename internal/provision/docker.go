@@ -32,10 +32,6 @@ const (
 // of the agent at its rootless engine.
 const ContextName = "orbit-rootless"
 
-// dockerPackages are the packages of the rootless engine, all from the
-// Ubuntu archive (Q1, Q9 of the rootless Docker spec).
-var dockerPackages = []string{"docker.io", "docker-buildx", "docker-compose-v2", "rootlesskit", "uidmap", "slirp4netns", "dbus-user-session"}
-
 // rootfulUnits are the units of the rootful Docker Engine. Provisioning
 // masks them: the agent has no rootful daemon and no rootful socket.
 var rootfulUnits = []string{"docker.service", "docker.socket", "containerd.service"}
@@ -136,13 +132,14 @@ func userManagerDropIn() string {
 
 // installDocker installs the packages of the rootless engine behind a
 // policy-rc.d that refuses every start, so that no package starts a rootful
-// daemon. The guard is removed on every path.
-func installDocker() []string {
+// daemon. The guard is removed on every path. packages is the list of the
+// profile of the distribution.
+func installDocker(packages []string) []string {
 	return []string{
 		fmt.Sprintf("trap 'rm -f %s' EXIT", policyRCPath),
 		fmt.Sprintf("printf '#!/bin/sh\\nexit 101\\n' > %s", policyRCPath),
 		"chmod 755 " + policyRCPath,
-		aptGet + " -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y -q --no-install-recommends " + strings.Join(dockerPackages, " ") + " </dev/null",
+		aptGet + " -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y -q --no-install-recommends " + strings.Join(packages, " ") + " </dev/null",
 		"rm -f " + policyRCPath,
 		"trap - EXIT",
 	}

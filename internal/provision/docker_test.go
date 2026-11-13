@@ -15,15 +15,17 @@ import (
 var provisioningChanges = []string{"base", "ssh-agent-forwarding", "rootless-docker"}
 
 func TestVersionCountsTheProvisioningChanges(t *testing.T) {
-	if Version != len(provisioningChanges) {
-		t.Fatalf("Version = %d, want %d, one per change in provisioningChanges", Version, len(provisioningChanges))
-	}
-	body := strings.Join(script(t), "\n")
-	for _, want := range []string{"docker.io", "put /etc/systemd/user/docker.service 0644"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the script lacks %q", want)
+	eachDistribution(t, func(t *testing.T, distribution string) {
+		if Version != len(provisioningChanges) {
+			t.Fatalf("Version = %d, want %d, one per change in provisioningChanges", Version, len(provisioningChanges))
 		}
-	}
+		body := strings.Join(script(t, distribution), "\n")
+		for _, want := range []string{"docker.io", "put /etc/systemd/user/docker.service 0644"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("the script lacks %q", want)
+			}
+		}
+	})
 }
 
 func TestDockerUserUnit(t *testing.T) {
@@ -111,86 +113,98 @@ func TestUserManagerDropInRequiresTheGateAndNothingElse(t *testing.T) {
 }
 
 func TestScriptGuardsPackageInstallWithPolicyRCAndRemovesItOnEveryPath(t *testing.T) {
-	lines := script(t)
-	trap := lineIndex(t, lines, "trap 'rm -f /usr/sbin/policy-rc.d' EXIT")
-	guard := lineIndex(t, lines, `printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d`)
-	install := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "install -y -q") && strings.Contains(l, "docker.io") })
-	removal := lineIndex(t, lines, "rm -f /usr/sbin/policy-rc.d")
-	if !slices.IsSorted([]int{trap, guard, install, removal}) {
-		t.Errorf("order trap %d, guard %d, install %d, removal %d", trap, guard, install, removal)
-	}
+	eachDistribution(t, func(t *testing.T, distribution string) {
+		lines := script(t, distribution)
+		trap := lineIndex(t, lines, "trap 'rm -f /usr/sbin/policy-rc.d' EXIT")
+		guard := lineIndex(t, lines, `printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d`)
+		install := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "install -y -q") && strings.Contains(l, "docker.io") })
+		removal := lineIndex(t, lines, "rm -f /usr/sbin/policy-rc.d")
+		if !slices.IsSorted([]int{trap, guard, install, removal}) {
+			t.Errorf("order trap %d, guard %d, install %d, removal %d", trap, guard, install, removal)
+		}
+	})
 }
 
 func TestScriptMasksTheRootfulEngineBeforeAnyStart(t *testing.T) {
-	lines := script(t)
-	mask := lineIndex(t, lines, "systemctl mask docker.service docker.socket containerd.service >/dev/null 2>&1")
-	lineIndex(t, lines, "systemctl disable --now docker.service docker.socket containerd.service 2>/dev/null || true")
-	if start := lineIndex(t, lines, "systemctl start orbit-boundary-gate.service"); mask > start {
-		t.Error("the rootful units are masked after the first start")
-	}
-	for _, line := range lines {
-		if strings.Contains(line, "usermod") && strings.Contains(line, "docker") {
-			t.Errorf("agent joins the group docker: %q", line)
+	eachDistribution(t, func(t *testing.T, distribution string) {
+		lines := script(t, distribution)
+		mask := lineIndex(t, lines, "systemctl mask docker.service docker.socket containerd.service >/dev/null 2>&1")
+		lineIndex(t, lines, "systemctl disable --now docker.service docker.socket containerd.service 2>/dev/null || true")
+		if start := lineIndex(t, lines, "systemctl start orbit-boundary-gate.service"); mask > start {
+			t.Error("the rootful units are masked after the first start")
 		}
-		if strings.Contains(line, "/home") && !strings.Contains(line, `case "$home"`) {
-			t.Errorf("script writes under /home: %q", line)
+		for _, line := range lines {
+			if strings.Contains(line, "usermod") && strings.Contains(line, "docker") {
+				t.Errorf("agent joins the group docker: %q", line)
+			}
+			if strings.Contains(line, "/home") && !strings.Contains(line, `case "$home"`) {
+				t.Errorf("script writes under /home: %q", line)
+			}
 		}
-	}
+	})
 }
 
 func TestScriptRepairsAndStartsInOrder(t *testing.T) {
-	lines := script(t)
-	enable := lineIndex(t, lines, "systemctl --global enable docker.service >/dev/null 2>&1")
-	gate := lineIndex(t, lines, "systemctl start orbit-boundary-gate.service")
-	linger := lineIndex(t, lines, "loginctl enable-linger agent")
-	manager := lineIndex(t, lines, `systemctl start "user@$agent_uid.service"`)
-	reload := lineIndex(t, lines, "runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user daemon-reload")
-	daemon := lineIndex(t, lines, "runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user start docker.service")
-	if !slices.IsSorted([]int{enable, gate, linger, manager, reload, daemon}) {
-		t.Errorf("order enable %d, gate %d, linger %d, manager %d, reload %d, daemon %d", enable, gate, linger, manager, reload, daemon)
-	}
+	eachDistribution(t, func(t *testing.T, distribution string) {
+		lines := script(t, distribution)
+		enable := lineIndex(t, lines, "systemctl --global enable docker.service >/dev/null 2>&1")
+		gate := lineIndex(t, lines, "systemctl start orbit-boundary-gate.service")
+		linger := lineIndex(t, lines, "loginctl enable-linger agent")
+		manager := lineIndex(t, lines, `systemctl start "user@$agent_uid.service"`)
+		reload := lineIndex(t, lines, "runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user daemon-reload")
+		daemon := lineIndex(t, lines, "runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user start docker.service")
+		if !slices.IsSorted([]int{enable, gate, linger, manager, reload, daemon}) {
+			t.Errorf("order enable %d, gate %d, linger %d, manager %d, reload %d, daemon %d", enable, gate, linger, manager, reload, daemon)
+		}
+	})
 }
 
 func TestScriptNeverRestartsStopsOrReloadsTheGate(t *testing.T) {
-	for _, line := range script(t) {
-		if !strings.Contains(line, "orbit-boundary-gate") {
-			continue
-		}
-		for _, verb := range []string{"restart", "stop", "try-restart", "reload", "reload-or-restart", "kill"} {
-			if strings.Contains(line, "systemctl "+verb+" ") || strings.Contains(line, " "+verb+" ") && strings.Contains(line, "systemctl") {
-				t.Errorf("the script touches the gate with %s: %q", verb, line)
+	eachDistribution(t, func(t *testing.T, distribution string) {
+		for _, line := range script(t, distribution) {
+			if !strings.Contains(line, "orbit-boundary-gate") {
+				continue
+			}
+			for _, verb := range []string{"restart", "stop", "try-restart", "reload", "reload-or-restart", "kill"} {
+				if strings.Contains(line, "systemctl "+verb+" ") || strings.Contains(line, " "+verb+" ") && strings.Contains(line, "systemctl") {
+					t.Errorf("the script touches the gate with %s: %q", verb, line)
+				}
 			}
 		}
-	}
+	})
 }
 
 func TestScriptRunsUserSystemctlOnlyThroughRunuserWithoutALoginShell(t *testing.T) {
-	for _, line := range script(t) {
-		if strings.Contains(line, "systemctl --user") && !strings.HasPrefix(line, "runuser -u agent -- env XDG_RUNTIME_DIR=") && !strings.Contains(line, "|| fail") {
-			t.Errorf("systemctl --user outside runuser: %q", line)
+	eachDistribution(t, func(t *testing.T, distribution string) {
+		for _, line := range script(t, distribution) {
+			if strings.Contains(line, "systemctl --user") && !strings.HasPrefix(line, "runuser -u agent -- env XDG_RUNTIME_DIR=") && !strings.Contains(line, "|| fail") {
+				t.Errorf("systemctl --user outside runuser: %q", line)
+			}
+			if strings.Contains(line, "runuser -l") || strings.Contains(line, "su -") || strings.HasPrefix(line, "su ") {
+				t.Errorf("login shell: %q", line)
+			}
 		}
-		if strings.Contains(line, "runuser -l") || strings.Contains(line, "su -") || strings.HasPrefix(line, "su ") {
-			t.Errorf("login shell: %q", line)
-		}
-	}
+	})
 }
 
 func TestScriptSelfChecksTheEngine(t *testing.T) {
-	lines := script(t)
-	for _, want := range []string{
-		"for unit in docker.service docker.socket containerd.service; do",
-		`[ ! -e /var/run/docker.sock ] && [ ! -e /run/docker.sock ] || fail "a rootful Docker socket exists"`,
-		`[ -e /var/lib/systemd/linger/agent ] || fail "agent has no linger"`,
-		`[ -n "$(find /usr/bin/newuidmap -maxdepth 0 -user 0 -perm 4755)" ] || fail "/usr/bin/newuidmap is not owned by root with mode 4755"`,
-		`[ -n "$(find /usr/bin/newgidmap -maxdepth 0 -user 0 -perm 4755)" ] || fail "/usr/bin/newgidmap is not owned by root with mode 4755"`,
-		"chmod 4755 /usr/bin/newuidmap /usr/bin/newgidmap",
-		`systemctl is-active --quiet orbit-boundary-gate.service || fail "orbit-boundary-gate.service is not active"`,
-		`docker buildx version >/dev/null || fail "docker buildx is missing"`,
-		`docker compose version >/dev/null || fail "docker compose is missing"`,
-	} {
-		lineIndex(t, lines, want)
-	}
-	lineIndex(t, lines, `runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user is-active --quiet docker.service || fail "docker.service of agent is not active"`)
+	eachDistribution(t, func(t *testing.T, distribution string) {
+		lines := script(t, distribution)
+		for _, want := range []string{
+			"for unit in docker.service docker.socket containerd.service; do",
+			`[ ! -e /var/run/docker.sock ] && [ ! -e /run/docker.sock ] || fail "a rootful Docker socket exists"`,
+			`[ -e /var/lib/systemd/linger/agent ] || fail "agent has no linger"`,
+			`[ -n "$(find /usr/bin/newuidmap -maxdepth 0 -user 0 -perm 4755)" ] || fail "/usr/bin/newuidmap is not owned by root with mode 4755"`,
+			`[ -n "$(find /usr/bin/newgidmap -maxdepth 0 -user 0 -perm 4755)" ] || fail "/usr/bin/newgidmap is not owned by root with mode 4755"`,
+			"chmod 4755 /usr/bin/newuidmap /usr/bin/newgidmap",
+			`systemctl is-active --quiet orbit-boundary-gate.service || fail "orbit-boundary-gate.service is not active"`,
+			`docker buildx version >/dev/null || fail "docker buildx is missing"`,
+			`docker compose version >/dev/null || fail "docker compose is missing"`,
+		} {
+			lineIndex(t, lines, want)
+		}
+		lineIndex(t, lines, `runuser -u agent -- env XDG_RUNTIME_DIR=/run/user/$agent_uid systemctl --user is-active --quiet docker.service || fail "docker.service of agent is not active"`)
+	})
 }
 
 func TestSubIDCheckFailsOnASecondEntryAndOnALowRange(t *testing.T) {

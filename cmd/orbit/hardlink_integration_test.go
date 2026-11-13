@@ -68,6 +68,15 @@ func (m accountHomeMachines) Mounts(ctx context.Context) (map[string]map[string]
 	return mounts, err
 }
 
+func (m accountHomeMachines) Distribution(ctx context.Context, name string) (string, error) {
+	var key string
+	err := m.withAccountHome(func() (err error) {
+		key, err = m.machines.Distribution(ctx, name)
+		return err
+	})
+	return key, err
+}
+
 func (m accountHomeMachines) State(ctx context.Context, name string) (string, error) {
 	var state string
 	err := m.withAccountHome(func() (err error) {

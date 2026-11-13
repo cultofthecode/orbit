@@ -34,6 +34,11 @@ type Machines interface {
 	// mount point. It names the path, not the identity of the directory.
 	// It fails for a machine that is not running.
 	ActiveMounts(ctx context.Context, name string) (map[string]string, error)
+	// Distribution returns the key of the distribution that the existing
+	// machine name was created with. It reads what OrbStack stores, runs no
+	// command in the machine, and never starts it. It fails when OrbStack
+	// stores an image that no distribution has.
+	Distribution(ctx context.Context, name string) (string, error)
 	// SSHAgentForwarded reports whether the machine name forwards the SSH
 	// agent of the host. It runs nothing in the machine.
 	SSHAgentForwarded(ctx context.Context, name string) (bool, error)
@@ -61,12 +66,13 @@ type Handler struct {
 	// definitions; the slice does not import another module.
 	Agent func(name string) (sandbox.Agent, error)
 	// ProvisionScript returns the root script that provisions a machine
-	// whose default user has the uid defaultUID, whose proxy allows
+	// that runs the distribution key distribution, whose default user has
+	// the uid defaultUID, whose proxy allows
 	// agentDomains in addition to the base list, and which forwards the SSH
 	// agent of the host when forwardSSHAgent is true. cmd/orbit passes
 	// provision.Script through a function that fills its input; the slice
 	// does not import another module.
-	ProvisionScript func(defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error)
+	ProvisionScript func(distribution string, defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error)
 	// DockerSetupScript returns the script that sets up the Docker client of
 	// the agent user in a provisioned machine. cmd/orbit passes
 	// provision.DockerSetupScript; the slice does not import another module.
@@ -91,9 +97,17 @@ type plan struct {
 	dir string
 	// forwardSSHAgent is true unless Input.NoSSHForwarding is set.
 	forwardSSHAgent bool
-	// distribution is the distribution of a machine that this call creates.
+	// requested is Input.Distro: the distribution that the user asked for, or
+	// empty.
+	requested string
+	// distribution is the distribution of the machine, once resolve ran: the
+	// requested one for a machine that this call creates, the stored one for
+	// a machine that exists.
 	distribution sandbox.Distribution
-	// provision is the root script.
+	// scripts holds the root script of every distribution, built before the
+	// handler asks OrbStack anything.
+	scripts map[sandbox.Distribution][]byte
+	// provision is the root script of the distribution, once resolve ran.
 	provision []byte
 	// dockerSetup is the client setup script of the agent user.
 	dockerSetup []byte
@@ -109,7 +123,8 @@ type plan struct {
 // in.Agent as the agent user, when in.Agent is set. The allowlist of the
 // proxy is the base list plus the egress domains of in.Agent, so a run
 // without an agent removes the domains of an earlier one. It refuses an
-// unknown distribution, an unknown agent, a directory that the mount rules of the sandbox module do
+// unknown distribution, and a distribution other than the one an existing
+// machine runs (ErrDistributionMismatch), an unknown agent, a directory that the mount rules of the sandbox module do
 // not accept, and a provisioning script that cannot be built before it asks
 // OrbStack anything, and a directory that is, lies inside, or contains the
 // project directory of another machine before it creates one. When the
@@ -121,21 +136,20 @@ func (h Handler) Handle(ctx context.Context, in Input) (Output, error) {
 	if err != nil {
 		return Output{}, err
 	}
-	created, err := h.checkedMachine(ctx, p)
+	p, created, err := h.checkedMachine(ctx, p)
 	if err != nil {
 		return Output{}, err
 	}
 	if err := h.setUp(ctx, p, created); err != nil {
 		return Output{}, err
 	}
-	return Output{Name: p.name, Dir: p.dir, Created: created}, nil
+	return Output{Name: p.name, Dir: p.dir, Created: created, Distribution: p.distribution}, nil
 }
 
 // prepare resolves the agent, validates the project directory, and builds the
 // scripts, without asking OrbStack anything.
 func (h Handler) prepare(in Input) (plan, error) {
-	dist, err := distribution(in.Distro)
-	if err != nil {
+	if err := checkRequested(in.Distro); err != nil {
 		return plan{}, err
 	}
 	agent, err := h.agent(in.Agent)
@@ -146,24 +160,40 @@ func (h Handler) prepare(in Input) (plan, error) {
 	if err != nil {
 		return plan{}, err
 	}
-	script, err := h.ProvisionScript(facts.UserUID, agent.EgressDomains, !in.NoSSHForwarding)
+	scripts, err := h.provisionScripts(facts.UserUID, agent.EgressDomains, !in.NoSSHForwarding)
 	if err != nil {
-		return plan{}, fmt.Errorf("provisioning script: %w", err)
+		return plan{}, err
 	}
-	p := plan{name: sandbox.MachineName(facts.Path), dir: facts.Path, forwardSSHAgent: !in.NoSSHForwarding, distribution: dist, provision: script, dockerSetup: h.DockerSetupScript()}
+	p := plan{name: sandbox.MachineName(facts.Path), dir: facts.Path, forwardSSHAgent: !in.NoSSHForwarding, requested: in.Distro, scripts: scripts, dockerSetup: h.DockerSetupScript()}
 	if in.Agent != "" {
 		p.install = installScript(agent.Install)
 	}
 	return p, nil
 }
 
-// distribution returns the distribution that name names, or the default when
-// name is empty.
-func distribution(name string) (sandbox.Distribution, error) {
-	if name == "" {
-		return sandbox.DefaultDistribution, nil
+// checkRequested refuses a --distro value that is not a distribution. An
+// empty value means that the user named none.
+func checkRequested(requested string) error {
+	if requested == "" {
+		return nil
 	}
-	return sandbox.ParseDistribution(name)
+	_, err := sandbox.ParseDistribution(requested)
+	return err
+}
+
+// provisionScripts builds the root script of every distribution. Building all
+// of them before the first OrbStack call makes every one of them fail on the
+// same bad input, whichever distribution the machine turns out to run.
+func (h Handler) provisionScripts(uid uint32, agentDomains []string, forwardSSHAgent bool) (map[sandbox.Distribution][]byte, error) {
+	scripts := map[sandbox.Distribution][]byte{}
+	for _, d := range sandbox.Distributions() {
+		script, err := h.ProvisionScript(string(d), uid, agentDomains, forwardSSHAgent)
+		if err != nil {
+			return nil, fmt.Errorf("provisioning script for %s: %w", d, err)
+		}
+		scripts[d] = script
+	}
+	return scripts, nil
 }
 
 // agent returns the agent named name, or no agent when name is empty.
@@ -189,22 +219,57 @@ func installScript(install string) []byte {
 
 // checkedMachine creates the machine of p, unless it exists, after it
 // checked that its directory is not nested with the directory of another
-// machine, checks its SSH agent forwarding, which reads only the list of
-// OrbStack, and then its mounts, which is the first command that runs in the
-// machine. It reports whether it created the machine.
-func (h Handler) checkedMachine(ctx context.Context, p plan) (bool, error) {
+// machine, refuses an existing machine that is not running, resolves its
+// distribution, checks its SSH agent forwarding, which
+// reads only the list of OrbStack, and then its mounts, which is the first
+// command that runs in the machine. It returns p with its distribution and
+// its root script, and reports whether it created the machine.
+func (h Handler) checkedMachine(ctx context.Context, p plan) (plan, bool, error) {
 	machines, err := h.unnestedMachines(ctx, p.name, p.dir)
 	if err != nil {
-		return false, err
+		return p, false, err
 	}
-	created, err := h.ensureMachine(ctx, p, machines)
+	_, exists := machines[p.name]
+	if exists {
+		if err := h.checkRunning(ctx, p.name); err != nil {
+			return p, false, err
+		}
+	}
+	p, err = h.resolve(ctx, p, exists)
 	if err != nil {
-		return false, err
+		return p, false, err
+	}
+	created, err := h.ensureMachine(ctx, p, exists)
+	if err != nil {
+		return p, false, err
 	}
 	if err := h.verifyForwarding(ctx, p, created); err != nil {
-		return false, err
+		return p, false, err
 	}
-	return created, h.verifyMounts(ctx, p.name, p.dir, created)
+	return p, created, h.verifyMounts(ctx, p.name, p.dir, created)
+}
+
+// resolve sets the distribution and the root script of p. For a machine that
+// exists it reads the stored distribution, which runs no command in the
+// machine, and refuses a request for another one with
+// sandbox.ErrDistributionMismatch, before anything runs in the machine. An
+// existing machine that is not running is refused before this.
+func (h Handler) resolve(ctx context.Context, p plan, exists bool) (plan, error) {
+	var stored sandbox.Distribution
+	if exists {
+		key, err := h.Machines.Distribution(ctx, p.name)
+		if err != nil {
+			return p, fmt.Errorf("read the distribution of sandbox %s: %w", p.name, err)
+		}
+		stored = sandbox.Distribution(key)
+	}
+	dist, err := sandbox.ResolveDistribution(p.requested, stored, exists)
+	if err != nil {
+		return p, fmt.Errorf("sandbox %s: %w", p.name, err)
+	}
+	p.distribution = dist
+	p.provision = p.scripts[dist]
+	return p, nil
 }
 
 // setUp provisions the machine of p and installs its agent. When one of
@@ -263,11 +328,10 @@ func (h Handler) unnestedMachines(ctx context.Context, name, dir string) (map[st
 }
 
 // ensureMachine creates the machine of p with its mount and its SSH agent
-// forwarding when it is not one of machines, and reports whether it created
-// it.
-func (h Handler) ensureMachine(ctx context.Context, p plan, machines map[string]map[string]string) (bool, error) {
-	if _, exists := machines[p.name]; exists {
-		return false, h.checkRunning(ctx, p.name)
+// forwarding unless it exists, and reports whether it created it.
+func (h Handler) ensureMachine(ctx context.Context, p plan, exists bool) (bool, error) {
+	if exists {
+		return false, nil
 	}
 	if err := h.Machines.Create(ctx, p.name, p.dir, string(p.distribution), p.forwardSSHAgent); err != nil {
 		return false, fmt.Errorf("create sandbox %s: %w", p.name, err)

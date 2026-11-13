@@ -150,9 +150,20 @@ func (f failingScript) RunAsAgent(ctx context.Context, name string, script []byt
 }
 
 // fakeScript returns a root script that names the default uid, the agent
-// domains, and the SSH agent forwarding.
-func fakeScript(defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error) {
-	return []byte(scriptFor(defaultUID, agentDomains, forwardSSHAgent)), nil
+// domains, and the SSH agent forwarding, and, for every distribution but
+// ubuntu, the distribution.
+func fakeScript(distribution string, defaultUID uint32, agentDomains []string, forwardSSHAgent bool) ([]byte, error) {
+	script := scriptFor(defaultUID, agentDomains, forwardSSHAgent)
+	if distribution != "ubuntu" {
+		script = "for " + distribution + ": " + script
+	}
+	return []byte(script), nil
+}
+
+// ownDebianScript returns the script that fakeScript builds for debian, for
+// the user who runs the test, without an agent.
+func ownDebianScript() string {
+	return "for debian: " + ownScript()
 }
 
 // scriptFor returns the script that fakeScript builds for uid, agentDomains,
@@ -244,7 +255,7 @@ func checkCreates(t *testing.T, entry *user.User, dir, project string) {
 	if err != nil {
 		t.Fatalf("Handle(%q) = %v", dir, err)
 	}
-	if want := (Output{Name: name, Dir: project, Created: true}); got != want {
+	if want := (Output{Name: name, Dir: project, Created: true, Distribution: sandbox.Ubuntu}); got != want {
 		t.Errorf("Handle(%q) = %+v, want %+v", dir, got, want)
 	}
 	if !slices.Equal(fake.Calls, createCalls(name, project)) {
@@ -270,6 +281,7 @@ func checkedKeepCalls(name string) []orbstacktest.Call {
 	return []orbstacktest.Call{
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpState, Name: name},
+		{Op: orbstacktest.OpDistribution, Name: name},
 		{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
 		{Op: orbstacktest.OpMounts},
 		{Op: orbstacktest.OpActiveMounts, Name: name},
@@ -328,7 +340,7 @@ func TestHandleKeepsAnExistingMachine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle = %v", err)
 	}
-	if want := (Output{Name: name, Dir: project, Created: false}); got != want {
+	if want := (Output{Name: name, Dir: project, Created: false, Distribution: sandbox.Ubuntu}); got != want {
 		t.Errorf("Handle = %+v, want %+v", got, want)
 	}
 	if !slices.Equal(fake.Calls, keepCalls(name)) {
@@ -615,7 +627,7 @@ func TestHandleAcceptsDirectoriesOutsideOtherSandboxes(t *testing.T) {
 
 			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project})
 
-			if want := (Output{Name: name, Dir: project, Created: true}); err != nil || got != want {
+			if want := (Output{Name: name, Dir: project, Created: true, Distribution: sandbox.Ubuntu}); err != nil || got != want {
 				t.Errorf("Handle = %+v, %v, want %+v", got, err, want)
 			}
 		})
@@ -700,22 +712,22 @@ func TestHandleRefusesAnExistingMachineThatMountsAnotherDirectory(t *testing.T) 
 		{
 			name:       "configured with .ssh",
 			configured: map[string]string{project: ssh},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpDistribution, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "configured with a second mount",
 			configured: map[string]string{project: project, "/home/dev": home},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpDistribution, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "configured at another path",
 			configured: map[string]string{"/mnt/mac" + project: project},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpDistribution, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "no mount",
 			configured: map[string]string{},
-			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
+			wantCalls:  []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpDistribution, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}, {Op: orbstacktest.OpMounts}},
 		},
 		{
 			name:       "mounts .ssh after a swap",
@@ -2209,7 +2221,7 @@ func TestHandleRefusesAScriptThatCannotBeBuiltBeforeItAsksOrbStack(t *testing.T)
 	project := filepath.Join(home, "work", "api")
 	fake := orbstacktest.New(sandbox.NamePrefix)
 	handler := newHandler(fake, account(home))
-	handler.ProvisionScript = func(uint32, []string, bool) ([]byte, error) { return nil, boom }
+	handler.ProvisionScript = func(string, uint32, []string, bool) ([]byte, error) { return nil, boom }
 
 	_, err := handler.Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
 
@@ -2313,7 +2325,7 @@ func TestHandleInstallsTheAgentAfterProvisioning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle = %v", err)
 	}
-	if want := (Output{Name: name, Dir: project, Created: true}); got != want {
+	if want := (Output{Name: name, Dir: project, Created: true, Distribution: sandbox.Ubuntu}); got != want {
 		t.Errorf("Handle = %+v, want %+v", got, want)
 	}
 	wantCalls := append(checkedCreateCalls(name, project), agentCalls(name)...)
@@ -2375,7 +2387,7 @@ func TestHandleRefusesAHostileAgentDomainBeforeItAsksOrbStack(t *testing.T) {
 	handler := newHandler(fake, account(home))
 	handler.Agent = func(string) (sandbox.Agent, error) { return hostile, nil }
 	var gotDomains []string
-	handler.ProvisionScript = func(_ uint32, agentDomains []string, _ bool) ([]byte, error) {
+	handler.ProvisionScript = func(_ string, _ uint32, agentDomains []string, _ bool) ([]byte, error) {
 		gotDomains = agentDomains
 		return nil, refused
 	}
@@ -2743,7 +2755,7 @@ func TestHandleCreatesWithoutForwardingWhenAsked(t *testing.T) {
 
 	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, NoSSHForwarding: true})
 
-	if err != nil || got != (Output{Name: name, Dir: project, Created: true}) {
+	if err != nil || got != (Output{Name: name, Dir: project, Created: true, Distribution: sandbox.Ubuntu}) {
 		t.Fatalf("Handle = %+v, %v, want the created sandbox", got, err)
 	}
 	want := []orbstacktest.Call{
@@ -2807,7 +2819,7 @@ func TestHandleRefusesAnExistingMachineWhoseForwardingDiffers(t *testing.T) {
 			if err != nil && !strings.Contains(err.Error(), "--no-ssh-forwarding") {
 				t.Errorf("error %q does not name --no-ssh-forwarding", err)
 			}
-			want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
+			want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpDistribution, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
 			if !slices.Equal(fake.Calls, want) {
 				t.Errorf("calls = %v, want only %v: no command in the machine, no start, no delete", fake.Calls, want)
 			}
@@ -2860,7 +2872,7 @@ func TestHandleStopsWhenTheForwardingCannotBeRead(t *testing.T) {
 		if !errors.Is(err, boom) {
 			t.Errorf("Handle = %v, want %v", err, boom)
 		}
-		want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
+		want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpDistribution, Name: name}, {Op: orbstacktest.OpSSHAgentForwarded, Name: name}}
 		if !slices.Equal(fake.Calls, want) {
 			t.Errorf("calls = %v, want %v", fake.Calls, want)
 		}
@@ -3304,6 +3316,7 @@ func TestHandleCreatesTheMachineOfTheRequestedDistribution(t *testing.T) {
 	}{
 		{distro: "", want: "ubuntu"},
 		{distro: "ubuntu", want: "ubuntu"},
+		{distro: "debian", want: "debian"},
 	}
 	for _, test := range tests {
 		t.Run(test.distro, func(t *testing.T) {
@@ -3311,7 +3324,7 @@ func TestHandleCreatesTheMachineOfTheRequestedDistribution(t *testing.T) {
 
 			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Distro: test.distro})
 
-			if err != nil || got != (Output{Name: name, Dir: project, Created: true}) {
+			if err != nil || got != (Output{Name: name, Dir: project, Created: true, Distribution: sandbox.Distribution(test.want)}) {
 				t.Fatalf("Handle = %+v, %v, want the created sandbox", got, err)
 			}
 			want := []orbstacktest.Call{
@@ -3320,7 +3333,7 @@ func TestHandleCreatesTheMachineOfTheRequestedDistribution(t *testing.T) {
 				{Op: orbstacktest.OpSSHAgentForwarded, Name: name},
 				{Op: orbstacktest.OpMounts},
 				{Op: orbstacktest.OpActiveMounts, Name: name},
-				{Op: orbstacktest.OpRunAsRoot, Name: name, Script: scriptFor(uint32(os.Getuid()), nil, true)},
+				{Op: orbstacktest.OpRunAsRoot, Name: name, Script: string(mustScript(t, test.want))},
 				{Op: orbstacktest.OpRunAsAgent, Name: name, Script: testDockerSetupScript},
 			}
 			if !slices.Equal(fake.Calls, want) {
@@ -3330,11 +3343,22 @@ func TestHandleCreatesTheMachineOfTheRequestedDistribution(t *testing.T) {
 	}
 }
 
+// mustScript returns the script that fakeScript builds for distribution, for
+// the user who runs the test, without an agent.
+func mustScript(t *testing.T, distribution string) []byte {
+	t.Helper()
+	script, err := fakeScript(distribution, uint32(os.Getuid()), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
 func TestHandleRefusesAnUnknownDistributionBeforeItAsksOrbStack(t *testing.T) {
 	home := newHome(t)
 	project := filepath.Join(home, "work", "api")
 	hostile := []string{
-		"debian", "Ubuntu", " ubuntu", "ubuntu ", "ubuntu\n", "ubuntu\ndebian", "ubuntu:26.04", "debian:trixie", "debian:bookworm",
+		"Debian", "DEBIAN", "debian ", " debian", "debian\n", "Ubuntu", " ubuntu", "ubuntu ", "ubuntu\n", "ubuntu\ndebian", "ubuntu:26.04", "debian:trixie", "debian:bookworm",
 		"bookworm", "alpine", "ubuntu;debian", `"ubuntu"`, "$(debian)", "-ubuntu", "--debian", "--mount", "../ubuntu", " ",
 	}
 	for _, distro := range hostile {
@@ -3345,6 +3369,165 @@ func TestHandleRefusesAnUnknownDistributionBeforeItAsksOrbStack(t *testing.T) {
 
 			if !errors.Is(err, sandbox.ErrUnknownDistribution) {
 				t.Errorf("Handle(%q) = %v, want %v", distro, err, sandbox.ErrUnknownDistribution)
+			}
+			if len(fake.Calls) != 0 {
+				t.Errorf("calls = %v, want none", fake.Calls)
+			}
+		})
+	}
+}
+
+// existingMachine returns a fake with the machine of project, running, with
+// the distribution stored for it, and the name of the machine.
+func existingMachine(project, distribution string) (*orbstacktest.Fake, string) {
+	name := sandbox.MachineName(project)
+	fake := orbstacktest.New(sandbox.NamePrefix)
+	fake.Machines[name] = map[string]string{project: project}
+	fake.Forwarded[name] = true
+	fake.Distributions[name] = distribution
+	return fake, name
+}
+
+func TestHandleRefusesAnotherDistributionOnAnExistingMachine(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	tests := []struct{ stored, requested string }{{"ubuntu", "debian"}, {"debian", "ubuntu"}}
+	for _, test := range tests {
+		t.Run(test.stored+" against "+test.requested, func(t *testing.T) {
+			fake, name := existingMachine(project, test.stored)
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName, Distro: test.requested})
+
+			if !errors.Is(err, ErrDistributionMismatch) || got != (Output{}) {
+				t.Fatalf("Handle = %+v, %v, want %v", got, err, ErrDistributionMismatch)
+			}
+			for _, need := range []string{name, "runs " + test.stored, "not " + test.requested, `run "orbit destroy" to replace it`} {
+				if !strings.Contains(err.Error(), need) {
+					t.Errorf("error %q lacks %q", err, need)
+				}
+			}
+			want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}, {Op: orbstacktest.OpDistribution, Name: name}}
+			if !slices.Equal(fake.Calls, want) {
+				t.Errorf("calls = %v, want only %v: no command in the machine, no delete", fake.Calls, want)
+			}
+			if _, kept := fake.Machines[name]; !kept {
+				t.Error("the machine was deleted")
+			}
+		})
+	}
+}
+
+func TestHandleKeepsTheDistributionOfAnExistingMachine(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	for _, requested := range []string{"", "debian"} {
+		t.Run("requested "+requested, func(t *testing.T) {
+			fake, name := existingMachine(project, "debian")
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Distro: requested})
+
+			if want := (Output{Name: name, Dir: project, Created: false, Distribution: sandbox.Debian}); err != nil || got != want {
+				t.Fatalf("Handle = %+v, %v, want %+v", got, err, want)
+			}
+			var roots []string
+			for _, call := range fake.Calls {
+				if call.Op == orbstacktest.OpCreate {
+					t.Errorf("init created a machine over an existing one: %+v", call)
+				}
+				if call.Op == orbstacktest.OpRunAsRoot {
+					roots = append(roots, call.Script)
+				}
+			}
+			if want := []string{ownDebianScript()}; !slices.Equal(roots, want) {
+				t.Errorf("root scripts = %q, want the Debian script %q", roots, want)
+			}
+		})
+	}
+}
+
+func TestHandleRunsTheScriptOfTheStoredDistributionOnAnExistingUbuntuMachine(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	fake, name := existingMachine(project, "ubuntu")
+
+	got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Distro: "ubuntu"})
+
+	if want := (Output{Name: name, Dir: project, Distribution: sandbox.Ubuntu}); err != nil || got != want {
+		t.Fatalf("Handle = %+v, %v, want %+v", got, err, want)
+	}
+	if !slices.Equal(fake.Calls, keepCalls(name)) {
+		t.Errorf("calls = %v, want %v", fake.Calls, keepCalls(name))
+	}
+}
+
+func TestHandleStopsBeforeAnyCommandWhenTheStoredImageIsUnknown(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	unknown := errors.New("machine has an image that Orbit does not know")
+	tests := []struct {
+		name    string
+		prepare func(*orbstacktest.Fake, string)
+		want    error
+	}{
+		{name: "the adapter cannot map the image", prepare: func(f *orbstacktest.Fake, _ string) { f.DistributionErr = unknown }, want: unknown},
+		{name: "a stored key outside the enum", prepare: func(f *orbstacktest.Fake, n string) { f.Distributions[n] = "alpine" }, want: sandbox.ErrUnknownDistribution},
+		{name: "an empty stored key", prepare: func(f *orbstacktest.Fake, n string) { f.Distributions[n] = "" }, want: sandbox.ErrUnknownDistribution},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake, name := existingMachine(project, "ubuntu")
+			test.prepare(fake, name)
+
+			got, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Agent: testAgentName})
+
+			if !errors.Is(err, test.want) || got != (Output{}) {
+				t.Fatalf("Handle = %+v, %v, want %v", got, err, test.want)
+			}
+			for _, call := range fake.Calls {
+				if call.Op == orbstacktest.OpRunAsRoot || call.Op == orbstacktest.OpRunAsAgent || call.Op == orbstacktest.OpDelete || call.Op == orbstacktest.OpCreate {
+					t.Errorf("init ran %+v after it failed to read the distribution", call)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleRefusesAStoppedMachineBeforeItsDistributionMismatch(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	fake, name := existingMachine(project, "ubuntu")
+	fake.States[name] = orbstacktest.StateStopped
+
+	_, err := newHandler(fake, account(home)).Handle(context.Background(), Input{Dir: project, Distro: "debian"})
+
+	if !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("Handle = %v, want %v", err, ErrNotRunning)
+	}
+	want := []orbstacktest.Call{{Op: orbstacktest.OpMounts}, {Op: orbstacktest.OpState, Name: name}}
+	if !slices.Equal(fake.Calls, want) {
+		t.Errorf("calls = %v, want only %v", fake.Calls, want)
+	}
+}
+
+func TestHandleBuildsTheScriptOfEveryDistributionBeforeItAsksOrbStack(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	refused := errors.New("invalid provisioning input")
+	for _, broken := range sandbox.Distributions() {
+		t.Run(string(broken), func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+			handler := newHandler(fake, account(home))
+			handler.ProvisionScript = func(distribution string, uid uint32, domains []string, forward bool) ([]byte, error) {
+				if distribution == string(broken) {
+					return nil, refused
+				}
+				return fakeScript(distribution, uid, domains, forward)
+			}
+
+			_, err := handler.Handle(context.Background(), Input{Dir: project, Distro: "ubuntu"})
+
+			if !errors.Is(err, refused) || !strings.Contains(err.Error(), string(broken)) {
+				t.Errorf("Handle = %v, want %v naming %s", err, refused, broken)
 			}
 			if len(fake.Calls) != 0 {
 				t.Errorf("calls = %v, want none", fake.Calls)

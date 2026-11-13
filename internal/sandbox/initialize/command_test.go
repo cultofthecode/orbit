@@ -44,12 +44,12 @@ func TestCommandPrintsTheResult(t *testing.T) {
 	}{
 		{
 			name:       "created",
-			wantStdout: "Created sandbox " + name + " for " + project + "\n",
+			wantStdout: "Created sandbox " + name + " (ubuntu) for " + project + "\n",
 			wantCalls:  createCalls(name, project),
 		},
 		{
 			name:       "already exists",
-			wantStdout: "Sandbox " + name + " already exists for " + project + "\n",
+			wantStdout: "Sandbox " + name + " (ubuntu) already exists for " + project + "\n",
 			wantCalls:  keepCalls(name),
 		},
 	}
@@ -119,7 +119,7 @@ func TestCommandInstallsTheAgentOfTheFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("command = %v", err)
 	}
-	if want := "Created sandbox " + name + " for " + project + "\n"; stdout != want {
+	if want := "Created sandbox " + name + " (ubuntu) for " + project + "\n"; stdout != want {
 		t.Errorf("stdout = %q, want %q", stdout, want)
 	}
 	wantCalls := append(checkedCreateCalls(name, project), agentCalls(name)...)
@@ -251,7 +251,7 @@ func TestCommandCreatesTheDistributionOfTheFlag(t *testing.T) {
 func TestCommandRefusesAnUnknownDistribution(t *testing.T) {
 	home := newHome(t)
 	t.Chdir(filepath.Join(home, "work", "api"))
-	for _, distro := range []string{"alpine", "debian", "Debian", "debian:trixie", "ubuntu:26.04", "bookworm", "--mount", "-x", "a b", "a;b", `a"b`, "a'b", "a\nb"} {
+	for _, distro := range []string{"alpine", "Debian", "debian ", "debian\n", "debian:trixie", "ubuntu:26.04", "bookworm", "--mount", "-x", "a b", "a;b", `a"b`, "a'b", "a\nb"} {
 		t.Run(distro, func(t *testing.T) {
 			fake := orbstacktest.New(sandbox.NamePrefix)
 
@@ -276,7 +276,7 @@ func TestCommandHelpListsTheDistributions(t *testing.T) {
 	if flag == nil {
 		t.Fatal("no flag --distro")
 	}
-	if want := "distribution of a new sandbox: ubuntu (default ubuntu)"; flag.Usage != want {
+	if want := "distribution of a new sandbox: ubuntu, debian (default ubuntu)"; flag.Usage != want {
 		t.Errorf("usage = %q, want %q", flag.Usage, want)
 	}
 	if strings.Contains(flag.Usage, "alpine") {
