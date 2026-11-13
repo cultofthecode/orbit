@@ -194,7 +194,7 @@ The 0.1 spec established that `orb -u` sessions pass every login gate on every d
 `sandbox.DefaultDistribution` becomes `Alpine` in its own PR, after these gates, each with a pasted transcript:
 
 1. The full integration suite and the escape suite pass on `alpine`, `debian`, and `ubuntu` on the same OrbStack version and the same `main` head (#57, AC 2).
-2. W01 passes on Alpine in 10 of 10 restarts, every family with an address passing its control, and V19 shows `orbit-firewall` loaded before `networking` in each of them (Q5). Or, if the owner accepted a window at step 13, the 10 runs report `accepted window` and the longest window measured is not longer than the one the owner accepted; otherwise the default waits for the owner again.
+2. W01 passes on Alpine in 10 of 10 restarts, with every control of W01 passed, and V19 shows `orbit-firewall` started before `networking` in each of them (Q5). Or, if the owner accepted a window at step 13, the 10 runs report `accepted window` against the `maxSeconds` of `cmd/orbit/testdata/w01-accepted.json` (topic 8); a longer window is `ESCAPE`, and the default waits for the owner again.
 3. The privileged row of `alpine` matches the run, in both directions (0.1 spec, topic 10, the stale-table rule). Q6 itself was answered before step 13.
 4. The owner has landed the default clause of D29 and the *Scope → Now* line.
 
