@@ -30,11 +30,11 @@ const boundaryActive = `for unit in nftables.service orbit-proxy-address.service
 done
 `
 
-// tableLoaded is the check of E18 as root: the firewall table is loaded.
+// tableLoaded is the check of E23 as root: the firewall table is loaded.
 const tableLoaded = "allowed \"the firewall table is loaded\" sh -c 'nft list table inet orbit_egress'\n"
 
-// directEgress is the attempt of E18 as the agent: no direct path out.
-const directEgress = `need curl ping timeout
+// directEgress is the attempt of E23 as the agent: no direct path out.
+const directEgress = `need curl bash ping timeout
 blocked "direct to 1.1.1.1" curl -sS --noproxy '*' -m 5 -k -o /dev/null https://1.1.1.1
 blocked "direct by IPv6" curl -sS --noproxy '*' -m 5 -k -o /dev/null "https://[2606:4700:4700::1111]"
 blocked "direct by name" curl -sS --noproxy '*' -m 5 -o /dev/null https://example.org
@@ -99,7 +99,7 @@ func checkAttemptsAfterARestart(ctx context.Context, t *testing.T, rig escapeRig
 	}
 }
 
-// checkRootStopsTheFirewallUnit is E18 (#168): root stops, then restarts,
+// checkRootStopsTheFirewallUnit is E23 (#168): root stops, then restarts,
 // nftables.service on a running sandbox, as the owner does with orb -u root
 // and as a package upgrade does. The table must stay loaded and the agent
 // must have no direct path out after each. It restores the proxy and the
@@ -107,10 +107,11 @@ func checkAttemptsAfterARestart(ctx context.Context, t *testing.T, rig escapeRig
 // again.
 func checkRootStopsTheFirewallUnit(ctx context.Context, t *testing.T, rig escapeRig) {
 	t.Helper()
+	restoreFailed := false
 	for _, action := range []string{"stop", "restart"} {
-		t.Run("E18-nftables-"+action, func(t *testing.T) {
-			t.Log("E18-nftables-" + action + " proves R03 D14 (#168)")
-			result := attemptResult{id: "E18-nftables-" + action, hasControl: true}
+		t.Run("E23-nftables-"+action, func(t *testing.T) {
+			t.Log("E23-nftables-" + action + " proves R03 D14 (#168)")
+			result := attemptResult{id: "E23-nftables-" + action, hasControl: true}
 			if err := rig.runIn(ctx, agentSession, agentReachesGitHub); err != nil {
 				result.controlFailed, result.controlOutput = true, "before the "+action+": "+err.Error()
 			}
@@ -118,6 +119,7 @@ func checkRootStopsTheFirewallUnit(ctx context.Context, t *testing.T, rig escape
 				result.controlFailed, result.controlOutput = true, "table before the "+action+": "+err.Error()
 			}
 			if err := rig.client.RunAsRoot(ctx, rig.name, []byte("set -eu\nsystemctl "+action+" nftables.service\n")); err != nil {
+				restoreFailed = true
 				t.Fatalf("%s nftables.service in %s: %v", action, rig.name, err)
 			}
 			if err := rig.runIn(ctx, rootSession, tableLoaded); err != nil {
@@ -127,6 +129,7 @@ func checkRootStopsTheFirewallUnit(ctx context.Context, t *testing.T, rig escape
 				result.escaped, result.evidence = true, result.evidence+" direct egress after the "+action+": "+err.Error()
 			}
 			if err := rig.client.RunAsRoot(ctx, rig.name, []byte(restoreBoundaryUnit)); err != nil {
+				restoreFailed = true
 				t.Fatalf("restore the boundary units of %s: %v", rig.name, err)
 			}
 			if err := rig.runIn(ctx, agentSession, agentReachesGitHub); err != nil {
@@ -134,6 +137,9 @@ func checkRootStopsTheFirewallUnit(ctx context.Context, t *testing.T, rig escape
 			}
 			rig.report(t, result)
 		})
+		if restoreFailed {
+			t.Fatalf("the boundary units of %s are not restored: no later case runs on a damaged sandbox", rig.name)
+		}
 	}
 }
 
