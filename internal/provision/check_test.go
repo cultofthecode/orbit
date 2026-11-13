@@ -18,7 +18,7 @@ func checkScripts() map[string][]byte {
 
 func TestReadinessScriptChecksTheMarkerTheTableAndEveryBoundaryUnit(t *testing.T) {
 	lines := scriptLines(ReadinessScript())
-	lineIndex(t, lines, `printf '%s\n' 3 | cmp -s - /etc/orbit/provisioned || fail "/etc/orbit/provisioned does not hold provisioning version 3"`)
+	lineIndex(t, lines, `printf '%s\n' 4 | cmp -s - /etc/orbit/provisioned || fail "/etc/orbit/provisioned does not hold provisioning version 4"`)
 	lineIndex(t, lines, `nft list table inet orbit_egress >/dev/null || fail "the firewall table is not loaded"`)
 	units := lineIndex(t, lines, "for unit in nftables.service orbit-proxy-address.service tinyproxy.service orbit-harden.service systemd-user-sessions.service; do")
 	lineIndex(t, lines, `  systemctl is-active --quiet "$unit" || fail "$unit is not active"`)
@@ -29,6 +29,15 @@ func TestReadinessScriptChecksTheMarkerTheTableAndEveryBoundaryUnit(t *testing.T
 	}
 	if !strings.Contains(string(ReadinessScript()), strings.Join(boundaryCheck(), "\n")) {
 		t.Error("the readiness script does not run the boundary check of the self-check of Script")
+	}
+}
+
+func TestBoundaryCheckFailsWhenTheFirewallStopFlushes(t *testing.T) {
+	want := `[ -z "$(systemctl show --value -p ExecStop nftables.service)" ] || fail "nftables.service has an ExecStop= that flushes the firewall table"`
+	for name, check := range map[string][]string{"boundaryCheck": boundaryCheck(), "boundaryUnitsCheck": boundaryUnitsCheck()} {
+		if !slices.Contains(check, want) {
+			t.Errorf("%s lacks %q", name, want)
+		}
 	}
 }
 
@@ -83,7 +92,7 @@ func TestBootCheckScriptMatchesTheSelfCheckOfScript(t *testing.T) {
 
 func TestMarkerCheckScriptComparesTheMarkerWithTheVersion(t *testing.T) {
 	lines := scriptLines(MarkerCheckScript())
-	lineIndex(t, lines, `printf '%s\n' 3 | cmp -s - /etc/orbit/provisioned || fail "/etc/orbit/provisioned does not hold provisioning version 3"`)
+	lineIndex(t, lines, `printf '%s\n' 4 | cmp -s - /etc/orbit/provisioned || fail "/etc/orbit/provisioned does not hold provisioning version 4"`)
 	if strings.Contains(string(MarkerCheckScript()), "systemctl") {
 		t.Error("the marker check checks units, want only the marker")
 	}

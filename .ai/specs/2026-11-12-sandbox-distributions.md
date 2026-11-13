@@ -56,7 +56,7 @@ The table "What is Debian/Ubuntu-specific today" on #46 states premises that the
 - **Login gate.** The epic says that `systemd-user-sessions.service` holds every login on Ubuntu and Debian. It does not. `orb -m <m> -u <user>` ran 0.02 s after a slow boundary stand-in started, while `systemd-user-sessions.service` was `inactive` and `/run/nologin` existed. That happened on Ubuntu, trixie, and bookworm. Alpine has no gate at all (spike, topic 1). This matches #74 and the pinned observation O01 of the escape suite. Consequence: on every distribution, the gate for Orbit's own paths is the root-side check that Orbit runs before it hands the machine to the agent (`ReadinessScript` for `shell`, `BootCheckScript` for `start`, and the self-check of the root script for `init`). The `systemd-user-sessions.service` drop-in stays on Ubuntu and Debian. It still holds PAM logins (`su -`, `login`), and the readiness check requires it. No design in this spec relies on it for `orb` sessions. A session that someone opens by hand with `orb -m <m> -u agent` stays ungated on every distribution (known limit, O01).
 - **`/etc/environment` without PAM.** OrbStack reads it for every `orb -u` command, on Alpine too. Only `su -` on Alpine ignores it (spike, topic 6).
 - **`libstdc++` and `USE_BUILTIN_RIPGREP=0`.** Claude Code does not need either of them on musl (spike, topic 8; Q6).
-- **nftables stop.** The OpenRC service flushes the ruleset on stop, as the Debian unit does. Only the rules file differs (spike, topic 4).
+- **nftables stop.** The OpenRC service flushes the ruleset on stop. The Debian unit does too, but the same `ExecStop=` drop-in as on Ubuntu clears it (#168), and the Alpine profile needs its own equivalent. Only the rules file differs (spike, topic 4).
 
 ## 📝 Prior spec drift
 
@@ -122,7 +122,7 @@ The rest stays shared within the `aptSystemd` family, because the spike ran it u
 
 `BootCheckScript`, `MarkerCheckScript`, `ReadinessScript`, and `DockerSetupScript` stay without input in 0.1, because both distributions are systemd. In 0.2 they take the distribution, and `start` and `shell` read it from the adapter (topic 7).
 
-**Ubuntu bytes.** For `ubuntu`, the rendered script is byte-identical to today, except for the `/etc/os-release` guard of topic 7. A golden file proves it (Phase 2, steps 5 and 6). `Version` stays `3`: an Ubuntu machine provisioned by version 3 holds exactly the state that this build provisions, and a Debian machine is new.
+**Ubuntu bytes.** For `ubuntu`, the rendered script is byte-identical to today, except for the `/etc/os-release` guard of topic 7. A golden file proves it (Phase 2, steps 5 and 6). `Version` is `4` (#168 added the empty `ExecStop=` drop-in of `nftables.service`) and this work does not raise it: an Ubuntu machine provisioned by version 4 holds exactly the state that this build provisions, and a Debian machine is new.
 
 **Alternatives considered.**
 
