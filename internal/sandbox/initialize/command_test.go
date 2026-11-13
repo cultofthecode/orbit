@@ -221,3 +221,65 @@ func TestCommandHelpNamesTheSSHFlag(t *testing.T) {
 		t.Errorf("help = %q, want the flag --no-ssh-forwarding and its text", out.String())
 	}
 }
+
+func TestCommandCreatesTheDistributionOfTheFlag(t *testing.T) {
+	home := newHome(t)
+	project := filepath.Join(home, "work", "api")
+	t.Chdir(project)
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{args: nil, want: "ubuntu"},
+		{args: []string{"--distro", "ubuntu"}, want: "ubuntu"},
+		{args: []string{"--distro", ""}, want: "ubuntu"},
+	}
+	for _, test := range tests {
+		t.Run(strings.Join(test.args, " "), func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+
+			if _, _, err := execute(fake, home, test.args...); err != nil {
+				t.Fatalf("command %q = %v", test.args, err)
+			}
+			if got := fake.Calls[1]; got.Op != orbstacktest.OpCreate || got.Distribution != test.want {
+				t.Errorf("create call = %+v, want the distribution %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestCommandRefusesAnUnknownDistribution(t *testing.T) {
+	home := newHome(t)
+	t.Chdir(filepath.Join(home, "work", "api"))
+	for _, distro := range []string{"alpine", "debian", "Debian", "debian:trixie", "ubuntu:26.04", "bookworm", "--mount", "-x", "a b", "a;b", `a"b`, "a'b", "a\nb"} {
+		t.Run(distro, func(t *testing.T) {
+			fake := orbstacktest.New(sandbox.NamePrefix)
+
+			stdout, _, err := execute(fake, home, "--distro="+distro)
+
+			if !errors.Is(err, sandbox.ErrUnknownDistribution) {
+				t.Errorf("command = %v, want %v", err, sandbox.ErrUnknownDistribution)
+			}
+			if len(fake.Calls) != 0 {
+				t.Errorf("calls = %v, want none", fake.Calls)
+			}
+			if printsResult(stdout) {
+				t.Errorf("stdout = %q, want no result", stdout)
+			}
+		})
+	}
+}
+
+func TestCommandHelpListsTheDistributions(t *testing.T) {
+	command := NewCommand(Handler{}, nil)
+	flag := command.Flags().Lookup("distro")
+	if flag == nil {
+		t.Fatal("no flag --distro")
+	}
+	if want := "distribution of a new sandbox: ubuntu (default ubuntu)"; flag.Usage != want {
+		t.Errorf("usage = %q, want %q", flag.Usage, want)
+	}
+	if strings.Contains(flag.Usage, "alpine") {
+		t.Errorf("usage = %q, must not offer alpine in release 0.1", flag.Usage)
+	}
+}

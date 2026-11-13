@@ -104,8 +104,8 @@ func (m accountHomeMachines) SSHAgentForwarded(ctx context.Context, name string)
 	return forwarded, err
 }
 
-func (m accountHomeMachines) Create(ctx context.Context, name, dir string, forwardSSHAgent bool) error {
-	return m.withAccountHome(func() error { return m.machines.Create(ctx, name, dir, forwardSSHAgent) })
+func (m accountHomeMachines) Create(ctx context.Context, name, dir, distribution string, forwardSSHAgent bool) error {
+	return m.withAccountHome(func() error { return m.machines.Create(ctx, name, dir, distribution, forwardSSHAgent) })
 }
 
 func (m accountHomeMachines) RunAsRoot(ctx context.Context, name string, script []byte) error {

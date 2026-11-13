@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/cultofthecode/orbit/internal/sandbox"
 )
 
 // NewCommand returns the CLI command "orbit init", which creates the sandbox
@@ -13,21 +15,32 @@ import (
 // output stream of the command. It takes no arguments. Its flag --agent
 // names the agent to install; its help lists agents, the names that
 // handler knows. Its flag --no-ssh-forwarding leaves the SSH agent of the
-// host out of the sandbox.
+// host out of the sandbox. Its flag --distro names the distribution of a new
+// sandbox, one of sandbox.Distributions, ubuntu by default.
 func NewCommand(handler Handler, agents []string) *cobra.Command {
-	var agent string
+	var agent, distro string
 	var noSSHForwarding bool
 	command := &cobra.Command{
 		Use:   "init",
 		Short: "Create the sandbox of the current directory",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return run(cmd, handler, Input{Agent: agent, NoSSHForwarding: noSSHForwarding})
+			return run(cmd, handler, Input{Agent: agent, NoSSHForwarding: noSSHForwarding, Distro: distro})
 		},
 	}
 	command.Flags().StringVar(&agent, "agent", "", "agent to install in the sandbox: "+strings.Join(agents, ", ")+" (default none)")
+	command.Flags().StringVar(&distro, "distro", "", "distribution of a new sandbox: "+distributionNames()+" (default "+string(sandbox.DefaultDistribution)+")")
 	command.Flags().BoolVar(&noSSHForwarding, "no-ssh-forwarding", false, "do not forward the host SSH agent into the sandbox (by default the sandbox can use every key in it)")
 	return command
+}
+
+// distributionNames lists the distributions for the help of --distro.
+func distributionNames() string {
+	var names []string
+	for _, d := range sandbox.Distributions() {
+		names = append(names, string(d))
+	}
+	return strings.Join(names, ", ")
 }
 
 // run calls handler for the current working directory and in, and prints its

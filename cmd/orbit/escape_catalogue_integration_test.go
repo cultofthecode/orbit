@@ -568,7 +568,7 @@ done
 func startTarget(ctx context.Context, t *testing.T, client *orbstack.Client) (name, addr string) {
 	t.Helper()
 	dir, name := newSandboxDir(ctx, t, client)
-	if err := client.Create(ctx, name, dir, false); err != nil {
+	if err := client.Create(ctx, name, dir, "ubuntu", false); err != nil {
 		t.Fatalf("create the target %s of E11: %v; machines that this test did not create: %s", name, err, otherMachines(ctx, client, name))
 	}
 	listen := "set -eu\nsystemd-run --quiet --unit=orbit-escape-listener python3 -m http.server " + targetPort + " --bind 0.0.0.0\nfor try in $(seq 20); do ss -Hltn 'sport = :" + targetPort + "' | grep -q . && exit 0; sleep 0.5; done\nexit 1\n"
