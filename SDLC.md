@@ -36,6 +36,18 @@ Before intake, the team shapes the work. `om-brainstorm` turns one idea or quest
 
 After the merge, this process stops. Deployment, smoke tests, monitoring, and rollback belong to the release process of the repository, not to this document. The Maintainer (or a release manager, when the team names one) drafts the changelog with `om-auto-update-changelog`. The same person reconciles the tracker with `om-close-fixed-issues`. `om-pipeline-retro` reads finished runs and ranks what second passes cost. This document ends at the merge. Delivery of the change to users is a separate process that the team owns; for Orbit it is written in `RELEASING.md`.
 
+### Rules for `main`
+
+The `main` ruleset (27182316) enforces these rules. They apply to every change, except for an admin bypass.
+
+- Every change to `main` goes through a pull request. Do not push to `main` directly.
+- Merge with a merge commit only. Squash and rebase are not allowed.
+- The check `gate` must be green on the pull request head before the merge.
+- The branch must be up to date with `main` before the merge.
+- The ruleset blocks force-push and deletion of `main`.
+- Only repository admins can bypass these rules.
+- Only repository admins can create, update or delete `v*` tags (ruleset 27182318).
+
 ## Label state machine
 
 Pipeline labels are mutually exclusive. A PR carries at most one, and that label names the position of the PR in the flow.
@@ -187,7 +199,7 @@ CI does not run the integration tests or the escape suite, and there is no self-
 - **A release:** the Maintainer runs them on the exact commit to be tagged and puts the transcript, with the OrbStack version, into the release notes (`.ai/specs/2026-11-11-homebrew-distribution.md`, Q14).
 - **From time to time on `main`:** for example after several merges that touch `internal/orbstack`, provisioning, or a slice that runs `init`. A failure becomes an issue.
 
-CI runs the same five commands (`.github/workflows/ci.yml`, job `gate` on GitHub-hosted `ubuntu-24.04`), then `GOOS=darwin golangci-lint run`, `GOOS=darwin go vet -tags integration ./...`, and `GOOS=darwin GOARCH=arm64 go build ./...`, on every PR and on every push to `main`. `.github/workflows/darwin.yml` runs the unit tests on GitHub-hosted `macos-26` by hand and weekly. **`gate` must be green on the PR head before merge.** GitHub cannot enforce it while the repository is private on the Free plan (branch protection answers 403), so this rule is the enforcement until a ruleset that requires `gate` lands with the public release (`.ai/specs/2026-11-11-ci-pipeline.md`, Q6).
+CI runs the same five commands (`.github/workflows/ci.yml`, job `gate` on GitHub-hosted `ubuntu-24.04`), then `GOOS=darwin golangci-lint run`, `GOOS=darwin go vet -tags integration ./...`, and `GOOS=darwin GOARCH=arm64 go build ./...`, on every PR and on every push to `main`. `.github/workflows/darwin.yml` runs the unit tests on GitHub-hosted `macos-26` by hand and weekly. **`gate` must be green on the PR head before merge.** The `main` ruleset (27182316) enforces this for every merge to `main` by anyone except repository admins (see Rules for `main`).
 
 Any non-zero exit fails the gate and blocks the PR. The implementing skills run the gate before they open a PR. `om-check-and-commit` runs it before it pushes a branch that a human worked on. The command list lives in `.ai/agentic.config.json`. When the list changes, update it there and in this section together.
 
