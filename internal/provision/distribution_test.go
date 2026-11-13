@@ -93,18 +93,15 @@ func TestDebianInstallsTheDockerPackagesOfTrixie(t *testing.T) {
 
 func TestScriptsDifferOnlyWhereTheProfilesDiffer(t *testing.T) {
 	ubuntu := script(t, "ubuntu")
-	debian := script(t, "debian")
-	if len(ubuntu) != len(debian) {
-		t.Fatalf("the scripts have %d and %d lines, want the same shape", len(ubuntu), len(debian))
-	}
-	var differing int
-	for i := range ubuntu {
-		if ubuntu[i] != debian[i] {
-			differing++
+	debian := strings.Join(script(t, "debian"), "\n")
+	var missing int
+	for _, line := range ubuntu {
+		if !strings.Contains("\n"+debian+"\n", "\n"+line+"\n") {
+			missing++
 		}
 	}
-	if differing != 3 {
-		t.Errorf("%d lines differ between the scripts, want 3: the two guard lines and the Docker package line", differing)
+	if missing != 3 {
+		t.Errorf("%d lines of the Ubuntu script are not in the Debian script, want 3: the two guard lines and the Docker package line", missing)
 	}
 }
 

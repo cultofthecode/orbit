@@ -28,13 +28,14 @@ const (
 	privilegedAllowed
 )
 
-// privilegedTable holds the expectation per value of ORBIT_IT_DISTRO. A row
-// says allowed only for a distribution that the owner allowed (Q1 allows
-// Debian 13 trixie and no other). The debian row is absent until the Debian
-// run of the distributions spec, step 9, observes it: a run on a
+// privilegedTable holds the expectation per value of ORBIT_IT_DISTRO. Every
+// row says refused: the owner decided on 2026-11-13 that --privileged is
+// refused on every distribution. Ubuntu refuses it by platform; the Debian
+// profile refuses it with a root-owned runtime wrapper. A run on a
 // distribution without a row fails, so no run counts as evidence without it.
 var privilegedTable = map[string]privilegedExpectation{
 	"ubuntu": privilegedRefused,
+	"debian": privilegedRefused,
 }
 
 // privilegedObservation holds the expectation and the observation of
@@ -219,8 +220,10 @@ func TestTallySummary(t *testing.T) {
 	}
 }
 
-func TestPrivilegedTableKeepsUbuntuRefused(t *testing.T) {
-	if got := privilegedTable["ubuntu"]; got != privilegedRefused {
-		t.Errorf("ubuntu row = %v, want refused (Q1 decided Debian only)", got)
+func TestPrivilegedTableKeepsEveryDistributionRefused(t *testing.T) {
+	for _, distro := range []string{"ubuntu", "debian"} {
+		if got := privilegedTable[distro]; got != privilegedRefused {
+			t.Errorf("%s row = %v, want refused (owner decision 2026-11-13)", distro, got)
+		}
 	}
 }

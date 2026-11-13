@@ -92,6 +92,9 @@ type profile struct {
 	// dockerPackages are the packages of the rootless engine, all from the
 	// archive of the distribution.
 	dockerPackages []string
+	// refusePrivileged makes the rootless engine refuse a privileged
+	// container. Ubuntu needs no guard: OrbStack refuses it there.
+	refusePrivileged bool
 }
 
 // profiles is the table of distributions, Ubuntu first. A new distribution is
@@ -104,10 +107,11 @@ var profiles = []profile{
 		dockerPackages: []string{"docker.io", "docker-buildx", "docker-compose-v2", "rootlesskit", "uidmap", "slirp4netns", "dbus-user-session"},
 	},
 	{
-		name:           "debian",
-		osID:           "debian",
-		codename:       "trixie",
-		dockerPackages: []string{"docker.io", "docker-cli", "docker-buildx", "docker-compose", "rootlesskit", "uidmap", "slirp4netns", "dbus-user-session"},
+		name:             "debian",
+		osID:             "debian",
+		codename:         "trixie",
+		dockerPackages:   []string{"docker.io", "docker-cli", "docker-buildx", "docker-compose", "rootlesskit", "uidmap", "slirp4netns", "dbus-user-session"},
+		refusePrivileged: true,
 	},
 }
 
@@ -145,7 +149,7 @@ func Script(in ScriptInput) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	files, err := scriptFiles(in.DefaultUID, in.AgentDomains)
+	files, err := scriptFiles(distro, in.DefaultUID, in.AgentDomains)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +164,7 @@ func Script(in ScriptInput) ([]byte, error) {
 		createAgent(in.ForwardSSHAgent),
 		helperPermissions(),
 		startEngine(),
-		selfCheck(in.DefaultUID, in.ForwardSSHAgent),
+		selfCheck(distro, in.DefaultUID, in.ForwardSSHAgent),
 		writeMarker(),
 	}
 	return []byte(lines(group(slices.Concat(sections...))...)), nil
@@ -168,7 +172,7 @@ func Script(in ScriptInput) ([]byte, error) {
 
 // scriptFiles returns every file that the script writes, after the
 // configuration is validated.
-func scriptFiles(defaultUID uint32, agentDomains []string) ([]File, error) {
+func scriptFiles(distro profile, defaultUID uint32, agentDomains []string) ([]File, error) {
 	firewall, err := Firewall(firewallInput(defaultUID))
 	if err != nil {
 		return nil, err
@@ -189,6 +193,7 @@ func scriptFiles(defaultUID uint32, agentDomains []string) ([]File, error) {
 	}
 	files = append(files, Units(defaultUID)...)
 	files = append(files, sshFiles()...)
+	files = append(files, distro.guardFiles()...)
 	return files, checkDelimiter(files)
 }
 
@@ -353,7 +358,7 @@ func createAgent(forwardSSHAgent bool) []string {
 // selfCheck verifies, as root, what the boundary depends on, including that
 // /run/nologin is absent, so PAM logins stay possible. Any failure stops the
 // script before the marker is written.
-func selfCheck(defaultUID uint32, forwardSSHAgent bool) []string {
+func selfCheck(distro profile, defaultUID uint32, forwardSSHAgent bool) []string {
 	script := slices.Concat(boundaryCheck(), []string{
 		`[ ! -e /run/nologin ] || fail "logins are disabled"`,
 		"for unit in " + strings.Join(resolvedUnits, " ") + "; do",
@@ -373,7 +378,7 @@ func selfCheck(defaultUID uint32, forwardSSHAgent bool) []string {
 		fmt.Sprintf("for group in %s; do", strings.Join(privilegedGroups, " ")),
 		fmt.Sprintf(`  case " $(id -nG %s) " in *" $group "*) fail "%s is in the group $group";; esac`, AgentUser, AgentUser),
 		"done",
-	}, sshCheck(forwardSSHAgent), dockerCheck())
+	}, sshCheck(forwardSSHAgent), dockerCheck(), distro.guardCheck())
 	return script
 }
 

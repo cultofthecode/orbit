@@ -365,7 +365,11 @@ func TestScriptNegativeChecksDoNotPipeIntoGrep(t *testing.T) {
 func TestScriptWritesEveryFileFromAQuotedHeredoc(t *testing.T) {
 	eachDistribution(t, func(t *testing.T, distribution string) {
 		lines := script(t, distribution)
-		files, err := scriptFiles(501, nil)
+		distro, err := profileOf(distribution)
+		if err != nil {
+			t.Fatalf("profileOf: %v", err)
+		}
+		files, err := scriptFiles(distro, 501, nil)
 		if err != nil {
 			t.Fatalf("scriptFiles: %v", err)
 		}
