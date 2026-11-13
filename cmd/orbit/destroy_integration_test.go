@@ -23,8 +23,9 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/initialize"
 )
 
-// destroyTimeout bounds the destroy test when the test binary has no deadline: three runs of init, two with the
-// install of Claude Code, and the deletes.
+// destroyTimeout bounds the destroy test when the test binary has no
+// deadline: three runs of init, two with the install of Claude Code, and the
+// deletes.
 const destroyTimeout = 30 * time.Minute
 
 // Names in the sandbox that destroy must remove.

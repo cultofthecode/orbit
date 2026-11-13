@@ -32,8 +32,8 @@ import (
 // install, and the probes.
 const provisionTimeout = 10 * time.Minute
 
-// cleanupGrace is the time that provisionContext leaves before the
-// deadline of the test binary, so that t.Cleanup can delete the machine.
+// cleanupGrace is the time that boundedContext leaves before the deadline
+// of the test binary, so that t.Cleanup can delete the machine.
 const cleanupGrace = 3 * time.Minute
 
 // initLockPath is the file that serializes the integration runs on one
@@ -93,17 +93,17 @@ func waitToRunInit(t *testing.T) {
 	}
 }
 
-// provisionContext returns a context that ends cleanupGrace before the
-// deadline of the test binary, so that the -timeout the caller chose
-// absorbs the load of other runs on one OrbStack and t.Cleanup still
-// deletes the machine. Without a deadline it ends after provisionTimeout.
+// provisionContext returns boundedContext with provisionTimeout as the
+// bound for a test binary that has no deadline.
 func provisionContext(t *testing.T) context.Context {
 	t.Helper()
 	return boundedContext(t, provisionTimeout)
 }
 
-// boundedContext is provisionContext with fallback as the bound for a test
-// binary that has no deadline.
+// boundedContext returns a context that ends cleanupGrace before the
+// deadline of the test binary, so that the -timeout the caller chose absorbs
+// the load of other runs on one OrbStack and t.Cleanup still deletes the
+// machine. Without a deadline it ends after fallback.
 func boundedContext(t *testing.T, fallback time.Duration) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithDeadline(context.Background(), contextEnd(t, fallback))

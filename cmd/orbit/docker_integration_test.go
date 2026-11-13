@@ -18,8 +18,9 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/stop"
 )
 
-// dockerTimeout bounds the Docker integration test when the test binary has no deadline: provisioning with the
-// engine, pulls, three image builds, and four restarts of the machine.
+// dockerTimeout bounds the Docker integration test when the test binary has
+// no deadline: provisioning with the engine, pulls, three image builds, and
+// four restarts of the machine.
 const dockerTimeout = 60 * time.Minute
 
 // bootFailureDropIn is the test drop-in that makes nftables.service fail.

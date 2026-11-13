@@ -23,8 +23,8 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/shell"
 )
 
-// shellTimeout bounds the shell test when the test binary has no deadline: one run of init with the install of
-// Claude Code, the shells, and one stop.
+// shellTimeout bounds the shell test when the test binary has no deadline:
+// one run of init with the install of Claude Code, the shells, and one stop.
 const shellTimeout = 20 * time.Minute
 
 // shellStatus is the status with which the script of the shell exits when

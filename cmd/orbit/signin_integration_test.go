@@ -22,8 +22,9 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/stop"
 )
 
-// signInTimeout bounds the sign-in test when the test binary has no deadline: two runs of init, one with the
-// install of Claude Code, one stop, one start, and the probes.
+// signInTimeout bounds the sign-in test when the test binary has no
+// deadline: two runs of init, one with the install of Claude Code, one stop,
+// one start, and the probes.
 const signInTimeout = 20 * time.Minute
 
 // credentialVariables are the variables of the provider that the client

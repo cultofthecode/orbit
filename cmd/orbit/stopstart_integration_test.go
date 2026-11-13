@@ -22,9 +22,9 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/stop"
 )
 
-// stopStartTimeout bounds the stop and start test when the test binary has no deadline: two runs of init, one
-// with the install of Claude Code, several starts with the boot check, and
-// the probes.
+// stopStartTimeout bounds the stop and start test when the test binary has
+// no deadline: two runs of init, one with the install of Claude Code, several
+// starts with the boot check, and the probes.
 const stopStartTimeout = 20 * time.Minute
 
 // writeStateFile writes stateFile as the agent.
