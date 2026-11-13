@@ -23,8 +23,8 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/shell"
 )
 
-// shellTimeout bounds the shell test: one run of init with the install of
-// Claude Code, the shells, and one stop.
+// shellTimeout bounds the shell test when the test binary has no deadline:
+// one run of init with the install of Claude Code, the shells, and one stop.
 const shellTimeout = 20 * time.Minute
 
 // shellStatus is the status with which the script of the shell exits when
@@ -102,8 +102,7 @@ var restoreMarker = fmt.Sprintf("set -eu\nprintf '%%s\\n' %d > /etc/orbit/provis
 // stays stopped. The refusal with a failed boundary unit is E14 of the escape suite (TestEscapeRestart).
 func TestShellIsTheAgentInTheProjectDirectory(t *testing.T) {
 	waitToRunInit(t)
-	ctx, cancel := context.WithTimeout(context.Background(), shellTimeout)
-	t.Cleanup(cancel)
+	ctx := boundedContext(t, shellTimeout)
 	client := orbstack.New(sandbox.NamePrefix)
 	dir, name := newSandboxDir(ctx, t, client)
 	initRepository(t, dir)
