@@ -1,0 +1,38 @@
+# GoReleaser v2 configuration for Orbit (spec 2026-11-11-homebrew-distribution, M3).
+# The release workflow pins the GoReleaser version; see .github/workflows/release.yml.
+version: 2
+
+project_name: orbit
+
+builds:
+  - id: orbit
+    main: ./cmd/orbit
+    binary: orbit
+    goos: [darwin]
+    goarch: [arm64]
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: orbit
+    formats: [tar.gz]
+    name_template: "orbit_{{ .Version }}_darwin_arm64"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  disable: true
+
+release:
+  draft: true
+  prerelease: auto

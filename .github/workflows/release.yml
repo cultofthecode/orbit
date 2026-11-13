@@ -1,0 +1,94 @@
+name: release
+
+# A signed annotated tag vX.Y.Z on main with green CI publishes one GitHub
+# Release: the darwin arm64 archive, checksums.txt, and a build provenance
+# attestation. GoReleaser creates a draft; the last step publishes it only after
+# the attestation succeeded, and the release job waits for the `release`
+# environment approval. The check job refuses a wrong tag before anything is published.
+# Spec: .ai/specs/2026-11-11-homebrew-distribution.md (M3). Process: RELEASING.md.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GORELEASER_VERSION: v2.20.2
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the annotated tag object
+        run: git fetch --force origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+      - name: Fetch main
+        run: git fetch --force origin "+refs/heads/main:refs/remotes/origin/main"
+      - name: Check the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/check-release-tag.sh "${GITHUB_REF_NAME}"
+
+  release:
+    name: release
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Extract the release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^# / { if (found) exit; if (index($0, "# " v " (") == 1) { found = 1; next } }
+            found && !/^---[[:space:]]*$/ { print }
+          ' CHANGELOG.md >"${RUNNER_TEMP}/release-notes.md"
+          if ! grep -q '[^[:space:]]' "${RUNNER_TEMP}/release-notes.md"; then
+            echo "CHANGELOG.md has no entry '# ${version} (YYYY-MM-DD)'" >&2
+            exit 1
+          fi
+          printf '\nThe darwin arm64 archive is unsigned and not notarized (Q7). Install with Homebrew.\n' >>"${RUNNER_TEMP}/release-notes.md"
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: ${{ env.GORELEASER_VERSION }}
+          args: release --clean --release-notes=${{ runner.temp }}/release-notes.md
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/orbit_*_darwin_arm64.tar.gz
+            dist/checksums.txt
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false
