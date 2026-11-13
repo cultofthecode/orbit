@@ -22,9 +22,9 @@ import (
 	"github.com/cultofthecode/orbit/internal/sandbox/stop"
 )
 
-// stopStartTimeout bounds the stop and start test: two runs of init, one
-// with the install of Claude Code, several starts with the boot check, and
-// the probes.
+// stopStartTimeout bounds the stop and start test when the test binary has
+// no deadline: two runs of init, one with the install of Claude Code, several
+// starts with the boot check, and the probes.
 const stopStartTimeout = 20 * time.Minute
 
 // writeStateFile writes stateFile as the agent.
@@ -140,8 +140,7 @@ func newSandboxes(ctx context.Context, t *testing.T) sandboxes {
 // running throughout.
 func TestStopAndStartTheSandbox(t *testing.T) {
 	shared := lockInit(t, syscall.LOCK_SH)
-	ctx, cancel := context.WithTimeout(context.Background(), stopStartTimeout)
-	t.Cleanup(cancel)
+	ctx := boundedContext(t, stopStartTimeout)
 	s := newSandboxes(ctx, t)
 	if err := s.client.RunAsAgent(ctx, s.nameA, []byte(writeStateFile)); err != nil {
 		t.Fatalf("write %s in %s: %v", stateFile, s.nameA, err)
