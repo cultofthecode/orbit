@@ -123,11 +123,14 @@ type plan struct {
 // in.Agent as the agent user, when in.Agent is set. The allowlist of the
 // proxy is the base list plus the egress domains of in.Agent, so a run
 // without an agent removes the domains of an earlier one. It refuses an
-// unknown distribution, and a distribution other than the one an existing
-// machine runs (ErrDistributionMismatch), an unknown agent, a directory that the mount rules of the sandbox module do
+// unknown distribution, an unknown agent, a directory that the mount rules of the sandbox module do
 // not accept, and a provisioning script that cannot be built before it asks
 // OrbStack anything, and a directory that is, lies inside, or contains the
-// project directory of another machine before it creates one. When the
+// project directory of another machine before it creates one. On an existing
+// machine it reads the stored distribution after the running check, and it
+// refuses an image that no distribution has and a distribution other than
+// the one the machine runs (ErrDistributionMismatch) before it runs a command
+// in the machine. When the
 // forwarding check, the mount check, provisioning, the client setup, or the install fails on a
 // machine that this call created, it deletes that machine; it never deletes a machine that
 // existed before the call.
