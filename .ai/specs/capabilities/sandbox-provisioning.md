@@ -105,15 +105,15 @@ The system SHALL install git, openssh-client, curl, ca-certificates, jq, ripgrep
 - THEN it fails, and `git`, `ssh`, `curl`, `jq`, `rg`, and `unzip` run
 
 ## Requirement: Init of a project directory
-The system SHALL create the machine of the project directory when it does not exist, and SHALL then provision it and set up the Docker client of `agent`, also when it already existed. When provisioning or the client setup fails on a machine that the same call created, the system SHALL delete that machine and report the failure.
+The system SHALL create the machine of the project directory on its resolved distribution when it does not exist, and SHALL then provision it with the root script of that distribution and set up the Docker client of `agent`, also when it already existed. When provisioning or the client setup fails on a machine that the same call created, the system SHALL delete that machine and report the failure.
 
 ### Scenario: First init
-- WHEN `init` runs in a project directory without a machine
-- THEN the machine is created and provisioned, the client setup runs as `agent`, and `Created` is true
+- WHEN `init` runs in a project directory without a machine and without `--distro`
+- THEN the machine is created from the pinned Ubuntu image and provisioned, the client setup runs as `agent`, `Created` is true, and the output names `ubuntu`
 
 ### Scenario: Init of an existing machine
 - WHEN `init` runs in a project directory whose machine exists
-- THEN the machine is provisioned again and the client setup runs again, `~/.docker/config.json` keeps its other keys, the machine is not created or deleted, and `Created` is false
+- THEN the machine is provisioned again with the root script of its own distribution, the client setup runs again, `~/.docker/config.json` keeps its other keys, the machine is not created or deleted, and `Created` is false
 
 ### Scenario: Provisioning fails on a new machine
 - WHEN provisioning fails on a machine that this call created
@@ -123,7 +123,10 @@ The system SHALL create the machine of the project directory when it does not ex
 - WHEN the client setup fails on a machine that this call created
 - THEN the machine is deleted, the agent is not installed, and the error names the client setup
 
+Frozen by: `internal/sandbox/initialize/handler_test.go` (`TestHandleCreatesTheMachine`, `TestHandleKeepsAnExistingMachine`)
+
 Source: .ai/specs/2026-11-11-rootless-docker.md
+Source: .ai/specs/2026-11-12-sandbox-distributions.md (Delta, MODIFIED)
 
 Source: .ai/specs/2026-11-10-sandbox-provisioning.md
 
@@ -137,3 +140,51 @@ The system SHALL create the user `agent` only when it does not exist, and the ro
 Frozen by: `internal/provision/script_test.go` (`TestScriptWritesNothingIntoAHome`, `TestScriptCreatesTheAgentOnceWithoutGroups`)
 
 Source: .ai/specs/2026-11-11-subscription-sign-in.md
+
+## Requirement: Distribution of a new sandbox
+The system SHALL create a new sandbox on Ubuntu 26.04 by default, or on Debian 13 trixie with `--distro debian`, from an image that only the adapter's pinned table names, and SHALL refuse any other `--distro` value before any OrbStack command.
+
+### Scenario: Debian sandbox
+- WHEN `orbit init --distro debian` runs in a project directory without a machine
+- THEN OrbStack creates the machine from `debian:trixie` with `--isolated --isolate-network`, and the root script of `debian` provisions it
+
+### Scenario: Value outside the enum
+- WHEN `orbit init --distro <v>` runs with `v` in `alpine`, `Ubuntu`, `ubuntu:26.04`, `debian:bookworm`, `bookworm`
+- THEN init fails with `unknown distribution "<v>"; use one of: ubuntu, debian`, and runs no OrbStack command
+
+Source: .ai/specs/2026-11-12-sandbox-distributions.md (Delta, ADDED)
+
+## Requirement: An existing sandbox keeps its distribution
+The system SHALL read the distribution of an existing sandbox from the image that OrbStack stores for it, without a command in the machine. It SHALL keep that distribution when `--distro` is not given, and SHALL refuse a different `--distro`, or an image that no pin matches, before any command in the machine.
+
+### Scenario: No flag on an existing Debian sandbox
+- WHEN `orbit init` runs without `--distro` where the sandbox runs Debian
+- THEN the Debian root script provisions it again
+
+### Scenario: Another distribution requested
+- WHEN `orbit init --distro debian` runs where the sandbox runs Ubuntu
+- THEN init fails with a message that names both distributions and `orbit destroy`, and the machine is neither changed nor deleted
+
+### Scenario: Unknown stored image
+- WHEN the stored image of the existing machine matches no pin
+- THEN init fails and runs no command in the machine
+
+Source: .ai/specs/2026-11-12-sandbox-distributions.md (Delta, ADDED)
+
+## Requirement: The root script runs only on its distribution
+The system SHALL make the root script fail, before it removes the marker or changes anything, unless `/etc/os-release` names the distribution and release that the script was rendered for.
+
+### Scenario: Debian script on an Ubuntu machine
+- WHEN the root script rendered for `debian` runs on an Ubuntu 26.04 machine
+- THEN it exits non-zero, and `/etc/orbit/provisioned` and every boundary file are as they were
+
+Source: .ai/specs/2026-11-12-sandbox-distributions.md (Delta, ADDED)
+
+## Requirement: The same boundary on every distribution
+The system SHALL give a Debian sandbox every requirement of this capability and of `sandbox-containers`, `sandbox-lifecycle`, `sandbox-shell`, `ssh-agent-forwarding`, and `agent-install` that an Ubuntu sandbox has.
+
+### Scenario: Integration and escape runs on Debian
+- WHEN the integration tests and the escape suite run with `ORBIT_IT_DISTRO=debian`
+- THEN every test that passes on Ubuntu passes on Debian, and the privileged container refusal of `sandbox-containers` holds on Debian as on Ubuntu
+
+Source: .ai/specs/2026-11-12-sandbox-distributions.md (Delta, ADDED; scenario amended by the owner's decision of 2026-11-13, see `sandbox-containers`)

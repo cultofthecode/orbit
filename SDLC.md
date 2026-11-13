@@ -193,6 +193,13 @@ Every PR passes the full validation gate before review sign-off, in this order:
 
 Integration tests and the escape suite need a running OrbStack (`go test -tags integration -p 1 -timeout 60m ./...`). They are not in the default gate. Run the packages one at a time (`-p 1`): `init` refuses every directory while another machine's stored mount passes through a symlink, and `internal/orbstack` creates such a machine on purpose. `-p 1` orders the packages of one run only. Several runs on one host, for example from several worktrees, coordinate through a file lock on `/tmp/orbit-integration-init.lock`: the test that creates the symlinked machine holds it exclusively until its machine is deleted, and every test that runs `init` holds it shared. A test logs when it waits for the lock. A test that runs `init` names in its failure message the machines that it did not create. An integration test creates and deletes only its own machines. A `risk-high` change to the sandbox boundary must run the escape suite (`go test -tags integration -p 1 -timeout 60m -run '^TestEscape' -v ./cmd/orbit/`, see the risk table); the full integration run is not required for it.
 
+The sandbox distribution is set with `orbit init --distro ubuntu|debian` (default `ubuntu`; `.ai/specs/2026-11-12-sandbox-distributions.md`). Every `risk-high` change to the sandbox boundary runs the escape suite on both distributions (Q2 of that spec). The Ubuntu run is the default; the Debian run sets `ORBIT_IT_DISTRO`:
+
+- Ubuntu: `go test -tags integration -p 1 -timeout 60m -run '^TestEscape' -v ./cmd/orbit/`
+- Debian: `ORBIT_IT_DISTRO=debian go test -tags integration -p 1 -timeout 60m -run '^TestEscape' -v ./cmd/orbit/`
+
+The `--privileged` attempts (E18–E22, M02) report `n/a` on both distributions, because `--privileged` is refused on both (owner decision of 2026-11-13).
+
 CI does not run the integration tests or the escape suite, and there is no self-hosted runner (owner's decision of 2026-11-12, `.ai/specs/2026-11-11-ci-pipeline.md`, Q4). GitHub-hosted runners cannot start OrbStack. Run them by hand, with the command above, on a Mac with OrbStack, such as the owner's JARVIS, on these occasions:
 
 - **A `risk-high` change to the sandbox boundary:** the author runs them on the PR head and puts the output, with the OrbStack version, into the PR.
